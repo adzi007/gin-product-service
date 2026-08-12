@@ -1,12 +1,13 @@
 package http
 
 import (
-	"gin-product-service/internal/delivery/http/handler"
+	// "gin-product-service/internal/delivery/http/handler"
 
 	"github.com/gin-gonic/gin"
 )
 
-func SetupRouter(categoryHandler *handler.CategoryHandler) *gin.Engine {
+// func SetupRouter(categoryHandler *handler.CategoryHandler) *gin.Engine {
+func SetupRouter() *gin.Engine {
 	r := gin.Default()
 
 	// v1 := r.Group("/api/v1")
