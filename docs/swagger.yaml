@@ -1,0 +1,36 @@
+basePath: /api/v1
+definitions:
+  domain.Category:
+    properties:
+      pesan:
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact: {}
+  description: REST API for Product & Category Service
+  title: Gin Product Service API
+  version: "1.0"
+paths:
+  /categories:
+    get:
+      description: Get a list of all existing categories
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/domain.Category'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: List all categories
+      tags:
+      - categories
+swagger: "2.0"
