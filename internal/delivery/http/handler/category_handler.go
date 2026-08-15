@@ -9,10 +9,13 @@ import (
 
 type CategoryHandler struct {
 	// useCase domain.CategoryUseCase
+	insertUseCase domain.QueryCategoryUseCase
 }
 
-func NewCategoryHandler() *CategoryHandler {
-	return &CategoryHandler{}
+func NewCategoryHandler(insertUseCase domain.QueryCategoryUseCase) *CategoryHandler {
+	return &CategoryHandler{
+		insertUseCase: insertUseCase,
+	}
 }
 
 // Fetch godoc
@@ -25,14 +28,14 @@ func NewCategoryHandler() *CategoryHandler {
 // @Router       /categories [get]
 func (h *CategoryHandler) Fetch(c *gin.Context) {
 
-	// res, err := h.useCase.Fetch(c.Request.Context())
-	// if err != nil {
-	// 	c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
-	// 	return
-	// }
+	ctx := c.Request.Context()
 
-	mesage := domain.Category{
-		Pesan: "hello world",
+	data, err := h.insertUseCase.FindAll(ctx)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return // Return immediately after error
 	}
-	c.JSON(http.StatusOK, mesage)
+
+	c.JSON(http.StatusOK, data)
 }

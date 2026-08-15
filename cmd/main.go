@@ -1,8 +1,9 @@
 package main
 
 import (
-	"gin-product-service/internal/delivery/http"
-	"gin-product-service/internal/delivery/http/handler"
+	"context"
+	"gin-product-service/cmd/server"
+	"gin-product-service/internal/infrastructure/database"
 	"log"
 )
 
@@ -14,12 +15,17 @@ import (
 
 func main() {
 
-	categoryHandler := handler.NewCategoryHandler()
+	ctx := context.Background()
+	// ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// defer stop()
 
-	r := http.SetupRouter(categoryHandler)
-
-	log.Println("Server running on :8080")
-	if err := r.Run(":8080"); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+	db, err := database.NewPool(ctx)
+	if err != nil {
+		log.Fatal(err)
 	}
+
+	defer db.Close()
+
+	server := server.NewServer(db)
+	server.Start()
 }

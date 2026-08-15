@@ -12,9 +12,20 @@ import (
 	ginSwagger "github.com/swaggo/gin-swagger"
 )
 
+type router struct {
+	appServer *gin.Engine
+}
+
+func NewAppRouter(app *gin.Engine) router {
+	return router{
+		appServer: app,
+	}
+}
+
 // func SetupRouter(categoryHandler *handler.CategoryHandler) *gin.Engine {
-func SetupRouter(categoryHandler *handler.CategoryHandler) *gin.Engine {
-	r := gin.Default()
+func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler) *gin.Engine {
+
+	r := router.appServer
 
 	// 1. Redirect /swagger to /swagger/index.html
 	r.GET("/swagger", func(c *gin.Context) {
