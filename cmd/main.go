@@ -10,7 +10,7 @@ import (
 // @title           Gin Product Service API
 // @version         1.0
 // @description     REST API for Product & Category Service
-// @host            localhost:8080
+// @host            localhost:5000
 // @BasePath        /api/v1
 
 func main() {

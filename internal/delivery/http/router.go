@@ -22,7 +22,6 @@ func NewAppRouter(app *gin.Engine) router {
 	}
 }
 
-// func SetupRouter(categoryHandler *handler.CategoryHandler) *gin.Engine {
 func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler) *gin.Engine {
 
 	r := router.appServer

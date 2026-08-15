@@ -32,9 +32,6 @@ func (s *ginServer) Start() {
 
 	c := wire.NewContainer(s.db)
 
-	// categoryHandler := handler.NewCategoryHandler(c)
-	// s.app = http.SetupRouter(categoryHandler)
-
 	router := http.NewAppRouter(s.app)
 	router.SetupRouter(c.CategoryHandler)
 

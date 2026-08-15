@@ -23,9 +23,5 @@ func (uc *insertCategoryUc) FindAll(ctx context.Context) ([]domain.Category, err
 		return nil, err
 	}
 
-	// return domain.Category{
-	// 	Pesan: "hello world.....",
-	// }, nil
-
 	return data, nil
 }

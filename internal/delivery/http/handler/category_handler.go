@@ -9,12 +9,12 @@ import (
 
 type CategoryHandler struct {
 	// useCase domain.CategoryUseCase
-	insertUseCase domain.QueryCategoryUseCase
+	queryUseCase domain.QueryCategoryUseCase
 }
 
-func NewCategoryHandler(insertUseCase domain.QueryCategoryUseCase) *CategoryHandler {
+func NewCategoryHandler(queryUseCase domain.QueryCategoryUseCase) *CategoryHandler {
 	return &CategoryHandler{
-		insertUseCase: insertUseCase,
+		queryUseCase: queryUseCase,
 	}
 }
 
@@ -30,7 +30,7 @@ func (h *CategoryHandler) Fetch(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	data, err := h.insertUseCase.FindAll(ctx)
+	data, err := h.queryUseCase.FindAll(ctx)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

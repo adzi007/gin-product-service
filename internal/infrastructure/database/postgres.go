@@ -10,16 +10,12 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// type Database interface {
-// 	GetDb() *pgxpool.Pool
-// }
-
 type postgresDatabase struct {
 	Db *pgxpool.Pool
 }
 
 func NewPool(ctx context.Context) (Database, error) {
-	// Ignore .env load error so it doesn't break in production environments without a .env file
+
 	_ = godotenv.Load()
 
 	databaseURL := os.Getenv("DATABASE_URL")
@@ -47,14 +43,13 @@ func NewPool(ctx context.Context) (Database, error) {
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
 
-	// Returns *postgresDatabase as the Database interface
 	return &postgresDatabase{Db: pool}, nil
 }
 
 func (p *postgresDatabase) GetDb() *pgxpool.Pool {
-	return p.Db // Access receiver struct field instead of uninitialized dbInstance
+	return p.Db
 }
 
-func (p *postgresDatabase) Close() *pgxpool.Pool {
-	return p.Db // Access receiver struct field instead of uninitialized dbInstance
+func (p *postgresDatabase) Close() {
+	p.Db.Close()
 }
