@@ -37,5 +37,15 @@ func (h *CategoryHandler) Fetch(c *gin.Context) {
 		return // Return immediately after error
 	}
 
-	c.JSON(http.StatusOK, data)
+	type ReponseObject struct {
+		Message string      `json:"message"`
+		Data    interface{} `json:"data"`
+	}
+
+	res := ReponseObject{
+		Message: "berhasil lalalal yeyeyeye",
+		Data:    data,
+	}
+
+	c.JSON(http.StatusOK, res)
 }

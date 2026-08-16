@@ -4,7 +4,9 @@ import (
 	"context"
 	"gin-product-service/cmd/server"
 	"gin-product-service/internal/infrastructure/database"
+	"gin-product-service/internal/infrastructure/logger"
 	"log"
+	"os"
 )
 
 // @title           Gin Product Service API
@@ -18,6 +20,8 @@ func main() {
 	ctx := context.Background()
 	// ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	// defer stop()
+
+	logger.Init(os.Getenv("APP_ENV"))
 
 	db, err := database.NewPool(ctx)
 	if err != nil {

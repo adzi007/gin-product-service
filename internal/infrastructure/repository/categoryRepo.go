@@ -4,6 +4,8 @@ import (
 	"context"
 	"gin-product-service/internal/domain"
 	"gin-product-service/internal/infrastructure/database"
+	"gin-product-service/internal/infrastructure/metrics"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -17,6 +19,8 @@ func NewCategoryRepo(db database.Database) domain.CategoryRepository {
 }
 
 func (r *categoryRepo) FindAll(ctx context.Context) ([]domain.Category, error) {
+
+	defer metrics.ObserveDB("category", "find_all")(time.Now())
 
 	query := `
 		SELECT id, name, slug, thumbnail, description, created_at, updated_at, deleted_at 

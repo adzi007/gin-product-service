@@ -1,10 +1,9 @@
 package http
 
 import (
-	// "gin-product-service/internal/delivery/http/handler"
-
 	_ "gin-product-service/docs"
 	"gin-product-service/internal/delivery/http/handler"
+	"gin-product-service/internal/domain"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -22,7 +21,7 @@ func NewAppRouter(app *gin.Engine) router {
 	}
 }
 
-func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler) *gin.Engine {
+func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler, infraCheckerUseCase domain.InfraCheckUseCase) *gin.Engine {
 
 	r := router.appServer
 
@@ -33,6 +32,16 @@ func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler) *gin
 
 	// 2. Wildcard route for serving static Swagger UI assets
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+
+	r.GET("/healthz", func(c *gin.Context) { c.Status(http.StatusOK) })
+
+	r.GET("/readyz", func(c *gin.Context) {
+		if err := infraCheckerUseCase.CheckDatabase(c.Request.Context()); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+			return
+		}
+		c.Status(http.StatusOK)
+	})
 
 	v1 := r.Group("/api/v1")
 	{
