@@ -10,7 +10,7 @@ import (
 )
 
 type Container struct {
-	CategoryHandler    *handler.CategoryHandler
+	CategoryHandler     *handler.CategoryHandler
 	InfraCheckerUseCase domain.InfraCheckUseCase
 	// ProductHandler *handler.ProductHandler
 	// etc, as they're added
@@ -19,14 +19,17 @@ type Container struct {
 func NewContainer(db database.Database) *Container {
 	// category module
 	categoryRepo := repository.NewCategoryRepo(db)
-	categoryUC := category.NewCategoryQueryUseCase(categoryRepo)
-	categoryHandler := handler.NewCategoryHandler(categoryUC)
+	categoryQueryUC := category.NewCategoryQueryUseCase(categoryRepo)
+	categoryInsertUC := category.NewCategoryInsertUseCase(categoryRepo)
+	categoryUpdateUC := category.NewCategoryUpdateUseCase(categoryRepo)
+	categoryDeleteUC := category.NewCategoryDeleteUseCase(categoryRepo)
+	categoryHandler := handler.NewCategoryHandler(categoryQueryUC, categoryInsertUC, categoryUpdateUC, categoryDeleteUC)
 
 	healthRepo := repository.NewHealthRepo(db)
 	infraCheckerUC := infrachecker.NewInfraCheckerUseCase(healthRepo)
 
 	return &Container{
-		CategoryHandler:      categoryHandler,
+		CategoryHandler:     categoryHandler,
 		InfraCheckerUseCase: infraCheckerUC,
 	}
 }
