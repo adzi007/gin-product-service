@@ -2,10 +2,68 @@ basePath: /api/v1
 definitions:
   domain.Category:
     properties:
-      pesan:
+      created_at:
+        type: string
+      deleted_at:
+        type: string
+      description:
+        type: string
+      id:
+        type: integer
+      name:
+        type: string
+      slug:
+        type: string
+      thumbnail:
+        type: string
+      updated_at:
         type: string
     type: object
-host: localhost:8080
+  domain.CategoryOption:
+    properties:
+      id:
+        type: integer
+      name:
+        type: string
+    type: object
+  domain.CreateCategoryInput:
+    properties:
+      description:
+        type: string
+      name:
+        type: string
+      thumbnail:
+        type: string
+    required:
+    - name
+    type: object
+  domain.PaginatedCategories:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/domain.Category'
+        type: array
+      page:
+        type: integer
+      per_page:
+        type: integer
+      total:
+        type: integer
+      total_pages:
+        type: integer
+    type: object
+  domain.UpdateCategoryInput:
+    properties:
+      description:
+        type: string
+      name:
+        type: string
+      thumbnail:
+        type: string
+    required:
+    - name
+    type: object
+host: localhost:5000
 info:
   contact: {}
   description: REST API for Product & Category Service
@@ -14,16 +72,41 @@ info:
 paths:
   /categories:
     get:
-      description: Get a list of all existing categories
+      description: Get a paginated, filterable list of all existing categories
+      parameters:
+      - description: Filter by partial (case-insensitive) name match
+        in: query
+        name: name
+        type: string
+      - description: Page number (1-indexed)
+        in: query
+        name: page
+        type: integer
+      - description: Items per page
+        in: query
+        name: per_page
+        type: integer
+      - description: 'Sort column. One of: name, created_at'
+        in: query
+        name: sort_by
+        type: string
+      - description: 'Sort direction. One of: asc, desc'
+        in: query
+        name: sort_dir
+        type: string
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            items:
-              $ref: '#/definitions/domain.Category'
-            type: array
+            $ref: '#/definitions/domain.PaginatedCategories'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
         "500":
           description: Internal Server Error
           schema:
@@ -31,6 +114,180 @@ paths:
               type: string
             type: object
       summary: List all categories
+      tags:
+      - categories
+    post:
+      consumes:
+      - application/json
+      description: Create a new product category
+      parameters:
+      - description: Category to create
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/domain.CreateCategoryInput'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/domain.Category'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Create a category
+      tags:
+      - categories
+  /categories/{id}:
+    delete:
+      description: Soft-delete an existing product category
+      parameters:
+      - description: Category ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Delete a category (soft delete)
+      tags:
+      - categories
+    get:
+      description: Get a single category by its numeric ID
+      parameters:
+      - description: Category ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.Category'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Get a category by ID
+      tags:
+      - categories
+    put:
+      consumes:
+      - application/json
+      description: Update an existing product category
+      parameters:
+      - description: Category ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Updated category data
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/domain.UpdateCategoryInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.Category'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Update a category
+      tags:
+      - categories
+  /categories/dropdown:
+    get:
+      description: Get a lightweight list (id + name) of categories for dropdown UI
+      parameters:
+      - description: Filter by partial (case-insensitive) name match
+        in: query
+        name: name
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/domain.CategoryOption'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: List categories for dropdown
       tags:
       - categories
 swagger: "2.0"

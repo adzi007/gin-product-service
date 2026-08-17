@@ -47,11 +47,13 @@ func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler, infr
 	{
 		categories := v1.Group("/categories")
 		{
-			// categories.POST("", categoryHandler.Create)
+			categories.POST("", categoryHandler.Create)
 			categories.GET("", categoryHandler.Fetch)
-			// categories.GET("/:id", categoryHandler.GetByID)
-			// categories.PUT("/:id", categoryHandler.Update)
-			// categories.DELETE("/:id", categoryHandler.Delete)
+			// Dropdown must be declared before /:id to avoid shadowing.
+			categories.GET("/dropdown", categoryHandler.Dropdown)
+			categories.GET("/:id", categoryHandler.GetByID)
+			categories.PUT("/:id", categoryHandler.Update)
+			categories.DELETE("/:id", categoryHandler.Delete)
 		}
 	}
 
