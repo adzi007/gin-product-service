@@ -6,7 +6,7 @@ This specification defines the Product and Inventory Microservice built in Golan
 
 ### Architectural Principles
 
-* **Architecture Style:** Clean Architecture (DDD principles).
+* **Architecture Style:** Clean Architecture (DDD principles) and SOLID principles.
 * **ID Strategy:** UUID v7 generated in the application layer (`[github.com/google/uuid](https://github.com/google/uuid)`) with PostgreSQL `DEFAULT gen_random_uuid()` fallback.
 * **Concurrency Control:** Transactions (`BEGIN ... COMMIT`) for stock movements and atomic reservation handling; optimistic locking for inventory updates.
 * **Persistence Layer:** PostgreSQL via SQL drivers or query builders (e.g., `pgx/v5`, `sqlc`).
@@ -24,7 +24,7 @@ This specification defines the Product and Inventory Microservice built in Golan
 ├───config
 ├───docs
 ├───internal
-│   ├───app
+│   ├───app                           # all use cases, bussiness logic only
 │   │   └───category
 │   │   	└───queryUseCase.go
 │   ├───delivery
@@ -54,7 +54,7 @@ This specification defines the Product and Inventory Microservice built in Golan
 
 ## 3. Golang Domain Models & Repository Interfaces
 
-### 3.1 Domain Entities (`internal/domain/entity`)
+### 3.1 Domain Entities
 
 ```go
 package entity
@@ -156,6 +156,7 @@ type Location struct {
 	Name      string    `json:"name"`
 	Type      *string   `json:"type,omitempty"`
 	Address   []byte    `json:"address,omitempty"` // JSONB payload
+  IsDefault bool      `json:"is_default"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -301,9 +302,18 @@ Creates a product, its options, option values, and initial variant structure in 
         "Color": "Black",
         "Size": "S"
       },
-      "inventory": {
-        "track_inventory": true,
-      }
+       "media": [
+        {
+          "id": "gallery-1",
+          "position": 0
+        },
+        {
+          "id": "gallery-2",
+          "position": 1
+        }
+      ],
+      "track_inventory": true,
+      "stock": 100,
     },
     {
       "title": "White / M",
@@ -315,21 +325,39 @@ Creates a product, its options, option values, and initial variant structure in 
         "Color": "White",
         "Size": "M"
       },
-      "inventory": {
-        "track_inventory": true,
-      }
+      "media": [
+        {
+          "id": "gallery-3",
+          "position": 0
+        }
+      ],
+      "track_inventory": true,
+      "stock": 100,
     }
   ],
-  "images": [
+  "gallery": [
     {
-      "url": "https://cdn.example.com/images/tshirt-black-front.jpg",
-      "alt": "Black t-shirt front"
+      "id": "gallery-1",
+      "type": "image",
+      "url": "https://cdn.example.com/tshirt/front.jpg",
+      "altText": "Black t-shirt front view",
+      "position": 0
     },
     {
-      "url": "https://cdn.example.com/images/tshirt-white-front.jpg",
-      "alt": "White t-shirt front"
+      "id": "gallery-2",
+      "type": "image",
+      "url": "https://cdn.example.com/tshirt/back.jpg",
+      "altText": "Black t-shirt back view",
+      "position": 1
+    },
+    {
+      "id": "gallery-3",
+      "type": "image",
+      "url": "https://cdn.example.com/tshirt/white.jpg",
+      "altText": "White t-shirt",
+      "position": 2
     }
-  ]
+  ],
 }
 
 ```
