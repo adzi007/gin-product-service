@@ -51,17 +51,21 @@ type CategoryOption struct {
 }
 
 // CreateCategoryInput is the request body for creating a category.
+// The `validate` tags are enforced explicitly with go-playground/validator
+// in the HTTP handler layer (see handler.Create).
 type CreateCategoryInput struct {
-	Name        string  `json:"name" binding:"required"`
+	Name        string  `json:"name" binding:"required" validate:"required,min=1,max=50"`
 	Thumbnail   *string `json:"thumbnail"`
-	Description *string `json:"description"`
+	Description *string `json:"description" validate:"omitempty,max=1000"`
 }
 
 // UpdateCategoryInput is the request body for updating a category.
+// The `validate` tags are enforced explicitly with go-playground/validator
+// in the HTTP handler layer (see handler.Update).
 type UpdateCategoryInput struct {
-	Name        string  `json:"name" binding:"required"`
+	Name        string  `json:"name" binding:"required" validate:"required,min=1,max=50"`
 	Thumbnail   *string `json:"thumbnail"`
-	Description *string `json:"description"`
+	Description *string `json:"description" validate:"omitempty,max=1000"`
 }
 
 type QueryCategoryUseCase interface {

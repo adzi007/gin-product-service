@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -8,7 +9,11 @@ import (
 	"gin-product-service/internal/domain"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
 )
+
+// validate is a shared validator instance used to validate request payloads.
+var validate = validator.New()
 
 type CategoryHandler struct {
 	queryUseCase  domain.QueryCategoryUseCase
@@ -171,7 +176,7 @@ func (h *CategoryHandler) GetByID(c *gin.Context) {
 // @Produce      json
 // @Param        body body domain.CreateCategoryInput true "Category to create"
 // @Success      201  {object} domain.Category
-// @Failure      400  {object} map[string]string
+// @Failure      400  {object} map[string]any
 // @Failure      500  {object} map[string]string
 // @Router       /categories [post]
 func (h *CategoryHandler) Create(c *gin.Context) {
@@ -180,6 +185,19 @@ func (h *CategoryHandler) Create(c *gin.Context) {
 
 	var input domain.CreateCategoryInput
 	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := validate.Struct(input); err != nil {
+		if fieldErrs, ok := err.(validator.ValidationErrors); ok {
+			details := make([]string, 0, len(fieldErrs))
+			for _, fe := range fieldErrs {
+				details = append(details, fieldValidationMessage(fe))
+			}
+			c.JSON(http.StatusBadRequest, gin.H{"error": "validation failed", "details": details})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -202,7 +220,7 @@ func (h *CategoryHandler) Create(c *gin.Context) {
 // @Param        id   path int  true "Category ID"
 // @Param        body body domain.UpdateCategoryInput true "Updated category data"
 // @Success      200  {object} domain.Category
-// @Failure      400  {object} map[string]string
+// @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]string
 // @Failure      500  {object} map[string]string
 // @Router       /categories/{id} [put]
@@ -218,6 +236,19 @@ func (h *CategoryHandler) Update(c *gin.Context) {
 
 	var input domain.UpdateCategoryInput
 	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := validate.Struct(input); err != nil {
+		if fieldErrs, ok := err.(validator.ValidationErrors); ok {
+			details := make([]string, 0, len(fieldErrs))
+			for _, fe := range fieldErrs {
+				details = append(details, fieldValidationMessage(fe))
+			}
+			c.JSON(http.StatusBadRequest, gin.H{"error": "validation failed", "details": details})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -267,4 +298,18 @@ func (h *CategoryHandler) Delete(c *gin.Context) {
 	}
 
 	c.Status(http.StatusNoContent)
+}
+
+// fieldValidationMessage returns a human-readable message for a validator error.
+func fieldValidationMessage(e validator.FieldError) string {
+	switch e.Tag() {
+	case "required":
+		return e.Field() + " is required"
+	case "min":
+		return fmt.Sprintf("%s must be at least %s", e.Field(), e.Param())
+	case "max":
+		return fmt.Sprintf("%s must be at most %s", e.Field(), e.Param())
+	default:
+		return fmt.Sprintf("%s failed validation on %s", e.Field(), e.Tag())
+	}
 }
