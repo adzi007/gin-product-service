@@ -250,7 +250,7 @@ type InventoryRepository interface {
 | --- | --- | --- |
 | `POST` | `/v1/categories` | Create a product category |
 | `GET` | `/v1/categories` | List all categories |
-| `POST` | `/v1/products` | Create product with options & default variant |
+| `POST` | `/v1/products` | Create product with options, variant, gallery, & initial stock |
 | `GET` | `/v1/products` | List products with filtering & pagination |
 | `GET` | `/v1/products/:id_or_handle` | Get full product detail (Options, Variants, Gallery) |
 | `PUT` | `/v1/products/:id` | Update product master info |
@@ -531,3 +531,175 @@ When feeding this document to AI models (e.g., Cursor, GitHub Copilot, Claude) t
 2. **Transaction Management:** Any operation modifying both `stock_moves` and `inventory_levels` MUST receive an `exec/tx` context wrapper to guarantee database transaction safety.
 3. **Monetary Precision:** Do not use `float64` for `price` or `quantity` fields. Always use `[github.com/shopspring/decimal](https://github.com/shopspring/decimal)`.
 4. **Context Propagation:** All database and application methods must accept `ctx context.Context` as their first parameter.
+
+## 8. Database Schemas
+
+```dbml
+
+Table products {
+  id uuid [pk, default: `gen_random_uuid()`]
+  handle text [not null, note: 'Human-readable slug or handle']
+  title text [not null]
+  description text
+  vendor text
+  category_id int [not null]
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+}
+
+Table product_options {
+  id uuid [pk, default: `gen_random_uuid()`]
+  product_id uuid [not null]
+  name text [not null, note: 'Option name (e.g. Color, Size)']
+  position int [default: 0]
+}
+
+Table product_option_values {
+  id uuid [pk, default: `gen_random_uuid()`]
+  option_id uuid [not null]
+  value text [not null]
+  position int [default: 0]
+}
+
+Table variants {
+  id uuid [pk, default: `gen_random_uuid()`]
+  product_id uuid [not null]
+  sku text [unique, note: 'Unique SKU across all variants']
+  barcode text
+  title text
+  price numeric(12,2)
+  weight numeric(12,3)
+  options jsonb [default: `'[]'::jsonb`, note: 'Stores selected option values']
+  is_deleted boolean [default: false]
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+}
+
+Table inventory_items {
+  id uuid [pk, default: `gen_random_uuid()`]
+  variant_id uuid [unique]
+  description text
+  track_inventory boolean [default: true]
+  created_at timestamptz [default: `now()`]
+}
+
+Table locations {
+  id uuid [pk, default: `gen_random_uuid()`]
+  name text [not null]
+  type text [note: 'warehouse, store, etc.']
+  address jsonb
+  is_default bool
+  created_at timestamptz [default: `now()`]
+}
+
+Table inventory_levels {
+  id uuid [pk, default: `gen_random_uuid()`]
+  inventory_item_id uuid [not null]
+  location_id uuid [not null]
+  available_qty numeric(14,4) [default: 0]
+  reserved_qty numeric(14,4) [default: 0]
+  updated_at timestamptz [default: `now()`]
+
+  indexes {
+    (inventory_item_id, location_id) [unique]
+  }
+}
+
+Enum stock_move_type {
+  IN
+  OUT
+  TRANSFER
+  ADJUST
+  RESERVE
+  UNRESERVE
+}
+
+Table stock_moves {
+  id uuid [pk, default: `gen_random_uuid()`]
+  inventory_item_id uuid [not null]
+  from_location_id uuid
+  to_location_id uuid 
+  move_type stock_move_type [not null]
+  quantity numeric(14,4) [not null]
+  created_by uuid
+  reason text
+  created_at timestamptz [default: `now()`]
+}
+
+Table reservations {
+  id uuid [pk, default: `gen_random_uuid()`]
+  inventory_item_id uuid [not null]
+  location_id uuid [not null]
+  order_id uuid
+  quantity numeric(14,4) [not null]
+  reserved_at timestamptz [default: `now()`]
+  expires_at timestamptz
+}
+
+Table category {
+  id int [pk]
+  name varchar(100)
+  slug varchar(100)
+  thumbnail varchar(500)
+  description text
+  created_at timestamp [default: `now()`]
+  updated_at datetime
+  deleted_at datetime
+}
+
+Table product_media {
+  id uuid [pk, default: `gen_random_uuid()`]
+  product_id uuid [not null]
+
+  type varchar(20) [not null, default: 'image', note: 'image, video']
+  url text [not null]
+  alt_text text
+  position int [not null, default: 0]
+
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+
+  Indexes {
+    (product_id, position)
+  }
+}
+
+Table variant_media {
+  variant_id uuid [not null]
+  media_id uuid [not null]
+  position int [not null, default: 0]
+
+  Indexes {
+    (variant_id, position)
+    (media_id)
+  }
+
+  indexes {
+    (variant_id, media_id) [unique]
+  }
+}
+
+//////////////////////////////////////////////////////////////
+// Relationships (for visualization)
+//////////////////////////////////////////////////////////////
+
+Ref: product_options.product_id > products.id
+Ref: product_option_values.option_id > product_options.id
+Ref: variants.product_id > products.id
+Ref: inventory_items.variant_id > variants.id
+Ref: inventory_levels.inventory_item_id > inventory_items.id
+Ref: inventory_levels.location_id > locations.id
+Ref: stock_moves.inventory_item_id > inventory_items.id
+Ref: stock_moves.from_location_id > locations.id
+Ref: stock_moves.to_location_id > locations.id
+Ref: reservations.inventory_item_id > inventory_items.id
+Ref: reservations.location_id > locations.id
+Ref: products.category_id > category.id
+Ref: "reservations"."id" < "reservations"."location_id"
+Ref: "reservations"."id" < "reservations"."inventory_item_id"
+Ref: "stock_moves"."id" < "stock_moves"."from_location_id"
+Ref: product_media.product_id > products.id
+Ref: variant_media.variant_id > variants.id
+Ref: variant_media.media_id > product_media.id
+
+```

@@ -3,6 +3,7 @@ package wire
 import (
 	"gin-product-service/internal/app/category"
 	"gin-product-service/internal/app/infrachecker"
+	"gin-product-service/internal/app/product"
 	"gin-product-service/internal/delivery/http/handler"
 	"gin-product-service/internal/domain"
 	"gin-product-service/internal/infrastructure/database"
@@ -11,9 +12,8 @@ import (
 
 type Container struct {
 	CategoryHandler     *handler.CategoryHandler
+	ProductHandler      *handler.ProductHandler
 	InfraCheckerUseCase domain.InfraCheckUseCase
-	// ProductHandler *handler.ProductHandler
-	// etc, as they're added
 }
 
 func NewContainer(db database.Database) *Container {
@@ -25,11 +25,17 @@ func NewContainer(db database.Database) *Container {
 	categoryDeleteUC := category.NewCategoryDeleteUseCase(categoryRepo)
 	categoryHandler := handler.NewCategoryHandler(categoryQueryUC, categoryInsertUC, categoryUpdateUC, categoryDeleteUC)
 
+	// product module
+	productRepo := repository.NewProductRepo(db)
+	productInsertUC := product.NewProductInsertUseCase(productRepo)
+	productHandler := handler.NewProductHandler(productInsertUC)
+
 	healthRepo := repository.NewHealthRepo(db)
 	infraCheckerUC := infrachecker.NewInfraCheckerUseCase(healthRepo)
 
 	return &Container{
 		CategoryHandler:     categoryHandler,
+		ProductHandler:      productHandler,
 		InfraCheckerUseCase: infraCheckerUC,
 	}
 }

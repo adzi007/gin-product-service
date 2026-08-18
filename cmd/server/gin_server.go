@@ -39,7 +39,7 @@ func (s *ginServer) Start() {
 
 	c := wire.NewContainer(s.db)
 	router := apphttp.NewAppRouter(s.app)
-	router.SetupRouter(c.CategoryHandler, c.InfraCheckerUseCase)
+	router.SetupRouter(c.CategoryHandler, c.ProductHandler, c.InfraCheckerUseCase)
 
 	// expose Prometheus scrape endpoint
 	s.app.GET("/metrics", gin.WrapH(promhttp.Handler()))

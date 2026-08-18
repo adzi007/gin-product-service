@@ -21,7 +21,7 @@ func NewAppRouter(app *gin.Engine) router {
 	}
 }
 
-func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler, infraCheckerUseCase domain.InfraCheckUseCase) *gin.Engine {
+func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler, productHandler *handler.ProductHandler, infraCheckerUseCase domain.InfraCheckUseCase) *gin.Engine {
 
 	r := router.appServer
 
@@ -54,6 +54,11 @@ func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler, infr
 			categories.GET("/:id", categoryHandler.GetByID)
 			categories.PUT("/:id", categoryHandler.Update)
 			categories.DELETE("/:id", categoryHandler.Delete)
+		}
+
+		products := v1.Group("/products")
+		{
+			products.POST("", productHandler.Create)
 		}
 	}
 

@@ -29,13 +29,63 @@ definitions:
   domain.CreateCategoryInput:
     properties:
       description:
+        maxLength: 1000
         type: string
       name:
+        maxLength: 50
+        minLength: 1
         type: string
       thumbnail:
         type: string
     required:
     - name
+    type: object
+  domain.CreateProductInput:
+    properties:
+      categoryId:
+        type: integer
+      description:
+        type: string
+      gallery:
+        items:
+          $ref: '#/definitions/domain.GalleryMediaInput'
+        type: array
+      handle:
+        type: string
+      options:
+        items:
+          $ref: '#/definitions/domain.ProductOptionInput'
+        type: array
+      title:
+        type: string
+      variants:
+        items:
+          $ref: '#/definitions/domain.VariantInput'
+        minItems: 1
+        type: array
+      vendor:
+        type: string
+    required:
+    - categoryId
+    - handle
+    - title
+    - variants
+    type: object
+  domain.GalleryMediaInput:
+    properties:
+      altText:
+        type: string
+      id:
+        type: string
+      position:
+        type: integer
+      type:
+        type: string
+      url:
+        type: string
+    required:
+    - id
+    - url
     type: object
   domain.PaginatedCategories:
     properties:
@@ -52,16 +102,70 @@ definitions:
       total_pages:
         type: integer
     type: object
+  domain.ProductOptionInput:
+    properties:
+      name:
+        type: string
+      values:
+        items:
+          type: string
+        minItems: 1
+        type: array
+    required:
+    - name
+    - values
+    type: object
   domain.UpdateCategoryInput:
     properties:
       description:
+        maxLength: 1000
         type: string
       name:
+        maxLength: 50
+        minLength: 1
         type: string
       thumbnail:
         type: string
     required:
     - name
+    type: object
+  domain.VariantInput:
+    properties:
+      barcode:
+        type: string
+      media:
+        items:
+          $ref: '#/definitions/domain.VariantMediaInput'
+        type: array
+      options:
+        additionalProperties:
+          type: string
+        type: object
+      price:
+        type: number
+      sku:
+        type: string
+      stock:
+        minimum: 0
+        type: integer
+      title:
+        type: string
+      track_inventory:
+        type: boolean
+      weight:
+        type: number
+    required:
+    - price
+    - weight
+    type: object
+  domain.VariantMediaInput:
+    properties:
+      id:
+        type: string
+      position:
+        type: integer
+    required:
+    - id
     type: object
 host: localhost:5000
 info:
@@ -137,8 +241,7 @@ paths:
         "400":
           description: Bad Request
           schema:
-            additionalProperties:
-              type: string
+            additionalProperties: true
             type: object
         "500":
           description: Internal Server Error
@@ -246,8 +349,7 @@ paths:
         "400":
           description: Bad Request
           schema:
-            additionalProperties:
-              type: string
+            additionalProperties: true
             type: object
         "404":
           description: Not Found
@@ -290,4 +392,43 @@ paths:
       summary: List categories for dropdown
       tags:
       - categories
+  /products:
+    post:
+      consumes:
+      - application/json
+      description: Create a product with options, variants, gallery and initial stock
+        in one transaction
+      parameters:
+      - description: Product to create
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/domain.CreateProductInput'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Create a product
+      tags:
+      - products
 swagger: "2.0"
