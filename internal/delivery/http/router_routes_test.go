@@ -26,6 +26,21 @@ func TestRouterRegistersProductOptionRoutes(t *testing.T) {
 		{"POST", "/api/v1/products/:id/options/:option_id/values"},
 		{"PATCH", "/api/v1/products/:id/options/:option_id/values/:value_id"},
 		{"DELETE", "/api/v1/products/:id/options/:option_id/values/:value_id"},
+		{"POST", "/api/v1/products/:id/variants"},
+		{"POST", "/api/v1/products/:id/variants/bulk"},
+		{"PATCH", "/api/v1/products/:id/variants/bulk"},
+		{"POST", "/api/v1/products/:id/variants/bulk-delete"},
+		{"PATCH", "/api/v1/products/:id/variants/reorder"},
+		{"POST", "/api/v1/products/:id/media"},
+		{"PATCH", "/api/v1/products/:id/media/reorder"},
+		{"PATCH", "/api/v1/products/:id/media/:media_id"},
+		{"DELETE", "/api/v1/products/:id/media/:media_id"},
+		{"PATCH", "/api/v1/variants/:id"},
+		{"DELETE", "/api/v1/variants/:id"},
+		{"POST", "/api/v1/variants/:id/restore"},
+		{"POST", "/api/v1/variants/:id/media"},
+		{"PATCH", "/api/v1/variants/:id/media/reorder"},
+		{"DELETE", "/api/v1/variants/:id/media/:media_id"},
 	} {
 		found := false
 		for _, ri := range r.Routes() {

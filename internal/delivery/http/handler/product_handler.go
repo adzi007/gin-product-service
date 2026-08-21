@@ -16,11 +16,13 @@ import (
 )
 
 type ProductHandler struct {
-	insertUseCase domain.InsertProductUseCase
-	queryUseCase  domain.QueryProductUseCase
-	updateUseCase domain.UpdateProductUseCase
-	deleteUseCase domain.DeleteProductUseCase
-	optionUseCase domain.OptionUseCase
+	insertUseCase  domain.InsertProductUseCase
+	queryUseCase   domain.QueryProductUseCase
+	updateUseCase  domain.UpdateProductUseCase
+	deleteUseCase  domain.DeleteProductUseCase
+	optionUseCase  domain.OptionUseCase
+	variantUseCase domain.VariantUseCase
+	mediaUseCase   domain.MediaUseCase
 }
 
 func NewProductHandler(
@@ -29,13 +31,17 @@ func NewProductHandler(
 	updateUseCase domain.UpdateProductUseCase,
 	deleteUseCase domain.DeleteProductUseCase,
 	optionUseCase domain.OptionUseCase,
+	variantUseCase domain.VariantUseCase,
+	mediaUseCase domain.MediaUseCase,
 ) *ProductHandler {
 	return &ProductHandler{
-		insertUseCase: insertUseCase,
-		queryUseCase:  queryUseCase,
-		updateUseCase: updateUseCase,
-		deleteUseCase: deleteUseCase,
-		optionUseCase: optionUseCase,
+		insertUseCase:  insertUseCase,
+		queryUseCase:   queryUseCase,
+		updateUseCase:  updateUseCase,
+		deleteUseCase:  deleteUseCase,
+		optionUseCase:  optionUseCase,
+		variantUseCase: variantUseCase,
+		mediaUseCase:   mediaUseCase,
 	}
 }
 
@@ -706,6 +712,656 @@ func (h *ProductHandler) DeleteOptionValue(c *gin.Context) {
 	})
 }
 
+// CreateVariant godoc
+// @Summary      Create a product variant
+// @Description  Create a new variant for a product
+// @Tags         products
+// @Accept       json
+// @Produce      json
+// @Param        id   path string true "Product UUID"
+// @Param        body body domain.CreateVariantInput true "Variant to create"
+// @Success      201  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      409  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /products/{id}/variants [post]
+func (h *ProductHandler) CreateVariant(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	var input domain.CreateVariantInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	if err := validate.Struct(input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	created, err := h.variantUseCase.Create(ctx, id, input)
+	if err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"status": "success",
+		"data":   toVariantResponseData(created),
+	})
+}
+
+// BulkCreateVariants godoc
+// @Summary      Bulk create product variants
+// @Description  Create multiple variants for a product (import/sync)
+// @Tags         products
+// @Accept       json
+// @Produce      json
+// @Param        id   path string true "Product UUID"
+// @Param        body body domain.BulkCreateVariantsInput true "Variants to create"
+// @Success      201  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      409  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /products/{id}/variants/bulk [post]
+func (h *ProductHandler) BulkCreateVariants(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	var input domain.BulkCreateVariantsInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	if err := validate.Struct(input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	created, err := h.variantUseCase.BulkCreate(ctx, id, input)
+	if err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"status": "success",
+		"data":   toVariantResponseSlice(created),
+	})
+}
+
+// UpdateVariant godoc
+// @Summary      Update a variant
+// @Description  Update variant fields (sku, barcode, title, price, weight). Omitted fields are left unchanged.
+// @Tags         products
+// @Accept       json
+// @Produce      json
+// @Param        id   path string true "Variant UUID"
+// @Param        body body domain.UpdateVariantInput true "Fields to update"
+// @Success      200  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      409  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /variants/{id} [patch]
+func (h *ProductHandler) UpdateVariant(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	var input domain.UpdateVariantInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	if err := validate.Struct(input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	updated, err := h.variantUseCase.Update(ctx, id, input)
+	if err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   toVariantResponseData(updated),
+	})
+}
+
+// BulkUpdateVariants godoc
+// @Summary      Bulk update variants
+// @Description  Update multiple variants of a product in a single request
+// @Tags         products
+// @Accept       json
+// @Produce      json
+// @Param        id   path string true "Product UUID"
+// @Param        body body domain.BulkUpdateVariantsInput true "Variant updates"
+// @Success      200  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      409  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /products/{id}/variants/bulk [patch]
+func (h *ProductHandler) BulkUpdateVariants(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	var input domain.BulkUpdateVariantsInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	if err := validate.Struct(input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	updated, err := h.variantUseCase.BulkUpdate(ctx, id, input)
+	if err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   toVariantResponseSlice(updated),
+	})
+}
+
+// DeleteVariant godoc
+// @Summary      Delete a variant
+// @Description  Delete a variant (soft-delete if it has history, hard-delete otherwise)
+// @Tags         products
+// @Produce      json
+// @Param        id path string true "Variant UUID"
+// @Success      200  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /variants/{id} [delete]
+func (h *ProductHandler) DeleteVariant(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	if err := h.variantUseCase.Delete(ctx, id); err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "Variant deleted",
+	})
+}
+
+// BulkDeleteVariants godoc
+// @Summary      Bulk delete variants
+// @Description  Delete multiple variants of a product in a single request
+// @Tags         products
+// @Accept       json
+// @Produce      json
+// @Param        id   path string true "Product UUID"
+// @Param        body body domain.BulkDeleteVariantsInput true "Variant IDs to delete"
+// @Success      200  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /products/{id}/variants/bulk-delete [post]
+func (h *ProductHandler) BulkDeleteVariants(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	var input domain.BulkDeleteVariantsInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	if err := validate.Struct(input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	if err := h.variantUseCase.BulkDelete(ctx, id, input); err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "Variants deleted",
+	})
+}
+
+// RestoreVariant godoc
+// @Summary      Restore a soft-deleted variant
+// @Description  Undo a soft delete on a variant
+// @Tags         products
+// @Produce      json
+// @Param        id path string true "Variant UUID"
+// @Success      200  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /variants/{id}/restore [post]
+func (h *ProductHandler) RestoreVariant(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	restored, err := h.variantUseCase.Restore(ctx, id)
+	if err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   toVariantResponseData(restored),
+	})
+}
+
+// ReorderVariants godoc
+// @Summary      Reorder product variants
+// @Description  Bulk-update the positions of a product's variants
+// @Tags         products
+// @Accept       json
+// @Produce      json
+// @Param        id   path string true "Product UUID"
+// @Param        body body domain.ReorderVariantsInput true "New positions"
+// @Success      200  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /products/{id}/variants/reorder [patch]
+func (h *ProductHandler) ReorderVariants(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	var input domain.ReorderVariantsInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	if err := validate.Struct(input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	if err := h.variantUseCase.Reorder(ctx, id, input.Positions); err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "Variants reordered",
+	})
+}
+
+// CreateMedia godoc
+// @Summary      Attach media to a product gallery
+// @Description  Upload/attach new media to a product's gallery (accepts an array)
+// @Tags         products
+// @Accept       json
+// @Produce      json
+// @Param        id   path string true "Product UUID"
+// @Param        body body domain.BulkCreateMediaInput true "Media to create"
+// @Success      201  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /products/{id}/media [post]
+func (h *ProductHandler) CreateMedia(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	var input domain.BulkCreateMediaInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	if err := validate.Struct(input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	created, err := h.mediaUseCase.Create(ctx, id, input)
+	if err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"status": "success",
+		"data":   toMediaResponseSlice(created),
+	})
+}
+
+// UpdateMedia godoc
+// @Summary      Update media metadata
+// @Description  Update a media item's metadata (alt_text)
+// @Tags         products
+// @Accept       json
+// @Produce      json
+// @Param        id       path string true "Product UUID"
+// @Param        media_id path string true "Media UUID"
+// @Param        body     body domain.UpdateMediaInput true "Fields to update"
+// @Success      200  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /products/{id}/media/{media_id} [patch]
+func (h *ProductHandler) UpdateMedia(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+	mediaID, ok := parseUUID(c, "media_id")
+	if !ok {
+		return
+	}
+
+	var input domain.UpdateMediaInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	if err := validate.Struct(input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	updated, err := h.mediaUseCase.Update(ctx, id, mediaID, input)
+	if err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   toMediaResponseData(updated),
+	})
+}
+
+// DeleteMedia godoc
+// @Summary      Delete product media
+// @Description  Remove media from a product entirely (cascades variant media links)
+// @Tags         products
+// @Produce      json
+// @Param        id       path string true "Product UUID"
+// @Param        media_id path string true "Media UUID"
+// @Success      200  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /products/{id}/media/{media_id} [delete]
+func (h *ProductHandler) DeleteMedia(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+	mediaID, ok := parseUUID(c, "media_id")
+	if !ok {
+		return
+	}
+
+	if err := h.mediaUseCase.Delete(ctx, id, mediaID); err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "Media deleted",
+	})
+}
+
+// ReorderMedia godoc
+// @Summary      Reorder product media
+// @Description  Bulk-update the positions of a product's gallery media
+// @Tags         products
+// @Accept       json
+// @Produce      json
+// @Param        id   path string true "Product UUID"
+// @Param        body body domain.ReorderMediaInput true "New positions"
+// @Success      200  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /products/{id}/media/reorder [patch]
+func (h *ProductHandler) ReorderMedia(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	var input domain.ReorderMediaInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	if err := validate.Struct(input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	if err := h.mediaUseCase.Reorder(ctx, id, input.Positions); err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "Media reordered",
+	})
+}
+
+// AttachVariantMedia godoc
+// @Summary      Attach media to a variant
+// @Description  Attach an existing product media item to a variant
+// @Tags         products
+// @Accept       json
+// @Produce      json
+// @Param        id   path string true "Variant UUID"
+// @Param        body body domain.AttachVariantMediaInput true "Media to attach"
+// @Success      201  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /variants/{id}/media [post]
+func (h *ProductHandler) AttachVariantMedia(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	var input domain.AttachVariantMediaInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	if err := validate.Struct(input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	link, err := h.mediaUseCase.AttachToVariant(ctx, id, input)
+	if err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"status": "success",
+		"data":   toVariantMediaResponseData(link),
+	})
+}
+
+// DetachVariantMedia godoc
+// @Summary      Detach media from a variant
+// @Description  Remove a media link from a variant only (media stays in the product gallery)
+// @Tags         products
+// @Produce      json
+// @Param        id       path string true "Variant UUID"
+// @Param        media_id path string true "Media UUID"
+// @Success      200  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /variants/{id}/media/{media_id} [delete]
+func (h *ProductHandler) DetachVariantMedia(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+	mediaID, ok := parseUUID(c, "media_id")
+	if !ok {
+		return
+	}
+
+	if err := h.mediaUseCase.DetachFromVariant(ctx, id, mediaID); err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "Variant media detached",
+	})
+}
+
+// ReorderVariantMedia godoc
+// @Summary      Reorder variant media
+// @Description  Bulk-update the positions of a variant's media subset
+// @Tags         products
+// @Accept       json
+// @Produce      json
+// @Param        id   path string true "Variant UUID"
+// @Param        body body domain.ReorderMediaInput true "New positions"
+// @Success      200  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /variants/{id}/media/reorder [patch]
+func (h *ProductHandler) ReorderVariantMedia(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	var input domain.ReorderMediaInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	if err := validate.Struct(input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	if err := h.mediaUseCase.ReorderVariantMedia(ctx, id, input.Positions); err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "Variant media reordered",
+	})
+}
+
 // parseUUID parses a path parameter as a UUID, writing a 400 ERR_VALIDATION
 // response and returning false on failure.
 func parseUUID(c *gin.Context, param string) (uuid.UUID, bool) {
@@ -776,6 +1432,12 @@ func mapProductError(err error) (int, string) {
 		return http.StatusConflict, "ERR_HANDLE_ALREADY_EXISTS"
 	case domain.ErrProductHasHistory:
 		return http.StatusConflict, "PRODUCT_HAS_HISTORY"
+	case domain.ErrVariantNotFound:
+		return http.StatusNotFound, "ERR_VARIANT_NOT_FOUND"
+	case domain.ErrMediaNotFound:
+		return http.StatusNotFound, "ERR_MEDIA_NOT_FOUND"
+	case domain.ErrVariantMediaNotFound:
+		return http.StatusNotFound, "ERR_VARIANT_MEDIA_NOT_FOUND"
 	default:
 		return http.StatusInternalServerError, "ERR_INTERNAL"
 	}
@@ -967,4 +1629,92 @@ func toProductDetailData(p domain.Product) productDetailData {
 	}
 
 	return data
+}
+
+// variantResponseData is the response shape for standalone variant CRUD
+// endpoints (create, update, restore, bulk).
+type variantResponseData struct {
+	ID        uuid.UUID       `json:"id"`
+	ProductID uuid.UUID       `json:"product_id"`
+	SKU       *string         `json:"sku,omitempty"`
+	Barcode   *string         `json:"barcode,omitempty"`
+	Title     *string         `json:"title,omitempty"`
+	Price     decimal.Decimal `json:"price"`
+	Weight    decimal.Decimal `json:"weight"`
+	Position  int             `json:"position"`
+	IsDeleted bool            `json:"is_deleted"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt *time.Time      `json:"updated_at,omitempty"`
+}
+
+// mediaResponseData is the response shape for product gallery media endpoints.
+type mediaResponseData struct {
+	ID        uuid.UUID  `json:"id"`
+	ProductID uuid.UUID  `json:"product_id"`
+	Type      string     `json:"type"`
+	URL       string     `json:"url"`
+	AltText   *string    `json:"alt_text,omitempty"`
+	Position  int        `json:"position"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
+}
+
+// variantMediaResponseData is the response shape for variant_media links.
+type variantMediaResponseData struct {
+	VariantID uuid.UUID `json:"variant_id"`
+	MediaID   uuid.UUID `json:"media_id"`
+	Position  int       `json:"position"`
+}
+
+func toVariantResponseData(v domain.Variant) variantResponseData {
+	return variantResponseData{
+		ID:        v.ID,
+		ProductID: v.ProductID,
+		SKU:       v.SKU,
+		Barcode:   v.Barcode,
+		Title:     v.Title,
+		Price:     v.Price,
+		Weight:    v.Weight,
+		Position:  v.Position,
+		IsDeleted: v.IsDeleted,
+		CreatedAt: v.CreatedAt,
+		UpdatedAt: v.UpdatedAt,
+	}
+}
+
+func toVariantResponseSlice(variants []domain.Variant) []variantResponseData {
+	data := make([]variantResponseData, 0, len(variants))
+	for _, v := range variants {
+		data = append(data, toVariantResponseData(v))
+	}
+	return data
+}
+
+func toMediaResponseData(m domain.ProductMedia) mediaResponseData {
+	return mediaResponseData{
+		ID:        m.ID,
+		ProductID: m.ProductID,
+		Type:      m.Type,
+		URL:       m.URL,
+		AltText:   m.AltText,
+		Position:  m.Position,
+		CreatedAt: m.CreatedAt,
+		UpdatedAt: m.UpdatedAt,
+	}
+}
+
+func toMediaResponseSlice(media []domain.ProductMedia) []mediaResponseData {
+	data := make([]mediaResponseData, 0, len(media))
+	for _, m := range media {
+		data = append(data, toMediaResponseData(m))
+	}
+	return data
+}
+
+func toVariantMediaResponseData(vm domain.VariantMedia) variantMediaResponseData {
+	return variantMediaResponseData{
+		VariantID: vm.VariantID,
+		MediaID:   vm.MediaID,
+		Position:  vm.Position,
+	}
 }

@@ -139,7 +139,7 @@ func TestProductHandler_Fetch_ParsesFilters(t *testing.T) {
 	queryUC := &fakeQueryProductUseCase{
 		findAllResult: domain.PaginatedProducts{Data: []domain.Product{}},
 	}
-	h := NewProductHandler(nil, queryUC, nil, nil, nil)
+	h := NewProductHandler(nil, queryUC, nil, nil, nil, nil, nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -179,7 +179,7 @@ func TestProductHandler_Fetch_RejectsInvalidStatus(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	queryUC := &fakeQueryProductUseCase{}
-	h := NewProductHandler(nil, queryUC, nil, nil, nil)
+	h := NewProductHandler(nil, queryUC, nil, nil, nil, nil, nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -189,5 +189,169 @@ func TestProductHandler_Fetch_RejectsInvalidStatus(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}
+
+// fakeVariantUseCase is a minimal VariantUseCase fake for handler tests.
+type fakeVariantUseCase struct {
+	createErr    error
+	createResult domain.Variant
+	updateErr    error
+	deleteErr    error
+	restoreErr   error
+}
+
+func (f *fakeVariantUseCase) Create(ctx context.Context, productID uuid.UUID, input domain.CreateVariantInput) (domain.Variant, error) {
+	if f.createErr != nil {
+		return domain.Variant{}, f.createErr
+	}
+	return f.createResult, nil
+}
+
+func (f *fakeVariantUseCase) BulkCreate(ctx context.Context, productID uuid.UUID, input domain.BulkCreateVariantsInput) ([]domain.Variant, error) {
+	return nil, nil
+}
+
+func (f *fakeVariantUseCase) Update(ctx context.Context, variantID uuid.UUID, input domain.UpdateVariantInput) (domain.Variant, error) {
+	if f.updateErr != nil {
+		return domain.Variant{}, f.updateErr
+	}
+	return domain.Variant{ID: variantID}, nil
+}
+
+func (f *fakeVariantUseCase) BulkUpdate(ctx context.Context, productID uuid.UUID, input domain.BulkUpdateVariantsInput) ([]domain.Variant, error) {
+	return nil, nil
+}
+
+func (f *fakeVariantUseCase) Delete(ctx context.Context, variantID uuid.UUID) error {
+	return f.deleteErr
+}
+
+func (f *fakeVariantUseCase) BulkDelete(ctx context.Context, productID uuid.UUID, input domain.BulkDeleteVariantsInput) error {
+	return nil
+}
+
+func (f *fakeVariantUseCase) Restore(ctx context.Context, variantID uuid.UUID) (domain.Variant, error) {
+	if f.restoreErr != nil {
+		return domain.Variant{}, f.restoreErr
+	}
+	return domain.Variant{ID: variantID}, nil
+}
+
+func (f *fakeVariantUseCase) Reorder(ctx context.Context, productID uuid.UUID, positions []domain.PositionUpdate) error {
+	return nil
+}
+
+// fakeMediaUseCase is a minimal MediaUseCase fake for handler tests.
+type fakeMediaUseCase struct {
+	attachErr    error
+	attachResult domain.VariantMedia
+}
+
+func (f *fakeMediaUseCase) Create(ctx context.Context, productID uuid.UUID, input domain.BulkCreateMediaInput) ([]domain.ProductMedia, error) {
+	return nil, nil
+}
+
+func (f *fakeMediaUseCase) Update(ctx context.Context, productID, mediaID uuid.UUID, input domain.UpdateMediaInput) (domain.ProductMedia, error) {
+	return domain.ProductMedia{}, nil
+}
+
+func (f *fakeMediaUseCase) Delete(ctx context.Context, productID, mediaID uuid.UUID) error {
+	return nil
+}
+
+func (f *fakeMediaUseCase) Reorder(ctx context.Context, productID uuid.UUID, positions []domain.PositionUpdate) error {
+	return nil
+}
+
+func (f *fakeMediaUseCase) AttachToVariant(ctx context.Context, variantID uuid.UUID, input domain.AttachVariantMediaInput) (domain.VariantMedia, error) {
+	if f.attachErr != nil {
+		return domain.VariantMedia{}, f.attachErr
+	}
+	return f.attachResult, nil
+}
+
+func (f *fakeMediaUseCase) DetachFromVariant(ctx context.Context, variantID, mediaID uuid.UUID) error {
+	return nil
+}
+
+func (f *fakeMediaUseCase) ReorderVariantMedia(ctx context.Context, variantID uuid.UUID, positions []domain.PositionUpdate) error {
+	return nil
+}
+
+func TestProductHandler_CreateVariant_Success(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	id := uuid.New()
+	variantUC := &fakeVariantUseCase{
+		createResult: domain.Variant{ID: id, Price: decimal.NewFromFloat(19.99), Weight: decimal.NewFromFloat(0.5)},
+	}
+	h := NewProductHandler(nil, nil, nil, nil, nil, variantUC, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: id.String()}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/products/"+id.String()+"/variants", strings.NewReader(`{"price": 19.99, "weight": 0.5}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.CreateVariant(c)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestProductHandler_CreateVariant_InvalidProductID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	h := NewProductHandler(nil, nil, nil, nil, nil, &fakeVariantUseCase{}, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "not-a-uuid"}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/products/not-a-uuid/variants", strings.NewReader(`{}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.CreateVariant(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestProductHandler_DeleteVariant_NotFound(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	id := uuid.New()
+	variantUC := &fakeVariantUseCase{deleteErr: domain.ErrVariantNotFound}
+	h := NewProductHandler(nil, nil, nil, nil, nil, variantUC, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: id.String()}}
+	c.Request = httptest.NewRequest(http.MethodDelete, "/variants/"+id.String(), nil)
+
+	h.DeleteVariant(c)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestProductHandler_AttachVariantMedia_InvalidVariantID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	h := NewProductHandler(nil, nil, nil, nil, nil, nil, &fakeMediaUseCase{})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "not-a-uuid"}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/variants/not-a-uuid/media", strings.NewReader(`{"media_id": "`+uuid.New().String()+`"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.AttachVariantMedia(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 }

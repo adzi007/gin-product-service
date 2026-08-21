@@ -1,5 +1,52 @@
 basePath: /api/v1
 definitions:
+  domain.AttachVariantMediaInput:
+    properties:
+      media_id:
+        type: string
+    required:
+    - media_id
+    type: object
+  domain.BulkCreateMediaInput:
+    properties:
+      media:
+        items:
+          $ref: '#/definitions/domain.CreateMediaInput'
+        minItems: 1
+        type: array
+    required:
+    - media
+    type: object
+  domain.BulkCreateVariantsInput:
+    properties:
+      variants:
+        items:
+          $ref: '#/definitions/domain.CreateVariantInput'
+        minItems: 1
+        type: array
+    required:
+    - variants
+    type: object
+  domain.BulkDeleteVariantsInput:
+    properties:
+      ids:
+        items:
+          type: string
+        minItems: 1
+        type: array
+    required:
+    - ids
+    type: object
+  domain.BulkUpdateVariantsInput:
+    properties:
+      updates:
+        items:
+          $ref: '#/definitions/domain.VariantUpdateItem'
+        minItems: 1
+        type: array
+    required:
+    - updates
+    type: object
   domain.Category:
     properties:
       created_at:
@@ -39,6 +86,24 @@ definitions:
         type: string
     required:
     - name
+    type: object
+  domain.CreateMediaInput:
+    properties:
+      altText:
+        type: string
+      position:
+        minimum: 0
+        type: integer
+      type:
+        enum:
+        - image
+        - video
+        type: string
+      url:
+        type: string
+    required:
+    - type
+    - url
     type: object
   domain.CreateOptionInput:
     properties:
@@ -100,6 +165,26 @@ definitions:
     - handle
     - title
     - variants
+    type: object
+  domain.CreateVariantInput:
+    properties:
+      barcode:
+        type: string
+      options:
+        additionalProperties:
+          type: string
+        type: object
+      price:
+        type: number
+      sku:
+        type: string
+      title:
+        type: string
+      weight:
+        type: number
+    required:
+    - price
+    - weight
     type: object
   domain.GalleryMediaInput:
     properties:
@@ -196,6 +281,8 @@ definitions:
     type: object
   domain.ProductCategory:
     properties:
+      id:
+        type: integer
       name:
         type: string
       slug:
@@ -286,7 +373,27 @@ definitions:
       url:
         type: string
     type: object
+  domain.ReorderMediaInput:
+    properties:
+      positions:
+        items:
+          $ref: '#/definitions/domain.PositionUpdate'
+        minItems: 1
+        type: array
+    required:
+    - positions
+    type: object
   domain.ReorderOptionsInput:
+    properties:
+      positions:
+        items:
+          $ref: '#/definitions/domain.PositionUpdate'
+        minItems: 1
+        type: array
+    required:
+    - positions
+    type: object
+  domain.ReorderVariantsInput:
     properties:
       positions:
         items:
@@ -309,6 +416,11 @@ definitions:
         type: string
     required:
     - name
+    type: object
+  domain.UpdateMediaInput:
+    properties:
+      altText:
+        type: string
     type: object
   domain.UpdateOptionInput:
     properties:
@@ -345,6 +457,21 @@ definitions:
       vendor:
         type: string
     type: object
+  domain.UpdateVariantInput:
+    properties:
+      barcode:
+        type: string
+      price:
+        minimum: 0
+        type: number
+      sku:
+        type: string
+      title:
+        type: string
+      weight:
+        minimum: 0
+        type: number
+    type: object
   domain.Variant:
     properties:
       barcode:
@@ -359,6 +486,9 @@ definitions:
         items:
           $ref: '#/definitions/domain.VariantMedia'
         type: array
+      position:
+        description: Position is the display order of this variant within its product.
+        type: integer
       price:
         type: number
       product_id:
@@ -422,6 +552,16 @@ definitions:
       position:
         type: integer
     required:
+    - id
+    type: object
+  domain.VariantUpdateItem:
+    properties:
+      fields:
+        $ref: '#/definitions/domain.UpdateVariantInput'
+      id:
+        type: string
+    required:
+    - fields
     - id
     type: object
 host: localhost:5000
@@ -853,6 +993,179 @@ paths:
       summary: Update a product
       tags:
       - products
+  /products/{id}/media:
+    post:
+      consumes:
+      - application/json
+      description: Upload/attach new media to a product's gallery (accepts an array)
+      parameters:
+      - description: Product UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Media to create
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/domain.BulkCreateMediaInput'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Attach media to a product gallery
+      tags:
+      - products
+  /products/{id}/media/{media_id}:
+    delete:
+      description: Remove media from a product entirely (cascades variant media links)
+      parameters:
+      - description: Product UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Media UUID
+        in: path
+        name: media_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Delete product media
+      tags:
+      - products
+    patch:
+      consumes:
+      - application/json
+      description: Update a media item's metadata (alt_text)
+      parameters:
+      - description: Product UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Media UUID
+        in: path
+        name: media_id
+        required: true
+        type: string
+      - description: Fields to update
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/domain.UpdateMediaInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Update media metadata
+      tags:
+      - products
+  /products/{id}/media/reorder:
+    patch:
+      consumes:
+      - application/json
+      description: Bulk-update the positions of a product's gallery media
+      parameters:
+      - description: Product UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: New positions
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/domain.ReorderMediaInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Reorder product media
+      tags:
+      - products
   /products/{id}/options:
     post:
       consumes:
@@ -1250,6 +1563,480 @@ paths:
             additionalProperties: true
             type: object
       summary: Restore an archived product
+      tags:
+      - products
+  /products/{id}/variants:
+    post:
+      consumes:
+      - application/json
+      description: Create a new variant for a product
+      parameters:
+      - description: Product UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Variant to create
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/domain.CreateVariantInput'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Create a product variant
+      tags:
+      - products
+  /products/{id}/variants/bulk:
+    patch:
+      consumes:
+      - application/json
+      description: Update multiple variants of a product in a single request
+      parameters:
+      - description: Product UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Variant updates
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/domain.BulkUpdateVariantsInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Bulk update variants
+      tags:
+      - products
+    post:
+      consumes:
+      - application/json
+      description: Create multiple variants for a product (import/sync)
+      parameters:
+      - description: Product UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Variants to create
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/domain.BulkCreateVariantsInput'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Bulk create product variants
+      tags:
+      - products
+  /products/{id}/variants/bulk-delete:
+    post:
+      consumes:
+      - application/json
+      description: Delete multiple variants of a product in a single request
+      parameters:
+      - description: Product UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Variant IDs to delete
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/domain.BulkDeleteVariantsInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Bulk delete variants
+      tags:
+      - products
+  /products/{id}/variants/reorder:
+    patch:
+      consumes:
+      - application/json
+      description: Bulk-update the positions of a product's variants
+      parameters:
+      - description: Product UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: New positions
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/domain.ReorderVariantsInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Reorder product variants
+      tags:
+      - products
+  /variants/{id}:
+    delete:
+      description: Delete a variant (soft-delete if it has history, hard-delete otherwise)
+      parameters:
+      - description: Variant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Delete a variant
+      tags:
+      - products
+    patch:
+      consumes:
+      - application/json
+      description: Update variant fields (sku, barcode, title, price, weight). Omitted
+        fields are left unchanged.
+      parameters:
+      - description: Variant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Fields to update
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/domain.UpdateVariantInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Update a variant
+      tags:
+      - products
+  /variants/{id}/media:
+    post:
+      consumes:
+      - application/json
+      description: Attach an existing product media item to a variant
+      parameters:
+      - description: Variant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Media to attach
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/domain.AttachVariantMediaInput'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Attach media to a variant
+      tags:
+      - products
+  /variants/{id}/media/{media_id}:
+    delete:
+      description: Remove a media link from a variant only (media stays in the product
+        gallery)
+      parameters:
+      - description: Variant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Media UUID
+        in: path
+        name: media_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Detach media from a variant
+      tags:
+      - products
+  /variants/{id}/media/reorder:
+    patch:
+      consumes:
+      - application/json
+      description: Bulk-update the positions of a variant's media subset
+      parameters:
+      - description: Variant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: New positions
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/domain.ReorderMediaInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Reorder variant media
+      tags:
+      - products
+  /variants/{id}/restore:
+    post:
+      description: Undo a soft delete on a variant
+      parameters:
+      - description: Variant UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Restore a soft-deleted variant
       tags:
       - products
 swagger: "2.0"

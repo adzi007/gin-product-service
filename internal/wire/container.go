@@ -32,7 +32,9 @@ func NewContainer(db database.Database) *Container {
 	productUpdateUC := product.NewProductUpdateUseCase(productRepo)
 	productDeleteUC := product.NewProductDeleteUseCase(productRepo)
 	optionUC := product.NewOptionUseCase(productRepo)
-	productHandler := handler.NewProductHandler(productInsertUC, productQueryUC, productUpdateUC, productDeleteUC, optionUC)
+	variantUC := product.NewVariantUseCase(productRepo)
+	mediaUC := product.NewMediaUseCase(productRepo)
+	productHandler := handler.NewProductHandler(productInsertUC, productQueryUC, productUpdateUC, productDeleteUC, optionUC, variantUC, mediaUC)
 
 	healthRepo := repository.NewHealthRepo(db)
 	infraCheckerUC := infrachecker.NewInfraCheckerUseCase(healthRepo)

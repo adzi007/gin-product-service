@@ -104,6 +104,8 @@ type Variant struct {
 	Title     *string         `json:"title,omitempty" db:"title"`
 	Price     decimal.Decimal `json:"price" db:"price"`
 	Weight    decimal.Decimal `json:"weight" db:"weight"`
+	// Position is the display order of this variant within its product.
+	Position int `json:"position" db:"position"`
 	// Stock is the total available quantity across all inventory levels for
 	// this variant. It is computed (not stored) and only populated on the
 	// single-product detail path.
@@ -203,6 +205,14 @@ var (
 	// ErrProductHasHistory is returned when a purge is blocked because the
 	// product's variants have stock movement history.
 	ErrProductHasHistory = errors.New("product has stock history")
+	// ErrVariantNotFound is returned when no variant matches the given id.
+	ErrVariantNotFound = errors.New("variant not found")
+	// ErrMediaNotFound is returned when no product media matches the given id,
+	// or when the media does not belong to the referenced product/variant.
+	ErrMediaNotFound = errors.New("media not found")
+	// ErrVariantMediaNotFound is returned when a variant is not linked to the
+	// given media id.
+	ErrVariantMediaNotFound = errors.New("variant media not found")
 )
 
 // CreateProductParams carries everything the repository needs to persist a new
@@ -276,6 +286,31 @@ type OptionUseCase interface {
 	DeleteValue(ctx context.Context, productID, optionID, valueID uuid.UUID) error
 }
 
+// VariantUseCase is the application-layer contract for managing a product's
+// variants (standalone CRUD, lifecycle and position reordering).
+type VariantUseCase interface {
+	Create(ctx context.Context, productID uuid.UUID, input CreateVariantInput) (Variant, error)
+	BulkCreate(ctx context.Context, productID uuid.UUID, input BulkCreateVariantsInput) ([]Variant, error)
+	Update(ctx context.Context, variantID uuid.UUID, input UpdateVariantInput) (Variant, error)
+	BulkUpdate(ctx context.Context, productID uuid.UUID, input BulkUpdateVariantsInput) ([]Variant, error)
+	Delete(ctx context.Context, variantID uuid.UUID) error
+	BulkDelete(ctx context.Context, productID uuid.UUID, input BulkDeleteVariantsInput) error
+	Restore(ctx context.Context, variantID uuid.UUID) (Variant, error)
+	Reorder(ctx context.Context, productID uuid.UUID, positions []PositionUpdate) error
+}
+
+// MediaUseCase is the application-layer contract for managing a product's
+// media gallery and attaching/detaching media to variants.
+type MediaUseCase interface {
+	Create(ctx context.Context, productID uuid.UUID, input BulkCreateMediaInput) ([]ProductMedia, error)
+	Update(ctx context.Context, productID, mediaID uuid.UUID, input UpdateMediaInput) (ProductMedia, error)
+	Delete(ctx context.Context, productID, mediaID uuid.UUID) error
+	Reorder(ctx context.Context, productID uuid.UUID, positions []PositionUpdate) error
+	AttachToVariant(ctx context.Context, variantID uuid.UUID, input AttachVariantMediaInput) (VariantMedia, error)
+	DetachFromVariant(ctx context.Context, variantID, mediaID uuid.UUID) error
+	ReorderVariantMedia(ctx context.Context, variantID uuid.UUID, positions []PositionUpdate) error
+}
+
 // ProductRepository is the persistence contract for the product module.
 type ProductRepository interface {
 	Create(ctx context.Context, params CreateProductParams) (Product, error)
@@ -297,6 +332,28 @@ type ProductRepository interface {
 	UpdateOptionValue(ctx context.Context, valueID uuid.UUID, value *string, position *int) (ProductOptionValue, error)
 	DeleteOptionValue(ctx context.Context, valueID uuid.UUID) error
 	FindOptionValueByID(ctx context.Context, valueID uuid.UUID) (ProductOptionValue, error)
+
+	CreateVariant(ctx context.Context, variant Variant) (Variant, error)
+	CreateVariants(ctx context.Context, variants []Variant) ([]Variant, error)
+	FindVariantByID(ctx context.Context, variantID uuid.UUID) (Variant, error)
+	UpdateVariant(ctx context.Context, variantID uuid.UUID, input UpdateVariantInput) (Variant, error)
+	DeleteVariant(ctx context.Context, variantID uuid.UUID, hard bool) error
+	BulkDeleteVariants(ctx context.Context, variantIDs []uuid.UUID, hard bool) error
+	RestoreVariant(ctx context.Context, variantID uuid.UUID) (Variant, error)
+	ReorderVariants(ctx context.Context, productID uuid.UUID, positions []PositionUpdate) error
+	// VariantHasHistory reports whether a variant has any stock movement
+	// history, which decides soft vs hard deletion.
+	VariantHasHistory(ctx context.Context, variantID uuid.UUID) (bool, error)
+
+	CreateProductMedia(ctx context.Context, media []ProductMedia) ([]ProductMedia, error)
+	UpdateProductMedia(ctx context.Context, mediaID uuid.UUID, altText *string) (ProductMedia, error)
+	DeleteProductMedia(ctx context.Context, mediaID uuid.UUID) error
+	ReorderProductMedia(ctx context.Context, productID uuid.UUID, positions []PositionUpdate) error
+	FindMediaByID(ctx context.Context, mediaID uuid.UUID) (ProductMedia, error)
+
+	AttachVariantMedia(ctx context.Context, variantID, mediaID uuid.UUID) (VariantMedia, error)
+	DetachVariantMedia(ctx context.Context, variantID, mediaID uuid.UUID) error
+	ReorderVariantMedia(ctx context.Context, variantID uuid.UUID, positions []PositionUpdate) error
 }
 
 // CreateProductInput is the request body for creating a product.
@@ -387,4 +444,84 @@ type CreateOptionValueInput struct {
 type UpdateOptionValueInput struct {
 	Value    *string `json:"value"`
 	Position *int    `json:"position" validate:"omitempty,gte=0"`
+}
+
+// CreateVariantInput is the request body for POST /products/:id/variants.
+// It mirrors the persistable subset of VariantInput; the product id comes from
+// the URL param and media attachments are handled by a dedicated endpoint.
+type CreateVariantInput struct {
+	Title   *string           `json:"title"`
+	SKU     *string           `json:"sku"`
+	Barcode *string           `json:"barcode"`
+	Price   *decimal.Decimal  `json:"price" binding:"required" validate:"required"`
+	Weight  *decimal.Decimal  `json:"weight" binding:"required" validate:"required"`
+	Options map[string]string `json:"options"`
+}
+
+// BulkCreateVariantsInput is the request body for POST /products/:id/variants/bulk.
+type BulkCreateVariantsInput struct {
+	Variants []CreateVariantInput `json:"variants" binding:"required" validate:"required,min=1,dive"`
+}
+
+// UpdateVariantInput is the request body for PATCH /variants/:id. All fields
+// are optional pointers: nil means "leave this column unchanged".
+type UpdateVariantInput struct {
+	SKU     *string          `json:"sku" validate:"omitempty"`
+	Barcode *string          `json:"barcode" validate:"omitempty"`
+	Title   *string          `json:"title" validate:"omitempty"`
+	Price   *decimal.Decimal `json:"price" validate:"omitempty"`
+	Weight  *decimal.Decimal `json:"weight" validate:"omitempty"`
+}
+
+// VariantUpdateItem is a single variant update within a bulk update request.
+type VariantUpdateItem struct {
+	ID     uuid.UUID         `json:"id" binding:"required" validate:"required"`
+	Fields UpdateVariantInput `json:"fields" binding:"required"`
+}
+
+// BulkUpdateVariantsInput is the request body for PATCH /products/:id/variants/bulk.
+type BulkUpdateVariantsInput struct {
+	Updates []VariantUpdateItem `json:"updates" binding:"required" validate:"required,min=1,dive"`
+}
+
+// BulkDeleteVariantsInput is the request body for POST /products/:id/variants/bulk-delete.
+type BulkDeleteVariantsInput struct {
+	IDs []uuid.UUID `json:"ids" binding:"required" validate:"required,min=1,dive"`
+}
+
+// ReorderVariantsInput is the request body for PATCH /products/:id/variants/reorder.
+type ReorderVariantsInput struct {
+	Positions []PositionUpdate `json:"positions" binding:"required" validate:"required,min=1,dive"`
+}
+
+// CreateMediaInput is a single media item for POST /products/:id/media.
+type CreateMediaInput struct {
+	Type     string  `json:"type" binding:"required" validate:"required,oneof=image video"`
+	URL      string  `json:"url" binding:"required" validate:"required"`
+	AltText  *string `json:"altText"`
+	Position int     `json:"position" validate:"gte=0"`
+}
+
+// BulkCreateMediaInput is the request body for POST /products/:id/media.
+type BulkCreateMediaInput struct {
+	Media []CreateMediaInput `json:"media" binding:"required" validate:"required,min=1,dive"`
+}
+
+// UpdateMediaInput is the request body for PATCH /products/:id/media/:media_id.
+// Only alt_text is currently updatable; nil leaves it unchanged.
+type UpdateMediaInput struct {
+	AltText *string `json:"altText"`
+}
+
+// AttachVariantMediaInput is the request body for POST /variants/:id/media.
+// It references an existing product_media row to link to the variant. The
+// position is auto-assigned by the repository.
+type AttachVariantMediaInput struct {
+	MediaID uuid.UUID `json:"media_id" binding:"required" validate:"required"`
+}
+
+// ReorderMediaInput is the request body for PATCH /products/:id/media/reorder
+// and PATCH /variants/:id/media/reorder.
+type ReorderMediaInput struct {
+	Positions []PositionUpdate `json:"positions" binding:"required" validate:"required,min=1,dive"`
 }

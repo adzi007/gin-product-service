@@ -950,6 +950,7 @@ func (r *productRepo) findProductVariants(ctx context.Context, productID uuid.UU
 			v.title,
 			v.price,
 			v.weight,
+			v.position,
 			v.options,
 			v.is_deleted,
 			v.created_at,
@@ -962,7 +963,7 @@ func (r *productRepo) findProductVariants(ctx context.Context, productID uuid.UU
 			), 0) AS stock
 		FROM variants v
 		WHERE v.product_id = $1 AND v.is_deleted = false
-		ORDER BY v.created_at ASC, v.id ASC`, pgUUID(productID))
+		ORDER BY v.position ASC, v.created_at ASC, v.id ASC`, pgUUID(productID))
 	if err != nil {
 		return nil, err
 	}
@@ -1108,4 +1109,661 @@ func translateOptionValueCreateError(err error) error {
 		return domain.ErrOptionNotFound
 	}
 	return err
+}
+
+// variantColumns lists the base columns returned by standalone variant queries.
+// It must stay in sync with domain.Variant's db tags. The computed stock column
+// is added separately where the full detail shape is needed.
+const variantColumns = "id, product_id, sku, barcode, title, price, weight, position, options, is_deleted, created_at, updated_at"
+
+// CreateVariant inserts a single variant row.
+func (r *productRepo) CreateVariant(ctx context.Context, variant domain.Variant) (domain.Variant, error) {
+
+	defer metrics.ObserveDB("product", "create_variant")(time.Now())
+
+	rows, err := r.db.GetDb().Query(ctx, `
+		INSERT INTO variants (id, product_id, sku, barcode, title, price, weight, position, options, is_deleted)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, false)
+		RETURNING `+variantColumns,
+		pgUUID(variant.ID),
+		pgUUID(variant.ProductID),
+		variant.SKU,
+		variant.Barcode,
+		variant.Title,
+		pgNumeric(variant.Price),
+		pgNumeric(variant.Weight),
+		variant.Position,
+		variant.Options,
+	)
+	if err != nil {
+		return domain.Variant{}, translateCreateError(err)
+	}
+
+	created, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.Variant])
+	if err != nil {
+		return domain.Variant{}, err
+	}
+
+	return created, nil
+}
+
+// CreateVariants bulk-inserts variants using a single multi-row INSERT.
+func (r *productRepo) CreateVariants(ctx context.Context, variants []domain.Variant) ([]domain.Variant, error) {
+
+	defer metrics.ObserveDB("product", "create_variants")(time.Now())
+
+	if len(variants) == 0 {
+		return []domain.Variant{}, nil
+	}
+
+	placeholders := make([]string, 0, len(variants))
+	args := make([]interface{}, 0, len(variants)*9)
+	for _, v := range variants {
+		n := len(args)
+		placeholders = append(placeholders, fmt.Sprintf(
+			"($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, false)",
+			n+1, n+2, n+3, n+4, n+5, n+6, n+7, n+8, n+9,
+		))
+		args = append(args,
+			pgUUID(v.ID),
+			pgUUID(v.ProductID),
+			v.SKU,
+			v.Barcode,
+			v.Title,
+			pgNumeric(v.Price),
+			pgNumeric(v.Weight),
+			v.Position,
+			v.Options,
+		)
+	}
+
+	query := fmt.Sprintf(`
+		INSERT INTO variants (id, product_id, sku, barcode, title, price, weight, position, options, is_deleted)
+		VALUES %s
+		RETURNING `+variantColumns, strings.Join(placeholders, ", "))
+
+	rows, err := r.db.GetDb().Query(ctx, query, args...)
+	if err != nil {
+		return nil, translateCreateError(err)
+	}
+
+	created, err := pgx.CollectRows(rows, pgx.RowToStructByName[domain.Variant])
+	if err != nil {
+		return nil, err
+	}
+
+	// RETURNING order is not guaranteed for multi-row inserts, so reorder the
+	// result to match the input slice.
+	byID := make(map[uuid.UUID]domain.Variant, len(created))
+	for _, v := range created {
+		byID[v.ID] = v
+	}
+	ordered := make([]domain.Variant, 0, len(variants))
+	for _, v := range variants {
+		ordered = append(ordered, byID[v.ID])
+	}
+
+	return ordered, nil
+}
+
+// FindVariantByID loads a single variant (including its computed stock) by id.
+func (r *productRepo) FindVariantByID(ctx context.Context, variantID uuid.UUID) (domain.Variant, error) {
+
+	defer metrics.ObserveDB("product", "find_variant_by_id")(time.Now())
+
+	rows, err := r.db.GetDb().Query(ctx, `
+		SELECT
+			v.id,
+			v.product_id,
+			v.sku,
+			v.barcode,
+			v.title,
+			v.price,
+			v.weight,
+			v.position,
+			v.options,
+			v.is_deleted,
+			v.created_at,
+			v.updated_at,
+			COALESCE((
+				SELECT SUM(il.available_qty)
+				FROM inventory_items ii
+				JOIN inventory_levels il ON il.inventory_item_id = ii.id
+				WHERE ii.variant_id = v.id
+			), 0) AS stock
+		FROM variants v
+		WHERE v.id = $1`, pgUUID(variantID))
+	if err != nil {
+		return domain.Variant{}, err
+	}
+
+	variant, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.Variant])
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Variant{}, domain.ErrVariantNotFound
+		}
+		return domain.Variant{}, err
+	}
+
+	return variant, nil
+}
+
+// UpdateVariant partially updates a variant, touching only the non-nil fields.
+func (r *productRepo) UpdateVariant(ctx context.Context, variantID uuid.UUID, input domain.UpdateVariantInput) (domain.Variant, error) {
+
+	defer metrics.ObserveDB("product", "update_variant")(time.Now())
+
+	fields := make([]string, 0, 5)
+	args := make([]interface{}, 0, 6)
+	argIdx := 0
+
+	if input.SKU != nil {
+		argIdx++
+		args = append(args, *input.SKU)
+		fields = append(fields, fmt.Sprintf("sku = $%d", argIdx))
+	}
+	if input.Barcode != nil {
+		argIdx++
+		args = append(args, *input.Barcode)
+		fields = append(fields, fmt.Sprintf("barcode = $%d", argIdx))
+	}
+	if input.Title != nil {
+		argIdx++
+		args = append(args, *input.Title)
+		fields = append(fields, fmt.Sprintf("title = $%d", argIdx))
+	}
+	if input.Price != nil {
+		argIdx++
+		args = append(args, pgNumeric(*input.Price))
+		fields = append(fields, fmt.Sprintf("price = $%d", argIdx))
+	}
+	if input.Weight != nil {
+		argIdx++
+		args = append(args, pgNumeric(*input.Weight))
+		fields = append(fields, fmt.Sprintf("weight = $%d", argIdx))
+	}
+
+	// No changed fields: return the current row unchanged.
+	if len(fields) == 0 {
+		rows, err := r.db.GetDb().Query(ctx,
+			"SELECT "+variantColumns+" FROM variants WHERE id = $1", pgUUID(variantID))
+		if err != nil {
+			return domain.Variant{}, err
+		}
+		variant, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.Variant])
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.Variant{}, domain.ErrVariantNotFound
+			}
+			return domain.Variant{}, err
+		}
+		return variant, nil
+	}
+
+	fields = append(fields, "updated_at = now()")
+
+	argIdx++
+	args = append(args, pgUUID(variantID))
+
+	query := fmt.Sprintf(
+		"UPDATE variants SET %s WHERE id = $%d RETURNING "+variantColumns,
+		strings.Join(fields, ", "), argIdx,
+	)
+
+	rows, err := r.db.GetDb().Query(ctx, query, args...)
+	if err != nil {
+		return domain.Variant{}, translateCreateError(err)
+	}
+
+	variant, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.Variant])
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Variant{}, domain.ErrVariantNotFound
+		}
+		return domain.Variant{}, err
+	}
+
+	return variant, nil
+}
+
+// DeleteVariant soft-deletes (is_deleted = true) or hard-deletes a variant,
+// cascading its dependents in the hard-delete case.
+func (r *productRepo) DeleteVariant(ctx context.Context, variantID uuid.UUID, hard bool) error {
+
+	defer metrics.ObserveDB("product", "delete_variant")(time.Now())
+
+	tx, err := r.db.GetDb().Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var tag pgconn.CommandTag
+	if hard {
+		// Cascade delete dependents in dependency order (no ON DELETE CASCADE
+		// is defined in the schema).
+		if _, err = tx.Exec(ctx, `DELETE FROM variant_media WHERE variant_id = $1`, pgUUID(variantID)); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `DELETE FROM inventory_levels WHERE inventory_item_id IN (SELECT id FROM inventory_items WHERE variant_id = $1)`, pgUUID(variantID)); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `DELETE FROM stock_moves WHERE inventory_item_id IN (SELECT id FROM inventory_items WHERE variant_id = $1)`, pgUUID(variantID)); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `DELETE FROM inventory_items WHERE variant_id = $1`, pgUUID(variantID)); err != nil {
+			return err
+		}
+		tag, err = tx.Exec(ctx, `DELETE FROM variants WHERE id = $1`, pgUUID(variantID))
+		if err != nil {
+			return err
+		}
+	} else {
+		tag, err = tx.Exec(ctx, `UPDATE variants SET is_deleted = true, updated_at = now() WHERE id = $1`, pgUUID(variantID))
+		if err != nil {
+			return err
+		}
+	}
+
+	if tag.RowsAffected() == 0 {
+		return domain.ErrVariantNotFound
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// BulkDeleteVariants soft- or hard-deletes many variants in one transaction.
+func (r *productRepo) BulkDeleteVariants(ctx context.Context, variantIDs []uuid.UUID, hard bool) error {
+
+	defer metrics.ObserveDB("product", "bulk_delete_variants")(time.Now())
+
+	if len(variantIDs) == 0 {
+		return nil
+	}
+
+	tx, err := r.db.GetDb().Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	args := make([]interface{}, 0, len(variantIDs))
+	placeholders := make([]string, 0, len(variantIDs))
+	for i, id := range variantIDs {
+		args = append(args, pgUUID(id))
+		placeholders = append(placeholders, fmt.Sprintf("$%d", i+1))
+	}
+	in := strings.Join(placeholders, ", ")
+
+	if hard {
+		if _, err = tx.Exec(ctx, `DELETE FROM variant_media WHERE variant_id IN (`+in+`)`, args...); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `DELETE FROM inventory_levels WHERE inventory_item_id IN (SELECT id FROM inventory_items WHERE variant_id IN (`+in+`))`, args...); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `DELETE FROM stock_moves WHERE inventory_item_id IN (SELECT id FROM inventory_items WHERE variant_id IN (`+in+`))`, args...); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `DELETE FROM inventory_items WHERE variant_id IN (`+in+`)`, args...); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `DELETE FROM variants WHERE id IN (`+in+`)`, args...); err != nil {
+			return err
+		}
+	} else {
+		if _, err = tx.Exec(ctx, `UPDATE variants SET is_deleted = true, updated_at = now() WHERE id IN (`+in+`)`, args...); err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// RestoreVariant un-soft-deletes a variant.
+func (r *productRepo) RestoreVariant(ctx context.Context, variantID uuid.UUID) (domain.Variant, error) {
+
+	defer metrics.ObserveDB("product", "restore_variant")(time.Now())
+
+	rows, err := r.db.GetDb().Query(ctx, `
+		UPDATE variants SET is_deleted = false, updated_at = now()
+		WHERE id = $1
+		RETURNING `+variantColumns, pgUUID(variantID))
+	if err != nil {
+		return domain.Variant{}, err
+	}
+
+	variant, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.Variant])
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Variant{}, domain.ErrVariantNotFound
+		}
+		return domain.Variant{}, err
+	}
+
+	return variant, nil
+}
+
+// ReorderVariants bulk-updates variant positions in one transaction, guarded by
+// product_id to prevent cross-product reorder abuse.
+func (r *productRepo) ReorderVariants(ctx context.Context, productID uuid.UUID, positions []domain.PositionUpdate) error {
+
+	defer metrics.ObserveDB("product", "reorder_variants")(time.Now())
+
+	tx, err := r.db.GetDb().Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	for _, p := range positions {
+		tag, err := tx.Exec(ctx, `
+			UPDATE variants SET position = $1
+			WHERE id = $2 AND product_id = $3`,
+			p.Position, pgUUID(p.ID), pgUUID(productID),
+		)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return domain.ErrVariantNotFound
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// VariantHasHistory reports whether a variant has any stock movement history
+// (which forces soft deletion over hard deletion).
+func (r *productRepo) VariantHasHistory(ctx context.Context, variantID uuid.UUID) (bool, error) {
+
+	defer metrics.ObserveDB("product", "variant_has_history")(time.Now())
+
+	var exists bool
+	err := r.db.GetDb().QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM stock_moves sm
+			JOIN inventory_items ii ON ii.id = sm.inventory_item_id
+			WHERE ii.variant_id = $1
+		)`, pgUUID(variantID)).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+
+	return exists, nil
+}
+
+// productMediaColumns lists the columns returned by product_media queries. It
+// must stay in sync with domain.ProductMedia's db tags.
+const productMediaColumns = "id, product_id, type, url, alt_text, position, created_at, updated_at"
+
+// CreateProductMedia bulk-inserts product gallery media rows.
+func (r *productRepo) CreateProductMedia(ctx context.Context, media []domain.ProductMedia) ([]domain.ProductMedia, error) {
+
+	defer metrics.ObserveDB("product", "create_product_media")(time.Now())
+
+	if len(media) == 0 {
+		return []domain.ProductMedia{}, nil
+	}
+
+	placeholders := make([]string, 0, len(media))
+	args := make([]interface{}, 0, len(media)*6)
+	for _, m := range media {
+		n := len(args)
+		placeholders = append(placeholders, fmt.Sprintf(
+			"($%d, $%d, $%d, $%d, $%d, $%d)",
+			n+1, n+2, n+3, n+4, n+5, n+6,
+		))
+		args = append(args,
+			pgUUID(m.ID),
+			pgUUID(m.ProductID),
+			m.Type,
+			m.URL,
+			m.AltText,
+			m.Position,
+		)
+	}
+
+	query := fmt.Sprintf(`
+		INSERT INTO product_media (id, product_id, type, url, alt_text, position)
+		VALUES %s
+		RETURNING `+productMediaColumns, strings.Join(placeholders, ", "))
+
+	rows, err := r.db.GetDb().Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+
+	created, err := pgx.CollectRows(rows, pgx.RowToStructByName[domain.ProductMedia])
+	if err != nil {
+		return nil, err
+	}
+
+	// Reorder results to match input order (RETURNING order is not guaranteed).
+	byID := make(map[uuid.UUID]domain.ProductMedia, len(created))
+	for _, m := range created {
+		byID[m.ID] = m
+	}
+	ordered := make([]domain.ProductMedia, 0, len(media))
+	for _, m := range media {
+		ordered = append(ordered, byID[m.ID])
+	}
+
+	return ordered, nil
+}
+
+// UpdateProductMedia updates a media row's metadata (currently only alt_text).
+func (r *productRepo) UpdateProductMedia(ctx context.Context, mediaID uuid.UUID, altText *string) (domain.ProductMedia, error) {
+
+	defer metrics.ObserveDB("product", "update_product_media")(time.Now())
+
+	if altText == nil {
+		rows, err := r.db.GetDb().Query(ctx,
+			"SELECT "+productMediaColumns+" FROM product_media WHERE id = $1", pgUUID(mediaID))
+		if err != nil {
+			return domain.ProductMedia{}, err
+		}
+		media, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.ProductMedia])
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.ProductMedia{}, domain.ErrMediaNotFound
+			}
+			return domain.ProductMedia{}, err
+		}
+		return media, nil
+	}
+
+	rows, err := r.db.GetDb().Query(ctx, `
+		UPDATE product_media SET alt_text = $1, updated_at = now()
+		WHERE id = $2
+		RETURNING `+productMediaColumns, altText, pgUUID(mediaID))
+	if err != nil {
+		return domain.ProductMedia{}, err
+	}
+
+	media, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.ProductMedia])
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ProductMedia{}, domain.ErrMediaNotFound
+		}
+		return domain.ProductMedia{}, err
+	}
+
+	return media, nil
+}
+
+// DeleteProductMedia hard-deletes a media row and cascades its variant_media
+// links in one transaction.
+func (r *productRepo) DeleteProductMedia(ctx context.Context, mediaID uuid.UUID) error {
+
+	defer metrics.ObserveDB("product", "delete_product_media")(time.Now())
+
+	tx, err := r.db.GetDb().Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err = tx.Exec(ctx, `DELETE FROM variant_media WHERE media_id = $1`, pgUUID(mediaID)); err != nil {
+		return err
+	}
+
+	tag, err := tx.Exec(ctx, `DELETE FROM product_media WHERE id = $1`, pgUUID(mediaID))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrMediaNotFound
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// ReorderProductMedia bulk-updates product gallery media positions in one
+// transaction, guarded by product_id.
+func (r *productRepo) ReorderProductMedia(ctx context.Context, productID uuid.UUID, positions []domain.PositionUpdate) error {
+
+	defer metrics.ObserveDB("product", "reorder_product_media")(time.Now())
+
+	tx, err := r.db.GetDb().Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	for _, p := range positions {
+		tag, err := tx.Exec(ctx, `
+			UPDATE product_media SET position = $1
+			WHERE id = $2 AND product_id = $3`,
+			p.Position, pgUUID(p.ID), pgUUID(productID),
+		)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return domain.ErrMediaNotFound
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// FindMediaByID loads a single product media row by id.
+func (r *productRepo) FindMediaByID(ctx context.Context, mediaID uuid.UUID) (domain.ProductMedia, error) {
+
+	defer metrics.ObserveDB("product", "find_media_by_id")(time.Now())
+
+	rows, err := r.db.GetDb().Query(ctx, `
+		SELECT `+productMediaColumns+`
+		FROM product_media
+		WHERE id = $1`, pgUUID(mediaID))
+	if err != nil {
+		return domain.ProductMedia{}, err
+	}
+
+	media, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.ProductMedia])
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ProductMedia{}, domain.ErrMediaNotFound
+		}
+		return domain.ProductMedia{}, err
+	}
+
+	return media, nil
+}
+
+// AttachVariantMedia links an existing product media row to a variant, assigning
+// the next position within the variant's media subset.
+func (r *productRepo) AttachVariantMedia(ctx context.Context, variantID, mediaID uuid.UUID) (domain.VariantMedia, error) {
+
+	defer metrics.ObserveDB("product", "attach_variant_media")(time.Now())
+
+	rows, err := r.db.GetDb().Query(ctx, `
+		INSERT INTO variant_media (variant_id, media_id, position)
+		VALUES ($1, $2, (SELECT COALESCE(MAX(position), -1) + 1 FROM variant_media WHERE variant_id = $1))
+		RETURNING variant_id, media_id, position`,
+		pgUUID(variantID), pgUUID(mediaID))
+	if err != nil {
+		return domain.VariantMedia{}, err
+	}
+
+	link, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.VariantMedia])
+	if err != nil {
+		return domain.VariantMedia{}, err
+	}
+
+	return link, nil
+}
+
+// DetachVariantMedia removes a variant_media link only; the underlying media
+// row and file are untouched.
+func (r *productRepo) DetachVariantMedia(ctx context.Context, variantID, mediaID uuid.UUID) error {
+
+	defer metrics.ObserveDB("product", "detach_variant_media")(time.Now())
+
+	tag, err := r.db.GetDb().Exec(ctx, `
+		DELETE FROM variant_media WHERE variant_id = $1 AND media_id = $2`,
+		pgUUID(variantID), pgUUID(mediaID))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrVariantMediaNotFound
+	}
+
+	return nil
+}
+
+// ReorderVariantMedia bulk-updates positions within a single variant's media
+// subset in one transaction.
+func (r *productRepo) ReorderVariantMedia(ctx context.Context, variantID uuid.UUID, positions []domain.PositionUpdate) error {
+
+	defer metrics.ObserveDB("product", "reorder_variant_media")(time.Now())
+
+	tx, err := r.db.GetDb().Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	for _, p := range positions {
+		tag, err := tx.Exec(ctx, `
+			UPDATE variant_media SET position = $1
+			WHERE variant_id = $2 AND media_id = $3`,
+			p.Position, pgUUID(variantID), pgUUID(p.ID),
+		)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return domain.ErrVariantMediaNotFound
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	return nil
 }

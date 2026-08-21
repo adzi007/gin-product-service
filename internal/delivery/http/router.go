@@ -76,6 +76,31 @@ func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler, prod
 			products.POST("/:id/options/:option_id/values", productHandler.AddOptionValue)
 			products.PATCH("/:id/options/:option_id/values/:value_id", productHandler.UpdateOptionValue)
 			products.DELETE("/:id/options/:option_id/values/:value_id", productHandler.DeleteOptionValue)
+
+			products.POST("/:id/variants", productHandler.CreateVariant)
+			products.POST("/:id/variants/bulk", productHandler.BulkCreateVariants)
+			products.PATCH("/:id/variants/bulk", productHandler.BulkUpdateVariants)
+			products.POST("/:id/variants/bulk-delete", productHandler.BulkDeleteVariants)
+			products.PATCH("/:id/variants/reorder", productHandler.ReorderVariants)
+
+			products.POST("/:id/media", productHandler.CreateMedia)
+			// Static /reorder must be registered before the /:media_id wildcard
+			// so Gin resolves it to ReorderMedia, not UpdateMedia.
+			products.PATCH("/:id/media/reorder", productHandler.ReorderMedia)
+			products.PATCH("/:id/media/:media_id", productHandler.UpdateMedia)
+			products.DELETE("/:id/media/:media_id", productHandler.DeleteMedia)
+		}
+
+		variants := v1.Group("/variants")
+		{
+			variants.PATCH("/:id", productHandler.UpdateVariant)
+			variants.DELETE("/:id", productHandler.DeleteVariant)
+			variants.POST("/:id/restore", productHandler.RestoreVariant)
+
+			variants.POST("/:id/media", productHandler.AttachVariantMedia)
+			// Static /reorder must be registered before /:media_id.
+			variants.PATCH("/:id/media/reorder", productHandler.ReorderVariantMedia)
+			variants.DELETE("/:id/media/:media_id", productHandler.DetachVariantMedia)
 		}
 	}
 

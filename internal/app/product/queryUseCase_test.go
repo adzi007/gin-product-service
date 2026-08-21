@@ -64,6 +64,67 @@ type fakeProductRepo struct {
 	deleteOptionValueErr error
 
 	findOptionValueByIDErr error
+
+	createVariant    domain.Variant
+	createVariantErr error
+
+	createVariants    []domain.Variant
+	createVariantsErr error
+
+	findVariantByIDData domain.Variant
+	findVariantByIDErr  error
+
+	updateVariantID    uuid.UUID
+	updateVariantInput domain.UpdateVariantInput
+	updateVariantErr   error
+
+	deleteVariantID   uuid.UUID
+	deleteVariantHard bool
+	deleteVariantErr  error
+
+	bulkDeleteVariantIDs  []uuid.UUID
+	bulkDeleteVariantHard bool
+	bulkDeleteVariantsErr error
+
+	restoreVariantID  uuid.UUID
+	restoreVariantErr error
+
+	reorderVariantsProductID uuid.UUID
+	reorderVariantsPositions []domain.PositionUpdate
+	reorderVariantsErr       error
+
+	variantHasHistoryID     uuid.UUID
+	variantHasHistoryResult bool
+	variantHasHistoryErr    error
+
+	createProductMedia    []domain.ProductMedia
+	createProductMediaErr error
+
+	updateProductMediaID      uuid.UUID
+	updateProductMediaAltText *string
+	updateProductMediaErr     error
+
+	deleteProductMediaID  uuid.UUID
+	deleteProductMediaErr error
+
+	reorderProductMediaProductID uuid.UUID
+	reorderProductMediaPositions []domain.PositionUpdate
+	reorderProductMediaErr       error
+
+	findMediaByIDData domain.ProductMedia
+	findMediaByIDErr  error
+
+	attachVariantMediaVariantID uuid.UUID
+	attachVariantMediaMediaID   uuid.UUID
+	attachVariantMediaErr       error
+
+	detachVariantMediaVariantID uuid.UUID
+	detachVariantMediaMediaID   uuid.UUID
+	detachVariantMediaErr       error
+
+	reorderVariantMediaVariantID uuid.UUID
+	reorderVariantMediaPositions []domain.PositionUpdate
+	reorderVariantMediaErr       error
 }
 
 func (f *fakeProductRepo) Create(ctx context.Context, params domain.CreateProductParams) (domain.Product, error) {
@@ -178,6 +239,131 @@ func (f *fakeProductRepo) FindOptionValueByID(ctx context.Context, valueID uuid.
 		return domain.ProductOptionValue{}, f.findOptionValueByIDErr
 	}
 	return domain.ProductOptionValue{ID: valueID}, nil
+}
+
+func (f *fakeProductRepo) CreateVariant(ctx context.Context, variant domain.Variant) (domain.Variant, error) {
+	f.createVariant = variant
+	if f.createVariantErr != nil {
+		return domain.Variant{}, f.createVariantErr
+	}
+	return variant, nil
+}
+
+func (f *fakeProductRepo) CreateVariants(ctx context.Context, variants []domain.Variant) ([]domain.Variant, error) {
+	f.createVariants = variants
+	if f.createVariantsErr != nil {
+		return nil, f.createVariantsErr
+	}
+	return variants, nil
+}
+
+func (f *fakeProductRepo) FindVariantByID(ctx context.Context, variantID uuid.UUID) (domain.Variant, error) {
+	if f.findVariantByIDErr != nil {
+		return domain.Variant{}, f.findVariantByIDErr
+	}
+	if f.findVariantByIDData.ID != uuid.Nil {
+		return f.findVariantByIDData, nil
+	}
+	return domain.Variant{ID: variantID}, nil
+}
+
+func (f *fakeProductRepo) UpdateVariant(ctx context.Context, variantID uuid.UUID, input domain.UpdateVariantInput) (domain.Variant, error) {
+	f.updateVariantID = variantID
+	f.updateVariantInput = input
+	if f.updateVariantErr != nil {
+		return domain.Variant{}, f.updateVariantErr
+	}
+	return domain.Variant{ID: variantID}, nil
+}
+
+func (f *fakeProductRepo) DeleteVariant(ctx context.Context, variantID uuid.UUID, hard bool) error {
+	f.deleteVariantID = variantID
+	f.deleteVariantHard = hard
+	return f.deleteVariantErr
+}
+
+func (f *fakeProductRepo) BulkDeleteVariants(ctx context.Context, variantIDs []uuid.UUID, hard bool) error {
+	f.bulkDeleteVariantIDs = variantIDs
+	f.bulkDeleteVariantHard = hard
+	return f.bulkDeleteVariantsErr
+}
+
+func (f *fakeProductRepo) RestoreVariant(ctx context.Context, variantID uuid.UUID) (domain.Variant, error) {
+	f.restoreVariantID = variantID
+	if f.restoreVariantErr != nil {
+		return domain.Variant{}, f.restoreVariantErr
+	}
+	return domain.Variant{ID: variantID}, nil
+}
+
+func (f *fakeProductRepo) ReorderVariants(ctx context.Context, productID uuid.UUID, positions []domain.PositionUpdate) error {
+	f.reorderVariantsProductID = productID
+	f.reorderVariantsPositions = positions
+	return f.reorderVariantsErr
+}
+
+func (f *fakeProductRepo) VariantHasHistory(ctx context.Context, variantID uuid.UUID) (bool, error) {
+	f.variantHasHistoryID = variantID
+	return f.variantHasHistoryResult, f.variantHasHistoryErr
+}
+
+func (f *fakeProductRepo) CreateProductMedia(ctx context.Context, media []domain.ProductMedia) ([]domain.ProductMedia, error) {
+	f.createProductMedia = media
+	if f.createProductMediaErr != nil {
+		return nil, f.createProductMediaErr
+	}
+	return media, nil
+}
+
+func (f *fakeProductRepo) UpdateProductMedia(ctx context.Context, mediaID uuid.UUID, altText *string) (domain.ProductMedia, error) {
+	f.updateProductMediaID = mediaID
+	f.updateProductMediaAltText = altText
+	if f.updateProductMediaErr != nil {
+		return domain.ProductMedia{}, f.updateProductMediaErr
+	}
+	return domain.ProductMedia{ID: mediaID, AltText: altText}, nil
+}
+
+func (f *fakeProductRepo) DeleteProductMedia(ctx context.Context, mediaID uuid.UUID) error {
+	f.deleteProductMediaID = mediaID
+	return f.deleteProductMediaErr
+}
+
+func (f *fakeProductRepo) ReorderProductMedia(ctx context.Context, productID uuid.UUID, positions []domain.PositionUpdate) error {
+	f.reorderProductMediaProductID = productID
+	f.reorderProductMediaPositions = positions
+	return f.reorderProductMediaErr
+}
+
+func (f *fakeProductRepo) FindMediaByID(ctx context.Context, mediaID uuid.UUID) (domain.ProductMedia, error) {
+	if f.findMediaByIDErr != nil {
+		return domain.ProductMedia{}, f.findMediaByIDErr
+	}
+	if f.findMediaByIDData.ID != uuid.Nil {
+		return f.findMediaByIDData, nil
+	}
+	return domain.ProductMedia{ID: mediaID}, nil
+}
+
+func (f *fakeProductRepo) AttachVariantMedia(ctx context.Context, variantID, mediaID uuid.UUID) (domain.VariantMedia, error) {
+	f.attachVariantMediaVariantID = variantID
+	f.attachVariantMediaMediaID = mediaID
+	if f.attachVariantMediaErr != nil {
+		return domain.VariantMedia{}, f.attachVariantMediaErr
+	}
+	return domain.VariantMedia{VariantID: variantID, MediaID: mediaID}, nil
+}
+
+func (f *fakeProductRepo) DetachVariantMedia(ctx context.Context, variantID, mediaID uuid.UUID) error {
+	f.detachVariantMediaVariantID = variantID
+	f.detachVariantMediaMediaID = mediaID
+	return f.detachVariantMediaErr
+}
+
+func (f *fakeProductRepo) ReorderVariantMedia(ctx context.Context, variantID uuid.UUID, positions []domain.PositionUpdate) error {
+	f.reorderVariantMediaVariantID = variantID
+	f.reorderVariantMediaPositions = positions
+	return f.reorderVariantMediaErr
 }
 
 var _ domain.ProductRepository = (*fakeProductRepo)(nil)
