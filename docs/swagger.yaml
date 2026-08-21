@@ -56,6 +56,13 @@ definitions:
         items:
           $ref: '#/definitions/domain.ProductOptionInput'
         type: array
+      status:
+        allOf:
+        - $ref: '#/definitions/domain.ProductStatus'
+        enum:
+        - draft
+        - active
+        - archived
       title:
         type: string
       variants:
@@ -119,8 +126,8 @@ definitions:
     type: object
   domain.Product:
     properties:
-      category_id:
-        type: integer
+      category:
+        $ref: '#/definitions/domain.ProductCategory'
       created_at:
         type: string
       description:
@@ -137,6 +144,12 @@ definitions:
         items:
           $ref: '#/definitions/domain.ProductOption'
         type: array
+      prices:
+        $ref: '#/definitions/domain.ProductPrices'
+      status:
+        $ref: '#/definitions/domain.ProductStatus'
+      thumbnail:
+        $ref: '#/definitions/domain.ProductThumbnail'
       title:
         type: string
       updated_at:
@@ -146,6 +159,13 @@ definitions:
           $ref: '#/definitions/domain.Variant'
         type: array
       vendor:
+        type: string
+    type: object
+  domain.ProductCategory:
+    properties:
+      name:
+        type: string
+      slug:
         type: string
     type: object
   domain.ProductMedia:
@@ -207,6 +227,32 @@ definitions:
       value:
         type: string
     type: object
+  domain.ProductPrices:
+    properties:
+      maxPrice:
+        type: number
+      startPrice:
+        type: number
+    type: object
+  domain.ProductStatus:
+    enum:
+    - draft
+    - active
+    - archived
+    type: string
+    x-enum-varnames:
+    - ProductStatusDraft
+    - ProductStatusActive
+    - ProductStatusArchived
+  domain.ProductThumbnail:
+    properties:
+      altText:
+        type: string
+      type:
+        type: string
+      url:
+        type: string
+    type: object
   domain.UpdateCategoryInput:
     properties:
       description:
@@ -241,6 +287,13 @@ definitions:
         type: string
       sku:
         type: string
+      stock:
+        description: |-
+          Stock is the total available quantity across all inventory levels for
+          this variant. It is computed (not stored) and only populated on the
+          single-product detail path.
+          Stock decimal.Decimal `json:"stock" db:"stock"`
+        type: integer
       title:
         type: string
       updated_at:
@@ -522,9 +575,18 @@ paths:
     get:
       description: Get a paginated, filterable list of products
       parameters:
-      - description: Filter by partial (case-insensitive) title or handle match
+      - description: Filter by partial (case-insensitive) title, handle or category
+          name match
         in: query
         name: search
+        type: string
+      - description: Filter by category ID (0 means no filter)
+        in: query
+        name: category_id
+        type: integer
+      - description: 'Filter by status. One of: draft, active, archived'
+        in: query
+        name: status
         type: string
       - description: Page number (1-indexed)
         in: query
@@ -534,7 +596,7 @@ paths:
         in: query
         name: per_page
         type: integer
-      - description: 'Sort column. One of: title, created_at'
+      - description: 'Sort column. One of: title, created_at, category_name'
         in: query
         name: sort_by
         type: string

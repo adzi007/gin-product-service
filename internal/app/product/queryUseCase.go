@@ -37,6 +37,10 @@ func (uc *queryProductUc) FindAll(ctx context.Context, params domain.ListProduct
 		params.SortDir = "desc"
 	}
 
+	if params.Status != "" && !isValidProductStatus(domain.ProductStatus(params.Status)) {
+		return domain.PaginatedProducts{}, domain.ErrProductInvalidStatus
+	}
+
 	data, total, err := uc.productRepo.FindAll(ctx, params)
 	if err != nil {
 		logger.L(ctx).Error("find all products failed", zap.Error(err))

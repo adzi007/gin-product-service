@@ -357,8 +357,20 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Filter by partial (case-insensitive) title or handle match",
+                        "description": "Filter by partial (case-insensitive) title, handle or category name match",
                         "name": "search",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Filter by category ID (0 means no filter)",
+                        "name": "category_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by status. One of: draft, active, archived",
+                        "name": "status",
                         "in": "query"
                     },
                     {
@@ -375,7 +387,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Sort column. One of: title, created_at",
+                        "description": "Sort column. One of: title, created_at, category_name",
                         "name": "sort_by",
                         "in": "query"
                     },
@@ -600,6 +612,18 @@ const docTemplate = `{
                         "$ref": "#/definitions/domain.ProductOptionInput"
                     }
                 },
+                "status": {
+                    "enum": [
+                        "draft",
+                        "active",
+                        "archived"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/domain.ProductStatus"
+                        }
+                    ]
+                },
                 "title": {
                     "type": "string"
                 },
@@ -688,8 +712,8 @@ const docTemplate = `{
         "domain.Product": {
             "type": "object",
             "properties": {
-                "category_id": {
-                    "type": "integer"
+                "category": {
+                    "$ref": "#/definitions/domain.ProductCategory"
                 },
                 "created_at": {
                     "type": "string"
@@ -715,6 +739,15 @@ const docTemplate = `{
                         "$ref": "#/definitions/domain.ProductOption"
                     }
                 },
+                "prices": {
+                    "$ref": "#/definitions/domain.ProductPrices"
+                },
+                "status": {
+                    "$ref": "#/definitions/domain.ProductStatus"
+                },
+                "thumbnail": {
+                    "$ref": "#/definitions/domain.ProductThumbnail"
+                },
                 "title": {
                     "type": "string"
                 },
@@ -728,6 +761,17 @@ const docTemplate = `{
                     }
                 },
                 "vendor": {
+                    "type": "string"
+                }
+            }
+        },
+        "domain.ProductCategory": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "slug": {
                     "type": "string"
                 }
             }
@@ -821,6 +865,44 @@ const docTemplate = `{
                 }
             }
         },
+        "domain.ProductPrices": {
+            "type": "object",
+            "properties": {
+                "maxPrice": {
+                    "type": "number"
+                },
+                "startPrice": {
+                    "type": "number"
+                }
+            }
+        },
+        "domain.ProductStatus": {
+            "type": "string",
+            "enum": [
+                "draft",
+                "active",
+                "archived"
+            ],
+            "x-enum-varnames": [
+                "ProductStatusDraft",
+                "ProductStatusActive",
+                "ProductStatusArchived"
+            ]
+        },
+        "domain.ProductThumbnail": {
+            "type": "object",
+            "properties": {
+                "altText": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
         "domain.UpdateCategoryInput": {
             "type": "object",
             "required": [
@@ -870,6 +952,10 @@ const docTemplate = `{
                 },
                 "sku": {
                     "type": "string"
+                },
+                "stock": {
+                    "description": "Stock is the total available quantity across all inventory levels for\nthis variant. It is computed (not stored) and only populated on the\nsingle-product detail path.\nStock decimal.Decimal ` + "`" + `json:\"stock\" db:\"stock\"` + "`" + `",
+                    "type": "integer"
                 },
                 "title": {
                     "type": "string"

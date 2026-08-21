@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"gin-product-service/internal/domain"
@@ -55,8 +56,8 @@ func (r *productRepo) Create(ctx context.Context, params domain.CreateProductPar
 	// var createdAt, updatedAt time.Time
 	var createdAt time.Time
 	err = tx.QueryRow(ctx, `
-		INSERT INTO products (id, handle, title, description, vendor, category_id)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO products (id, handle, title, description, vendor, category_id, status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING created_at`,
 		pgUUID(product.ID),
 		product.Handle,
@@ -64,6 +65,7 @@ func (r *productRepo) Create(ctx context.Context, params domain.CreateProductPar
 		product.Description,
 		product.Vendor,
 		product.CategoryID,
+		string(product.Status),
 	).Scan(&createdAt)
 	if err != nil {
 		return domain.Product{}, translateCreateError(err)
@@ -207,19 +209,39 @@ func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductPara
 	defer metrics.ObserveDB("product", "find_all")(time.Now())
 
 	// Build the base conditions. sort_by / sort_dir are whitelisted below
-	// (defense in depth) so they never come from raw user input.
-	where := ""
+	conditions := []string{}
 	args := []interface{}{}
 	argIdx := 0
 
 	if params.Search != "" {
 		argIdx++
 		args = append(args, "%"+params.Search+"%")
-		where = fmt.Sprintf(" WHERE (products.title ILIKE $%d OR products.handle ILIKE $%d)", argIdx, argIdx)
+		conditions = append(conditions, fmt.Sprintf(
+			"(products.title ILIKE $%d OR products.handle ILIKE $%d OR category.name ILIKE $%d)",
+			argIdx, argIdx, argIdx,
+		))
 	}
 
-	// total count matching filters (before pagination)
-	countQuery := "SELECT COUNT(*) FROM products " + where
+	if params.CategoryID > 0 {
+		argIdx++
+		args = append(args, params.CategoryID)
+		conditions = append(conditions, fmt.Sprintf("products.category_id = $%d", argIdx))
+	}
+
+	if params.Status != "" {
+		argIdx++
+		args = append(args, params.Status)
+		conditions = append(conditions, fmt.Sprintf("products.status = $%d", argIdx))
+	}
+
+	where := ""
+	if len(conditions) > 0 {
+		where = " WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	// total count matching filters (before pagination). The category join is
+	// required because the search condition can reference category.name.
+	countQuery := "SELECT COUNT(*) FROM products LEFT JOIN category ON products.category_id = category.id" + where
 	var total int
 	if err := r.db.GetDb().QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, err
@@ -229,6 +251,8 @@ func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductPara
 	sortBy := "products.created_at"
 	if params.SortBy == "title" {
 		sortBy = "products.title"
+	} else if params.SortBy == "category_name" {
+		sortBy = "category.name"
 	}
 
 	sortDir := "DESC"
@@ -243,6 +267,7 @@ func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductPara
 			products.id,
 			products.handle,
 			products.title,
+			products.status,
 			products.description,
 			products.vendor,
 			products.category_id,
@@ -337,6 +362,7 @@ func (r *productRepo) findProductBy(ctx context.Context, predicate string, arg i
 			products.id,
 			products.handle,
 			products.title,
+			products.status,
 			products.description,
 			products.vendor,
 			products.category_id,

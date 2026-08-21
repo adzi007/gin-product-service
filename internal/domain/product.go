@@ -21,11 +21,21 @@ const (
 	StockMoveUnreserve StockMoveType = "UNRESERVE"
 )
 
+// ProductStatus enumerates the allowed product lifecycle states.
+type ProductStatus string
+
+const (
+	ProductStatusDraft    ProductStatus = "draft"
+	ProductStatusActive   ProductStatus = "active"
+	ProductStatusArchived ProductStatus = "archived"
+)
+
 // Product is the catalog master record.
 type Product struct {
 	ID          uuid.UUID         `json:"id" db:"id"`
 	Handle      string            `json:"handle" db:"handle"`
 	Title       string            `json:"title" db:"title"`
+	Status      ProductStatus     `json:"status" db:"status"`
 	Thumbnail   *ProductThumbnail `json:"thumbnail" db:"-"`
 	Description *string           `json:"description,omitempty" db:"description"`
 	Vendor      *string           `json:"vendor,omitempty" db:"vendor"`
@@ -175,6 +185,9 @@ var (
 	ErrDefaultLocationNotFound = errors.New("default location not configured")
 	// ErrProductNotFound is returned when no product matches the given id/handle.
 	ErrProductNotFound = errors.New("product not found")
+	// ErrProductInvalidStatus is returned when an unrecognized product status
+	// string is passed to the use case or handler.
+	ErrProductInvalidStatus = errors.New("invalid product status")
 )
 
 // CreateProductParams carries everything the repository needs to persist a new
@@ -193,13 +206,17 @@ type InsertProductUseCase interface {
 }
 
 // ListProductParams carries filter/pagination/sort input for listing products.
-// Mirrors domain.ListCategoryParams in category.go — keep field names consistent.
+// Search/CategoryID/Status are product-specific; the Page/PerPage/SortBy/SortDir
+// fields mirror domain.ListCategoryParams in category.go — keep those field
+// names consistent.
 type ListProductParams struct {
-	Search  string // matches against title and handle via ILIKE
-	Page    int
-	PerPage int
-	SortBy  string // whitelisted: "title", "created_at"
-	SortDir string // "asc" | "desc"
+	Search     string // matches against title, handle and category name via ILIKE
+	CategoryID int    // product-specific: 0 means "no filter"
+	Status     string // product-specific: empty means "no filter"; whitelisted: "draft", "active", "archived"
+	Page       int
+	PerPage    int
+	SortBy     string // whitelisted: "title", "created_at", "category_name"
+	SortDir    string // "asc" | "desc"
 }
 
 // PaginatedProducts carries the page data plus pagination metadata.
@@ -233,6 +250,7 @@ type CreateProductInput struct {
 	Description *string              `json:"description"`
 	Vendor      *string              `json:"vendor"`
 	CategoryID  int                  `json:"categoryId" binding:"required" validate:"required,gt=0"`
+	Status      *ProductStatus       `json:"status" binding:"omitempty" validate:"omitempty,oneof=draft active archived"`
 	Options     []ProductOptionInput `json:"options" validate:"dive"`
 	Variants    []VariantInput       `json:"variants" binding:"required" validate:"required,min=1,dive"`
 	Gallery     []GalleryMediaInput  `json:"gallery" validate:"dive"`

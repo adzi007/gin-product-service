@@ -85,11 +85,13 @@ func (h *ProductHandler) Create(c *gin.Context) {
 // @Description  Get a paginated, filterable list of products
 // @Tags         products
 // @Produce      json
-// @Param        search   query string false "Filter by partial (case-insensitive) title or handle match"
-// @Param        page     query int    false "Page number (1-indexed)"
-// @Param        per_page query int    false "Items per page"
-// @Param        sort_by  query string false "Sort column. One of: title, created_at"
-// @Param        sort_dir query string false "Sort direction. One of: asc, desc"
+// @Param        search      query string false "Filter by partial (case-insensitive) title, handle or category name match"
+// @Param        category_id query int    false "Filter by category ID (0 means no filter)"
+// @Param        status      query string false "Filter by status. One of: draft, active, archived"
+// @Param        page        query int    false "Page number (1-indexed)"
+// @Param        per_page    query int    false "Items per page"
+// @Param        sort_by     query string false "Sort column. One of: title, created_at, category_name"
+// @Param        sort_dir    query string false "Sort direction. One of: asc, desc"
 // @Success      200      {object} domain.PaginatedProducts
 // @Failure      400      {object} map[string]any
 // @Failure      500      {object} map[string]any
@@ -100,13 +102,20 @@ func (h *ProductHandler) Fetch(c *gin.Context) {
 
 	page, _ := strconv.Atoi(c.Query("page"))
 	perPage, _ := strconv.Atoi(c.Query("per_page"))
+	categoryID, _ := strconv.Atoi(c.Query("category_id"))
+
+	status := strings.ToLower(c.Query("status"))
+	if status != "" && status != "draft" && status != "active" && status != "archived" {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", "invalid status: must be one of draft, active, archived"))
+		return
+	}
 
 	sortBy := strings.ToLower(c.Query("sort_by"))
 	if sortBy == "" {
 		sortBy = "created_at"
 	}
-	if sortBy != "title" && sortBy != "created_at" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid sort_by: must be one of title, created_at"})
+	if sortBy != "title" && sortBy != "created_at" && sortBy != "category_name" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid sort_by: must be one of title, created_at, category_name"})
 		return
 	}
 
@@ -120,11 +129,13 @@ func (h *ProductHandler) Fetch(c *gin.Context) {
 	}
 
 	params := domain.ListProductParams{
-		Search:  c.Query("search"),
-		Page:    page,
-		PerPage: perPage,
-		SortBy:  sortBy,
-		SortDir: sortDir,
+		Search:     c.Query("search"),
+		CategoryID: categoryID,
+		Status:     status,
+		Page:       page,
+		PerPage:    perPage,
+		SortBy:     sortBy,
+		SortDir:    sortDir,
 	}
 
 	data, err := h.queryUseCase.FindAll(ctx, params)
@@ -212,14 +223,15 @@ func mapProductError(err error) (int, string) {
 }
 
 type productData struct {
-	ID         uuid.UUID           `json:"id"`
-	Handle     string              `json:"handle"`
-	Title      string              `json:"title"`
-	Vendor     *string             `json:"vendor,omitempty"`
-	CategoryID int                 `json:"category_id"`
-	Options    []productOptionData `json:"options"`
-	Variants   []variantData       `json:"variants"`
-	CreatedAt  time.Time           `json:"created_at"`
+	ID         uuid.UUID            `json:"id"`
+	Handle     string               `json:"handle"`
+	Title      string               `json:"title"`
+	Status     domain.ProductStatus `json:"status"`
+	Vendor     *string              `json:"vendor,omitempty"`
+	CategoryID int                  `json:"category_id"`
+	Options    []productOptionData  `json:"options"`
+	Variants   []variantData        `json:"variants"`
+	CreatedAt  time.Time            `json:"created_at"`
 }
 
 type productOptionData struct {
@@ -254,14 +266,15 @@ type productCategoryData struct {
 // Unlike productData (used by Create), it exposes a nested category object
 // instead of category_id and adds per-variant stock.
 type productDetailData struct {
-	ID        uuid.UUID           `json:"id"`
-	Handle    string              `json:"handle"`
-	Title     string              `json:"title"`
-	Vendor    *string             `json:"vendor,omitempty"`
-	Category  productCategoryData `json:"category"`
-	Options   []productOptionData `json:"options"`
-	Variants  []variantDetailData `json:"variants"`
-	CreatedAt time.Time           `json:"created_at"`
+	ID        uuid.UUID            `json:"id"`
+	Handle    string               `json:"handle"`
+	Title     string               `json:"title"`
+	Status    domain.ProductStatus `json:"status"`
+	Vendor    *string              `json:"vendor,omitempty"`
+	Category  productCategoryData  `json:"category"`
+	Options   []productOptionData  `json:"options"`
+	Variants  []variantDetailData  `json:"variants"`
+	CreatedAt time.Time            `json:"created_at"`
 }
 
 type variantDetailData struct {
@@ -284,6 +297,7 @@ func toProductData(p domain.Product) productData {
 		ID:         p.ID,
 		Handle:     p.Handle,
 		Title:      p.Title,
+		Status:     p.Status,
 		Vendor:     p.Vendor,
 		CategoryID: p.CategoryID,
 		Options:    make([]productOptionData, 0, len(p.Options)),
@@ -340,6 +354,7 @@ func toProductDetailData(p domain.Product) productDetailData {
 		ID:        p.ID,
 		Handle:    p.Handle,
 		Title:     p.Title,
+		Status:    p.Status,
 		Vendor:    p.Vendor,
 		Category:  productCategoryData{Slug: p.Category.Slug, Name: p.Category.Name},
 		Options:   make([]productOptionData, 0, len(p.Options)),

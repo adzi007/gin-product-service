@@ -154,10 +154,16 @@ func (uc *insertProductUc) Create(ctx context.Context, input domain.CreateProduc
 		})
 	}
 
+	status := domain.ProductStatusDraft
+	if input.Status != nil {
+		status = *input.Status
+	}
+
 	product := domain.Product{
 		ID:          productID,
 		Handle:      input.Handle,
 		Title:       input.Title,
+		Status:      status,
 		Description: input.Description,
 		Vendor:      input.Vendor,
 		CategoryID:  input.CategoryID,
@@ -191,6 +197,9 @@ func validateCreateInput(input domain.CreateProductInput) error {
 	if input.CategoryID <= 0 {
 		return domain.ErrProductInvalidInput
 	}
+	if input.Status != nil && !isValidProductStatus(*input.Status) {
+		return domain.ErrProductInvalidStatus
+	}
 	if len(input.Variants) == 0 {
 		return domain.ErrProductInvalidInput
 	}
@@ -223,6 +232,16 @@ func validateCreateInput(input domain.CreateProductInput) error {
 	}
 
 	return nil
+}
+
+// isValidProductStatus reports whether s is one of the allowed product statuses.
+func isValidProductStatus(s domain.ProductStatus) bool {
+	switch s {
+	case domain.ProductStatusDraft, domain.ProductStatusActive, domain.ProductStatusArchived:
+		return true
+	default:
+		return false
+	}
 }
 
 // buildVariantOptionsJSON produces the variants.options JSONB payload from the
