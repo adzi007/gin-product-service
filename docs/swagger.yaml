@@ -40,6 +40,29 @@ definitions:
     required:
     - name
     type: object
+  domain.CreateOptionInput:
+    properties:
+      name:
+        type: string
+      values:
+        items:
+          type: string
+        minItems: 1
+        type: array
+    required:
+    - name
+    - values
+    type: object
+  domain.CreateOptionValueInput:
+    properties:
+      position:
+        minimum: 0
+        type: integer
+      value:
+        type: string
+    required:
+    - value
+    type: object
   domain.CreateProductInput:
     properties:
       categoryId:
@@ -123,6 +146,16 @@ definitions:
         type: integer
       total_pages:
         type: integer
+    type: object
+  domain.PositionUpdate:
+    properties:
+      id:
+        type: string
+      position:
+        minimum: 0
+        type: integer
+    required:
+    - id
     type: object
   domain.Product:
     properties:
@@ -253,6 +286,16 @@ definitions:
       url:
         type: string
     type: object
+  domain.ReorderOptionsInput:
+    properties:
+      positions:
+        items:
+          $ref: '#/definitions/domain.PositionUpdate'
+        minItems: 1
+        type: array
+    required:
+    - positions
+    type: object
   domain.UpdateCategoryInput:
     properties:
       description:
@@ -266,6 +309,41 @@ definitions:
         type: string
     required:
     - name
+    type: object
+  domain.UpdateOptionInput:
+    properties:
+      name:
+        type: string
+    required:
+    - name
+    type: object
+  domain.UpdateOptionValueInput:
+    properties:
+      position:
+        minimum: 0
+        type: integer
+      value:
+        type: string
+    type: object
+  domain.UpdateProductInput:
+    properties:
+      categoryId:
+        type: integer
+      description:
+        type: string
+      handle:
+        type: string
+      status:
+        allOf:
+        - $ref: '#/definitions/domain.ProductStatus'
+        enum:
+        - draft
+        - active
+        - archived
+      title:
+        type: string
+      vendor:
+        type: string
     type: object
   domain.Variant:
     properties:
@@ -663,6 +741,40 @@ paths:
       tags:
       - products
   /products/{id}:
+    delete:
+      description: Soft-delete a product by setting its status to archived
+      parameters:
+      - description: Product UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Archive a product (soft delete)
+      tags:
+      - products
     get:
       description: Get a single product (with options, variants and media) by UUID
         or handle
@@ -691,6 +803,453 @@ paths:
             additionalProperties: true
             type: object
       summary: Get a product by ID or handle
+      tags:
+      - products
+    patch:
+      consumes:
+      - application/json
+      description: Update product header fields only (title, description, vendor,
+        handle, categoryId, status). Omitted fields are left unchanged.
+      parameters:
+      - description: Product UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Fields to update
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/domain.UpdateProductInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Update a product
+      tags:
+      - products
+  /products/{id}/options:
+    post:
+      consumes:
+      - application/json
+      description: Create a new option with its initial values for a product
+      parameters:
+      - description: Product UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Option to create
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/domain.CreateOptionInput'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Create a product option
+      tags:
+      - products
+  /products/{id}/options/{option_id}:
+    delete:
+      description: Remove an option and all of its values from a product
+      parameters:
+      - description: Product UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Option UUID
+        in: path
+        name: option_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Delete a product option
+      tags:
+      - products
+    patch:
+      consumes:
+      - application/json
+      description: Rename an existing option on a product
+      parameters:
+      - description: Product UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Option UUID
+        in: path
+        name: option_id
+        required: true
+        type: string
+      - description: New option name
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/domain.UpdateOptionInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Rename a product option
+      tags:
+      - products
+  /products/{id}/options/{option_id}/values:
+    post:
+      consumes:
+      - application/json
+      description: Add a new value to an existing option
+      parameters:
+      - description: Product UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Option UUID
+        in: path
+        name: option_id
+        required: true
+        type: string
+      - description: Value to add
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/domain.CreateOptionValueInput'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Add an option value
+      tags:
+      - products
+  /products/{id}/options/{option_id}/values/{value_id}:
+    delete:
+      description: Remove a single value from an option
+      parameters:
+      - description: Product UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Option UUID
+        in: path
+        name: option_id
+        required: true
+        type: string
+      - description: Option value UUID
+        in: path
+        name: value_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Delete an option value
+      tags:
+      - products
+    patch:
+      consumes:
+      - application/json
+      description: Rename or reorder a single option value
+      parameters:
+      - description: Product UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Option UUID
+        in: path
+        name: option_id
+        required: true
+        type: string
+      - description: Option value UUID
+        in: path
+        name: value_id
+        required: true
+        type: string
+      - description: Fields to update
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/domain.UpdateOptionValueInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Update an option value
+      tags:
+      - products
+  /products/{id}/options/reorder:
+    patch:
+      consumes:
+      - application/json
+      description: Bulk-update the positions of a product's options
+      parameters:
+      - description: Product UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: New positions
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/domain.ReorderOptionsInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Reorder product options
+      tags:
+      - products
+  /products/{id}/purge:
+    delete:
+      description: Hard-delete a product and its related rows. Blocked (409) when
+        the product has stock movement history.
+      parameters:
+      - description: Product UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Permanently delete a product
+      tags:
+      - products
+  /products/{id}/restore:
+    post:
+      description: Un-archive a product by setting its status back to active
+      parameters:
+      - description: Product UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Restore an archived product
       tags:
       - products
 swagger: "2.0"

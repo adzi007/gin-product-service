@@ -18,12 +18,24 @@ import (
 type ProductHandler struct {
 	insertUseCase domain.InsertProductUseCase
 	queryUseCase  domain.QueryProductUseCase
+	updateUseCase domain.UpdateProductUseCase
+	deleteUseCase domain.DeleteProductUseCase
+	optionUseCase domain.OptionUseCase
 }
 
-func NewProductHandler(insertUseCase domain.InsertProductUseCase, queryUseCase domain.QueryProductUseCase) *ProductHandler {
+func NewProductHandler(
+	insertUseCase domain.InsertProductUseCase,
+	queryUseCase domain.QueryProductUseCase,
+	updateUseCase domain.UpdateProductUseCase,
+	deleteUseCase domain.DeleteProductUseCase,
+	optionUseCase domain.OptionUseCase,
+) *ProductHandler {
 	return &ProductHandler{
 		insertUseCase: insertUseCase,
 		queryUseCase:  queryUseCase,
+		updateUseCase: updateUseCase,
+		deleteUseCase: deleteUseCase,
+		optionUseCase: optionUseCase,
 	}
 }
 
@@ -195,6 +207,543 @@ func (h *ProductHandler) GetByID(c *gin.Context) {
 	})
 }
 
+// Update godoc
+// @Summary      Update a product
+// @Description  Update product header fields only (title, description, vendor, handle, categoryId, status). Omitted fields are left unchanged.
+// @Tags         products
+// @Accept       json
+// @Produce      json
+// @Param        id   path string true "Product UUID"
+// @Param        body body domain.UpdateProductInput true "Fields to update"
+// @Success      200  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      409  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /products/{id} [patch]
+func (h *ProductHandler) Update(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	var input domain.UpdateProductInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	if err := validate.Struct(input); err != nil {
+		if fieldErrs, ok := err.(validator.ValidationErrors); ok {
+			details := make([]string, 0, len(fieldErrs))
+			for _, fe := range fieldErrs {
+				details = append(details, fieldValidationMessage(fe))
+			}
+			c.JSON(http.StatusBadRequest, gin.H{
+				"status":  "error",
+				"code":    "ERR_VALIDATION",
+				"message": "validation failed",
+				"details": details,
+			})
+			return
+		}
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	updated, err := h.updateUseCase.Update(ctx, id, input)
+	if err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   toProductData(updated),
+	})
+}
+
+// Archive godoc
+// @Summary      Archive a product (soft delete)
+// @Description  Soft-delete a product by setting its status to archived
+// @Tags         products
+// @Produce      json
+// @Param        id path string true "Product UUID"
+// @Success      200  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /products/{id} [delete]
+func (h *ProductHandler) Archive(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	if err := h.updateUseCase.Archive(ctx, id); err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "Product archived",
+	})
+}
+
+// Restore godoc
+// @Summary      Restore an archived product
+// @Description  Un-archive a product by setting its status back to active
+// @Tags         products
+// @Produce      json
+// @Param        id path string true "Product UUID"
+// @Success      200  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /products/{id}/restore [post]
+func (h *ProductHandler) Restore(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	if err := h.updateUseCase.Restore(ctx, id); err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "Product restored",
+	})
+}
+
+// Purge godoc
+// @Summary      Permanently delete a product
+// @Description  Hard-delete a product and its related rows. Blocked (409) when the product has stock movement history.
+// @Tags         products
+// @Produce      json
+// @Param        id path string true "Product UUID"
+// @Success      200  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      409  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /products/{id}/purge [delete]
+func (h *ProductHandler) Purge(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	if err := h.deleteUseCase.Purge(ctx, id); err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "Product permanently deleted",
+	})
+}
+
+// CreateOption godoc
+// @Summary      Create a product option
+// @Description  Create a new option with its initial values for a product
+// @Tags         products
+// @Accept       json
+// @Produce      json
+// @Param        id   path string true "Product UUID"
+// @Param        body body domain.CreateOptionInput true "Option to create"
+// @Success      201  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      409  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /products/{id}/options [post]
+func (h *ProductHandler) CreateOption(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	var input domain.CreateOptionInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	if err := validate.Struct(input); err != nil {
+		if fieldErrs, ok := err.(validator.ValidationErrors); ok {
+			details := make([]string, 0, len(fieldErrs))
+			for _, fe := range fieldErrs {
+				details = append(details, fieldValidationMessage(fe))
+			}
+			c.JSON(http.StatusBadRequest, gin.H{
+				"status":  "error",
+				"code":    "ERR_VALIDATION",
+				"message": "validation failed",
+				"details": details,
+			})
+			return
+		}
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	created, err := h.optionUseCase.Create(ctx, id, input)
+	if err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"status": "success",
+		"data":   toProductOptionData(created),
+	})
+}
+
+// RenameOption godoc
+// @Summary      Rename a product option
+// @Description  Rename an existing option on a product
+// @Tags         products
+// @Accept       json
+// @Produce      json
+// @Param        id        path string true "Product UUID"
+// @Param        option_id path string true "Option UUID"
+// @Param        body      body domain.UpdateOptionInput true "New option name"
+// @Success      200  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /products/{id}/options/{option_id} [patch]
+func (h *ProductHandler) RenameOption(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+	optionID, ok := parseUUID(c, "option_id")
+	if !ok {
+		return
+	}
+
+	var input domain.UpdateOptionInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	if err := validate.Struct(input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	renamed, err := h.optionUseCase.Rename(ctx, id, optionID, input)
+	if err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   toProductOptionData(renamed),
+	})
+}
+
+// DeleteOption godoc
+// @Summary      Delete a product option
+// @Description  Remove an option and all of its values from a product
+// @Tags         products
+// @Produce      json
+// @Param        id        path string true "Product UUID"
+// @Param        option_id path string true "Option UUID"
+// @Success      200  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /products/{id}/options/{option_id} [delete]
+func (h *ProductHandler) DeleteOption(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+	optionID, ok := parseUUID(c, "option_id")
+	if !ok {
+		return
+	}
+
+	if err := h.optionUseCase.Delete(ctx, id, optionID); err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "Option deleted",
+	})
+}
+
+// ReorderOptions godoc
+// @Summary      Reorder product options
+// @Description  Bulk-update the positions of a product's options
+// @Tags         products
+// @Accept       json
+// @Produce      json
+// @Param        id   path string true "Product UUID"
+// @Param        body body domain.ReorderOptionsInput true "New positions"
+// @Success      200  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /products/{id}/options/reorder [patch]
+func (h *ProductHandler) ReorderOptions(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	var input domain.ReorderOptionsInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	if err := validate.Struct(input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	if err := h.optionUseCase.Reorder(ctx, id, input); err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "Options reordered",
+	})
+}
+
+// AddOptionValue godoc
+// @Summary      Add an option value
+// @Description  Add a new value to an existing option
+// @Tags         products
+// @Accept       json
+// @Produce      json
+// @Param        id        path string true "Product UUID"
+// @Param        option_id path string true "Option UUID"
+// @Param        body      body domain.CreateOptionValueInput true "Value to add"
+// @Success      201  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /products/{id}/options/{option_id}/values [post]
+func (h *ProductHandler) AddOptionValue(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+	optionID, ok := parseUUID(c, "option_id")
+	if !ok {
+		return
+	}
+
+	var input domain.CreateOptionValueInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	if err := validate.Struct(input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	created, err := h.optionUseCase.AddValue(ctx, id, optionID, input)
+	if err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"status": "success",
+		"data":   toProductOptionValueData(created),
+	})
+}
+
+// UpdateOptionValue godoc
+// @Summary      Update an option value
+// @Description  Rename or reorder a single option value
+// @Tags         products
+// @Accept       json
+// @Produce      json
+// @Param        id        path string true "Product UUID"
+// @Param        option_id path string true "Option UUID"
+// @Param        value_id  path string true "Option value UUID"
+// @Param        body      body domain.UpdateOptionValueInput true "Fields to update"
+// @Success      200  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /products/{id}/options/{option_id}/values/{value_id} [patch]
+func (h *ProductHandler) UpdateOptionValue(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+	optionID, ok := parseUUID(c, "option_id")
+	if !ok {
+		return
+	}
+	valueID, ok := parseUUID(c, "value_id")
+	if !ok {
+		return
+	}
+
+	var input domain.UpdateOptionValueInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	if err := validate.Struct(input); err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
+	updated, err := h.optionUseCase.UpdateValue(ctx, id, optionID, valueID, input)
+	if err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "success",
+		"data":   toProductOptionValueData(updated),
+	})
+}
+
+// DeleteOptionValue godoc
+// @Summary      Delete an option value
+// @Description  Remove a single value from an option
+// @Tags         products
+// @Produce      json
+// @Param        id        path string true "Product UUID"
+// @Param        option_id path string true "Option UUID"
+// @Param        value_id  path string true "Option value UUID"
+// @Success      200  {object} map[string]any
+// @Failure      400  {object} map[string]any
+// @Failure      404  {object} map[string]any
+// @Failure      500  {object} map[string]any
+// @Router       /products/{id}/options/{option_id}/values/{value_id} [delete]
+func (h *ProductHandler) DeleteOptionValue(c *gin.Context) {
+
+	ctx := c.Request.Context()
+
+	id, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+	optionID, ok := parseUUID(c, "option_id")
+	if !ok {
+		return
+	}
+	valueID, ok := parseUUID(c, "value_id")
+	if !ok {
+		return
+	}
+
+	if err := h.optionUseCase.DeleteValue(ctx, id, optionID, valueID); err != nil {
+		status, code := mapProductError(err)
+		c.JSON(status, errorResponse(code, err.Error()))
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"message": "Option value deleted",
+	})
+}
+
+// parseUUID parses a path parameter as a UUID, writing a 400 ERR_VALIDATION
+// response and returning false on failure.
+func parseUUID(c *gin.Context, param string) (uuid.UUID, bool) {
+	id, err := uuid.Parse(c.Param(param))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", "invalid "+param))
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+// toProductOptionData converts a domain option to its response shape.
+func toProductOptionData(opt domain.ProductOption) productOptionData {
+	values := make([]productOptionValueData, 0, len(opt.Values))
+	for _, v := range opt.Values {
+		values = append(values, productOptionValueData{
+			ID:       v.ID,
+			Value:    v.Value,
+			Position: v.Position,
+		})
+	}
+	return productOptionData{
+		ID:       opt.ID,
+		Name:     opt.Name,
+		Position: opt.Position,
+		Values:   values,
+	}
+}
+
+// toProductOptionValueData converts a domain option value to its response shape.
+func toProductOptionValueData(v domain.ProductOptionValue) productOptionValueData {
+	return productOptionValueData{
+		ID:       v.ID,
+		Value:    v.Value,
+		Position: v.Position,
+	}
+}
+
 func errorResponse(code, message string) gin.H {
 	return gin.H{
 		"status":  "error",
@@ -217,6 +766,16 @@ func mapProductError(err error) (int, string) {
 		return http.StatusNotFound, "ERR_PRODUCT_NOT_FOUND"
 	case domain.ErrDefaultLocationNotFound:
 		return http.StatusInternalServerError, "ERR_DEFAULT_LOCATION_NOT_FOUND"
+	case domain.ErrOptionNotFound:
+		return http.StatusNotFound, "ERR_OPTION_NOT_FOUND"
+	case domain.ErrOptionValueNotFound:
+		return http.StatusNotFound, "ERR_OPTION_VALUE_NOT_FOUND"
+	case domain.ErrOptionAlreadyExists:
+		return http.StatusConflict, "ERR_OPTION_ALREADY_EXISTS"
+	case domain.ErrProductHandleAlreadyExists:
+		return http.StatusConflict, "ERR_HANDLE_ALREADY_EXISTS"
+	case domain.ErrProductHasHistory:
+		return http.StatusConflict, "PRODUCT_HAS_HISTORY"
 	default:
 		return http.StatusInternalServerError, "ERR_INTERNAL"
 	}
@@ -258,6 +817,7 @@ type variantData struct {
 // productCategoryData is the nested category shape exposed on the single
 // product response. Mirrors domain.ProductCategory (slug + name only).
 type productCategoryData struct {
+	Id   int    `json:"id"`
 	Slug string `json:"slug"`
 	Name string `json:"name"`
 }
@@ -266,15 +826,16 @@ type productCategoryData struct {
 // Unlike productData (used by Create), it exposes a nested category object
 // instead of category_id and adds per-variant stock.
 type productDetailData struct {
-	ID        uuid.UUID            `json:"id"`
-	Handle    string               `json:"handle"`
-	Title     string               `json:"title"`
-	Status    domain.ProductStatus `json:"status"`
-	Vendor    *string              `json:"vendor,omitempty"`
-	Category  productCategoryData  `json:"category"`
-	Options   []productOptionData  `json:"options"`
-	Variants  []variantDetailData  `json:"variants"`
-	CreatedAt time.Time            `json:"created_at"`
+	ID          uuid.UUID            `json:"id"`
+	Handle      string               `json:"handle"`
+	Title       string               `json:"title"`
+	Status      domain.ProductStatus `json:"status"`
+	Description *string              `json:"description,omitempty"`
+	Vendor      *string              `json:"vendor,omitempty"`
+	Category    productCategoryData  `json:"category"`
+	Options     []productOptionData  `json:"options"`
+	Variants    []variantDetailData  `json:"variants"`
+	CreatedAt   time.Time            `json:"created_at"`
 }
 
 type variantDetailData struct {
@@ -351,15 +912,16 @@ func toProductData(p domain.Product) productData {
 
 func toProductDetailData(p domain.Product) productDetailData {
 	data := productDetailData{
-		ID:        p.ID,
-		Handle:    p.Handle,
-		Title:     p.Title,
-		Status:    p.Status,
-		Vendor:    p.Vendor,
-		Category:  productCategoryData{Slug: p.Category.Slug, Name: p.Category.Name},
-		Options:   make([]productOptionData, 0, len(p.Options)),
-		Variants:  make([]variantDetailData, 0, len(p.Variants)),
-		CreatedAt: p.CreatedAt,
+		ID:          p.ID,
+		Handle:      p.Handle,
+		Title:       p.Title,
+		Status:      p.Status,
+		Vendor:      p.Vendor,
+		Description: p.Description,
+		Category:    productCategoryData{Id: p.Category.Id, Slug: p.Category.Slug, Name: p.Category.Name},
+		Options:     make([]productOptionData, 0, len(p.Options)),
+		Variants:    make([]variantDetailData, 0, len(p.Variants)),
+		CreatedAt:   p.CreatedAt,
 	}
 
 	for _, opt := range p.Options {

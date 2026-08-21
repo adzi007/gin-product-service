@@ -62,6 +62,20 @@ func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler, prod
 			products.GET("", productHandler.Fetch)
 			// /:id also serves handle lookups — see ProductHandler.GetByID.
 			products.GET("/:id", productHandler.GetByID)
+			products.PATCH("/:id", productHandler.Update)
+			products.DELETE("/:id", productHandler.Archive)
+			products.POST("/:id/restore", productHandler.Restore)
+			products.DELETE("/:id/purge", productHandler.Purge)
+
+			products.POST("/:id/options", productHandler.CreateOption)
+			// Static /reorder must be registered before the /:option_id
+			// wildcard so Gin resolves it to ReorderOptions, not RenameOption.
+			products.PATCH("/:id/options/reorder", productHandler.ReorderOptions)
+			products.PATCH("/:id/options/:option_id", productHandler.RenameOption)
+			products.DELETE("/:id/options/:option_id", productHandler.DeleteOption)
+			products.POST("/:id/options/:option_id/values", productHandler.AddOptionValue)
+			products.PATCH("/:id/options/:option_id/values/:value_id", productHandler.UpdateOptionValue)
+			products.DELETE("/:id/options/:option_id/values/:value_id", productHandler.DeleteOptionValue)
 		}
 	}
 

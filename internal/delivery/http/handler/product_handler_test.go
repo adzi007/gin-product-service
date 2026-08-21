@@ -139,7 +139,7 @@ func TestProductHandler_Fetch_ParsesFilters(t *testing.T) {
 	queryUC := &fakeQueryProductUseCase{
 		findAllResult: domain.PaginatedProducts{Data: []domain.Product{}},
 	}
-	h := NewProductHandler(nil, queryUC)
+	h := NewProductHandler(nil, queryUC, nil, nil, nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -179,7 +179,7 @@ func TestProductHandler_Fetch_RejectsInvalidStatus(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	queryUC := &fakeQueryProductUseCase{}
-	h := NewProductHandler(nil, queryUC)
+	h := NewProductHandler(nil, queryUC, nil, nil, nil)
 
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)

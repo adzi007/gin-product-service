@@ -352,6 +352,472 @@ func (r *productRepo) FindByHandle(ctx context.Context, handle string) (domain.P
 	return r.findProductBy(ctx, "products.handle = $1", handle)
 }
 
+// productHeaderColumns lists the columns returned by header-level product
+// queries and updates. It must stay in sync with domain.Product's db tags.
+const productHeaderColumns = "id, handle, title, status, description, vendor, category_id, created_at, updated_at"
+
+// UpdateHeader performs a partial update of a product's header fields. Only
+// the columns whose pointer fields in input are non-nil are touched; nil means
+// "leave unchanged". If no fields are provided it returns the current row
+// without writing anything.
+func (r *productRepo) UpdateHeader(ctx context.Context, id uuid.UUID, input domain.UpdateProductInput) (domain.Product, error) {
+
+	defer metrics.ObserveDB("product", "update_header")(time.Now())
+
+	fields := make([]string, 0, 6)
+	args := make([]interface{}, 0, 7)
+	argIdx := 0
+
+	if input.Title != nil {
+		argIdx++
+		args = append(args, *input.Title)
+		fields = append(fields, fmt.Sprintf("title = $%d", argIdx))
+	}
+	if input.Description != nil {
+		argIdx++
+		args = append(args, *input.Description)
+		fields = append(fields, fmt.Sprintf("description = $%d", argIdx))
+	}
+	if input.Vendor != nil {
+		argIdx++
+		args = append(args, *input.Vendor)
+		fields = append(fields, fmt.Sprintf("vendor = $%d", argIdx))
+	}
+	if input.Handle != nil {
+		argIdx++
+		args = append(args, *input.Handle)
+		fields = append(fields, fmt.Sprintf("handle = $%d", argIdx))
+	}
+	if input.CategoryID != nil {
+		argIdx++
+		args = append(args, *input.CategoryID)
+		fields = append(fields, fmt.Sprintf("category_id = $%d", argIdx))
+	}
+	if input.Status != nil {
+		argIdx++
+		args = append(args, string(*input.Status))
+		fields = append(fields, fmt.Sprintf("status = $%d", argIdx))
+	}
+
+	// No changed fields: return the current header state unchanged.
+	if len(fields) == 0 {
+		rows, err := r.db.GetDb().Query(ctx,
+			"SELECT "+productHeaderColumns+" FROM products WHERE id = $1", pgUUID(id))
+		if err != nil {
+			return domain.Product{}, err
+		}
+		product, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.Product])
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.Product{}, domain.ErrProductNotFound
+			}
+			return domain.Product{}, err
+		}
+		return product, nil
+	}
+
+	// Always refresh updated_at on a real update.
+	fields = append(fields, "updated_at = now()")
+
+	argIdx++
+	args = append(args, pgUUID(id))
+
+	query := fmt.Sprintf(
+		"UPDATE products SET %s WHERE id = $%d RETURNING "+productHeaderColumns,
+		strings.Join(fields, ", "), argIdx,
+	)
+
+	rows, err := r.db.GetDb().Query(ctx, query, args...)
+	if err != nil {
+		return domain.Product{}, translateUpdateError(err)
+	}
+
+	product, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.Product])
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Product{}, domain.ErrProductNotFound
+		}
+		return domain.Product{}, err
+	}
+
+	return product, nil
+}
+
+// UpdateStatus writes a product's lifecycle status.
+func (r *productRepo) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.ProductStatus) error {
+
+	defer metrics.ObserveDB("product", "update_status")(time.Now())
+
+	tag, err := r.db.GetDb().Exec(ctx, `
+		UPDATE products SET status = $1, updated_at = now() WHERE id = $2`,
+		string(status), pgUUID(id),
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrProductNotFound
+	}
+
+	return nil
+}
+
+// Delete hard-deletes (purges) a product and all of its related rows. It is
+// guarded: a product whose variants have any stock_moves history cannot be
+// purged and returns domain.ErrProductHasHistory instead.
+func (r *productRepo) Delete(ctx context.Context, id uuid.UUID) error {
+
+	defer metrics.ObserveDB("product", "purge")(time.Now())
+
+	tx, err := r.db.GetDb().Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Guard: block purge when any variant's inventory item has stock_moves.
+	var historyCount int
+	err = tx.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM stock_moves sm
+		JOIN inventory_items ii ON ii.id = sm.inventory_item_id
+		JOIN variants v ON v.id = ii.variant_id
+		WHERE v.product_id = $1`, pgUUID(id)).Scan(&historyCount)
+	if err != nil {
+		return err
+	}
+	if historyCount > 0 {
+		return domain.ErrProductHasHistory
+	}
+
+	// Delete children in dependency order (no ON DELETE CASCADE is defined in
+	// the schema, so we remove dependents explicitly).
+	deletes := []string{
+		`DELETE FROM variant_media WHERE variant_id IN (SELECT id FROM variants WHERE product_id = $1)`,
+		`DELETE FROM inventory_levels WHERE inventory_item_id IN (SELECT ii.id FROM inventory_items ii JOIN variants v ON v.id = ii.variant_id WHERE v.product_id = $1)`,
+		`DELETE FROM stock_moves WHERE inventory_item_id IN (SELECT ii.id FROM inventory_items ii JOIN variants v ON v.id = ii.variant_id WHERE v.product_id = $1)`,
+		`DELETE FROM inventory_items WHERE variant_id IN (SELECT id FROM variants WHERE product_id = $1)`,
+		`DELETE FROM variants WHERE product_id = $1`,
+		`DELETE FROM product_option_values WHERE option_id IN (SELECT id FROM product_options WHERE product_id = $1)`,
+		`DELETE FROM product_options WHERE product_id = $1`,
+		`DELETE FROM product_media WHERE product_id = $1`,
+	}
+
+	for _, q := range deletes {
+		if _, err = tx.Exec(ctx, q, pgUUID(id)); err != nil {
+			return err
+		}
+	}
+
+	tag, err := tx.Exec(ctx, `DELETE FROM products WHERE id = $1`, pgUUID(id))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrProductNotFound
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// CreateOption inserts an option row plus all of its value rows in one
+// transaction.
+func (r *productRepo) CreateOption(ctx context.Context, option domain.ProductOption) (domain.ProductOption, error) {
+
+	defer metrics.ObserveDB("product", "create_option")(time.Now())
+
+	tx, err := r.db.GetDb().Begin(ctx)
+	if err != nil {
+		return domain.ProductOption{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO product_options (id, product_id, name, position)
+		VALUES ($1, $2, $3, $4)`,
+		pgUUID(option.ID), pgUUID(option.ProductID), option.Name, option.Position,
+	)
+	if err != nil {
+		return domain.ProductOption{}, translateOptionCreateError(err)
+	}
+
+	for _, value := range option.Values {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO product_option_values (id, option_id, value, position)
+			VALUES ($1, $2, $3, $4)`,
+			pgUUID(value.ID), pgUUID(value.OptionID), value.Value, value.Position,
+		)
+		if err != nil {
+			return domain.ProductOption{}, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.ProductOption{}, err
+	}
+
+	return option, nil
+}
+
+// RenameOption renames an option, guarded by product_id so a mismatched
+// product in the URL resolves to domain.ErrOptionNotFound.
+func (r *productRepo) RenameOption(ctx context.Context, productID, optionID uuid.UUID, name string) (domain.ProductOption, error) {
+
+	defer metrics.ObserveDB("product", "rename_option")(time.Now())
+
+	rows, err := r.db.GetDb().Query(ctx, `
+		UPDATE product_options
+		SET name = $1
+		WHERE id = $2 AND product_id = $3
+		RETURNING id, product_id, name, position`,
+		name, pgUUID(optionID), pgUUID(productID),
+	)
+	if err != nil {
+		return domain.ProductOption{}, translateOptionCreateError(err)
+	}
+
+	option, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.ProductOption])
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ProductOption{}, domain.ErrOptionNotFound
+		}
+		return domain.ProductOption{}, err
+	}
+
+	return option, nil
+}
+
+// DeleteOption removes an option and all of its values in one transaction.
+func (r *productRepo) DeleteOption(ctx context.Context, productID, optionID uuid.UUID) error {
+
+	defer metrics.ObserveDB("product", "delete_option")(time.Now())
+
+	tx, err := r.db.GetDb().Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Guard by product_id so a mismatched product in the URL 404s.
+	var exists bool
+	err = tx.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM product_options WHERE id = $1 AND product_id = $2)`,
+		pgUUID(optionID), pgUUID(productID),
+	).Scan(&exists)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return domain.ErrOptionNotFound
+	}
+
+	if _, err = tx.Exec(ctx, `DELETE FROM product_option_values WHERE option_id = $1`, pgUUID(optionID)); err != nil {
+		return err
+	}
+
+	tag, err := tx.Exec(ctx, `DELETE FROM product_options WHERE id = $1`, pgUUID(optionID))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrOptionNotFound
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// ReorderOptions bulk-updates option positions in one transaction, guarded by
+// product_id to prevent cross-product reorder abuse.
+func (r *productRepo) ReorderOptions(ctx context.Context, productID uuid.UUID, positions []domain.PositionUpdate) error {
+
+	defer metrics.ObserveDB("product", "reorder_options")(time.Now())
+
+	tx, err := r.db.GetDb().Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	for _, p := range positions {
+		tag, err := tx.Exec(ctx, `
+			UPDATE product_options SET position = $1
+			WHERE id = $2 AND product_id = $3`,
+			p.Position, pgUUID(p.ID), pgUUID(productID),
+		)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return domain.ErrOptionNotFound
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// FindOptionByID loads a single product option by id.
+func (r *productRepo) FindOptionByID(ctx context.Context, optionID uuid.UUID) (domain.ProductOption, error) {
+
+	defer metrics.ObserveDB("product", "find_option_by_id")(time.Now())
+
+	rows, err := r.db.GetDb().Query(ctx, `
+		SELECT id, product_id, name, position
+		FROM product_options
+		WHERE id = $1`, pgUUID(optionID))
+	if err != nil {
+		return domain.ProductOption{}, err
+	}
+
+	option, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.ProductOption])
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ProductOption{}, domain.ErrOptionNotFound
+		}
+		return domain.ProductOption{}, err
+	}
+
+	return option, nil
+}
+
+// CreateOptionValue inserts a single option value row.
+func (r *productRepo) CreateOptionValue(ctx context.Context, value domain.ProductOptionValue) (domain.ProductOptionValue, error) {
+
+	defer metrics.ObserveDB("product", "create_option_value")(time.Now())
+
+	rows, err := r.db.GetDb().Query(ctx, `
+		INSERT INTO product_option_values (id, option_id, value, position)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id, option_id, value, position`,
+		pgUUID(value.ID), pgUUID(value.OptionID), value.Value, value.Position,
+	)
+	if err != nil {
+		return domain.ProductOptionValue{}, translateOptionValueCreateError(err)
+	}
+
+	created, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.ProductOptionValue])
+	if err != nil {
+		return domain.ProductOptionValue{}, err
+	}
+
+	return created, nil
+}
+
+// UpdateOptionValue partially updates an option value, touching only the
+// non-nil fields.
+func (r *productRepo) UpdateOptionValue(ctx context.Context, valueID uuid.UUID, value *string, position *int) (domain.ProductOptionValue, error) {
+
+	defer metrics.ObserveDB("product", "update_option_value")(time.Now())
+
+	const valueColumns = "id, option_id, value, position"
+
+	fields := make([]string, 0, 2)
+	args := make([]interface{}, 0, 3)
+	argIdx := 0
+
+	if value != nil {
+		argIdx++
+		args = append(args, *value)
+		fields = append(fields, fmt.Sprintf("value = $%d", argIdx))
+	}
+	if position != nil {
+		argIdx++
+		args = append(args, *position)
+		fields = append(fields, fmt.Sprintf("position = $%d", argIdx))
+	}
+
+	// No changed fields: return the current row unchanged.
+	if len(fields) == 0 {
+		rows, err := r.db.GetDb().Query(ctx,
+			"SELECT "+valueColumns+" FROM product_option_values WHERE id = $1", pgUUID(valueID))
+		if err != nil {
+			return domain.ProductOptionValue{}, err
+		}
+		got, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.ProductOptionValue])
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.ProductOptionValue{}, domain.ErrOptionValueNotFound
+			}
+			return domain.ProductOptionValue{}, err
+		}
+		return got, nil
+	}
+
+	argIdx++
+	args = append(args, pgUUID(valueID))
+
+	query := fmt.Sprintf(
+		"UPDATE product_option_values SET %s WHERE id = $%d RETURNING "+valueColumns,
+		strings.Join(fields, ", "), argIdx,
+	)
+
+	rows, err := r.db.GetDb().Query(ctx, query, args...)
+	if err != nil {
+		return domain.ProductOptionValue{}, err
+	}
+
+	got, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.ProductOptionValue])
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ProductOptionValue{}, domain.ErrOptionValueNotFound
+		}
+		return domain.ProductOptionValue{}, err
+	}
+
+	return got, nil
+}
+
+// DeleteOptionValue removes a single option value row.
+func (r *productRepo) DeleteOptionValue(ctx context.Context, valueID uuid.UUID) error {
+
+	defer metrics.ObserveDB("product", "delete_option_value")(time.Now())
+
+	tag, err := r.db.GetDb().Exec(ctx, `DELETE FROM product_option_values WHERE id = $1`, pgUUID(valueID))
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrOptionValueNotFound
+	}
+
+	return nil
+}
+
+// FindOptionValueByID loads a single product option value by id.
+func (r *productRepo) FindOptionValueByID(ctx context.Context, valueID uuid.UUID) (domain.ProductOptionValue, error) {
+
+	defer metrics.ObserveDB("product", "find_option_value_by_id")(time.Now())
+
+	rows, err := r.db.GetDb().Query(ctx, `
+		SELECT id, option_id, value, position
+		FROM product_option_values
+		WHERE id = $1`, pgUUID(valueID))
+	if err != nil {
+		return domain.ProductOptionValue{}, err
+	}
+
+	got, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.ProductOptionValue])
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ProductOptionValue{}, domain.ErrOptionValueNotFound
+		}
+		return domain.ProductOptionValue{}, err
+	}
+
+	return got, nil
+}
+
 // findProductBy loads a single products row (with its nested category
 // reference) plus its nested options, variants (with per-variant stock) and
 // media using separate read queries (no transaction needed for reads).
@@ -393,6 +859,9 @@ func (r *productRepo) findProductBy(ctx context.Context, predicate string, arg i
 	}
 	if row.CategoryName != nil {
 		product.Category.Name = *row.CategoryName
+	}
+	if row.CategoryId != nil {
+		product.Category.Id = *row.CategoryId
 	}
 
 	options, err := r.findProductOptions(ctx, product.ID)
@@ -578,6 +1047,7 @@ type productListRow struct {
 // columns plus the joined category slug/name.
 type productDetailRow struct {
 	domain.Product
+	CategoryId   *int    `db:"category_id"`
 	CategorySlug *string `db:"category_slug"`
 	CategoryName *string `db:"category_name"`
 }
@@ -605,6 +1075,37 @@ func translateCreateError(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation
 		return domain.ErrSKUAlreadyExists
+	}
+	return err
+}
+
+// translateUpdateError maps constraint violations from a product header update
+// to domain errors. The only unique constraint reachable on products is handle.
+func translateUpdateError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation
+		return domain.ErrProductHandleAlreadyExists
+	}
+	return err
+}
+
+// translateOptionCreateError maps constraint violations from option writes to
+// domain errors. The (product_id, name) unique index is the only reachable one.
+func translateOptionCreateError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation
+		return domain.ErrOptionAlreadyExists
+	}
+	return err
+}
+
+// translateOptionValueCreateError maps constraint violations from option value
+// writes to domain errors. The only foreign key on product_option_values is
+// option_id, so a violation means the option does not exist.
+func translateOptionValueCreateError(err error) error {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23503" { // foreign_key_violation
+		return domain.ErrOptionNotFound
 	}
 	return err
 }

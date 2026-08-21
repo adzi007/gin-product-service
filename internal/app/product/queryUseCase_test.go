@@ -16,10 +16,54 @@ type fakeProductRepo struct {
 	findAllTotal  int
 	findAllErr    error
 
+	findByIDData    domain.Product
 	findByIDErr     error
 	findByHandleErr error
 
 	createParams domain.CreateProductParams
+
+	updateHeaderID     uuid.UUID
+	updateHeaderInput  domain.UpdateProductInput
+	updateHeaderResult domain.Product
+	updateHeaderErr    error
+
+	updateStatusID     uuid.UUID
+	updateStatusStatus domain.ProductStatus
+	updateStatusErr    error
+
+	deleteID  uuid.UUID
+	deleteErr error
+
+	createOption    domain.ProductOption
+	createOptionErr error
+
+	renameOptionProductID uuid.UUID
+	renameOptionID        uuid.UUID
+	renameOptionName      string
+	renameOptionErr       error
+
+	deleteOptionProductID uuid.UUID
+	deleteOptionID        uuid.UUID
+	deleteOptionErr       error
+
+	reorderProductID uuid.UUID
+	reorderPositions []domain.PositionUpdate
+	reorderErr       error
+
+	findOptionByIDErr error
+
+	createOptionValue    domain.ProductOptionValue
+	createOptionValueErr error
+
+	updateOptionValueID       uuid.UUID
+	updateOptionValueValue    *string
+	updateOptionValuePosition *int
+	updateOptionValueErr      error
+
+	deleteOptionValueID  uuid.UUID
+	deleteOptionValueErr error
+
+	findOptionValueByIDErr error
 }
 
 func (f *fakeProductRepo) Create(ctx context.Context, params domain.CreateProductParams) (domain.Product, error) {
@@ -36,6 +80,9 @@ func (f *fakeProductRepo) FindByID(ctx context.Context, id uuid.UUID) (domain.Pr
 	if f.findByIDErr != nil {
 		return domain.Product{}, f.findByIDErr
 	}
+	if f.findByIDData.ID != uuid.Nil {
+		return f.findByIDData, nil
+	}
 	return domain.Product{ID: id}, nil
 }
 
@@ -44,6 +91,93 @@ func (f *fakeProductRepo) FindByHandle(ctx context.Context, handle string) (doma
 		return domain.Product{}, f.findByHandleErr
 	}
 	return domain.Product{Handle: handle}, nil
+}
+
+func (f *fakeProductRepo) UpdateHeader(ctx context.Context, id uuid.UUID, input domain.UpdateProductInput) (domain.Product, error) {
+	f.updateHeaderID = id
+	f.updateHeaderInput = input
+	if f.updateHeaderErr != nil {
+		return domain.Product{}, f.updateHeaderErr
+	}
+	return f.updateHeaderResult, nil
+}
+
+func (f *fakeProductRepo) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.ProductStatus) error {
+	f.updateStatusID = id
+	f.updateStatusStatus = status
+	return f.updateStatusErr
+}
+
+func (f *fakeProductRepo) Delete(ctx context.Context, id uuid.UUID) error {
+	f.deleteID = id
+	return f.deleteErr
+}
+
+func (f *fakeProductRepo) CreateOption(ctx context.Context, option domain.ProductOption) (domain.ProductOption, error) {
+	f.createOption = option
+	if f.createOptionErr != nil {
+		return domain.ProductOption{}, f.createOptionErr
+	}
+	return option, nil
+}
+
+func (f *fakeProductRepo) RenameOption(ctx context.Context, productID, optionID uuid.UUID, name string) (domain.ProductOption, error) {
+	f.renameOptionProductID = productID
+	f.renameOptionID = optionID
+	f.renameOptionName = name
+	if f.renameOptionErr != nil {
+		return domain.ProductOption{}, f.renameOptionErr
+	}
+	return domain.ProductOption{ID: optionID, ProductID: productID, Name: name}, nil
+}
+
+func (f *fakeProductRepo) DeleteOption(ctx context.Context, productID, optionID uuid.UUID) error {
+	f.deleteOptionProductID = productID
+	f.deleteOptionID = optionID
+	return f.deleteOptionErr
+}
+
+func (f *fakeProductRepo) ReorderOptions(ctx context.Context, productID uuid.UUID, positions []domain.PositionUpdate) error {
+	f.reorderProductID = productID
+	f.reorderPositions = positions
+	return f.reorderErr
+}
+
+func (f *fakeProductRepo) FindOptionByID(ctx context.Context, optionID uuid.UUID) (domain.ProductOption, error) {
+	if f.findOptionByIDErr != nil {
+		return domain.ProductOption{}, f.findOptionByIDErr
+	}
+	return domain.ProductOption{ID: optionID}, nil
+}
+
+func (f *fakeProductRepo) CreateOptionValue(ctx context.Context, value domain.ProductOptionValue) (domain.ProductOptionValue, error) {
+	f.createOptionValue = value
+	if f.createOptionValueErr != nil {
+		return domain.ProductOptionValue{}, f.createOptionValueErr
+	}
+	return value, nil
+}
+
+func (f *fakeProductRepo) UpdateOptionValue(ctx context.Context, valueID uuid.UUID, value *string, position *int) (domain.ProductOptionValue, error) {
+	f.updateOptionValueID = valueID
+	f.updateOptionValueValue = value
+	f.updateOptionValuePosition = position
+	if f.updateOptionValueErr != nil {
+		return domain.ProductOptionValue{}, f.updateOptionValueErr
+	}
+	return domain.ProductOptionValue{ID: valueID}, nil
+}
+
+func (f *fakeProductRepo) DeleteOptionValue(ctx context.Context, valueID uuid.UUID) error {
+	f.deleteOptionValueID = valueID
+	return f.deleteOptionValueErr
+}
+
+func (f *fakeProductRepo) FindOptionValueByID(ctx context.Context, valueID uuid.UUID) (domain.ProductOptionValue, error) {
+	if f.findOptionValueByIDErr != nil {
+		return domain.ProductOptionValue{}, f.findOptionValueByIDErr
+	}
+	return domain.ProductOptionValue{ID: valueID}, nil
 }
 
 var _ domain.ProductRepository = (*fakeProductRepo)(nil)

@@ -53,6 +53,7 @@ type Product struct {
 // It intentionally omits id/thumbnail/description — only slug and name are
 // surfaced to API consumers.
 type ProductCategory struct {
+	Id   int    `json:"id"`
 	Slug string `json:"slug"`
 	Name string `json:"name"`
 }
@@ -188,6 +189,20 @@ var (
 	// ErrProductInvalidStatus is returned when an unrecognized product status
 	// string is passed to the use case or handler.
 	ErrProductInvalidStatus = errors.New("invalid product status")
+	// ErrOptionNotFound is returned when no product option matches the given id.
+	ErrOptionNotFound = errors.New("option not found")
+	// ErrOptionValueNotFound is returned when no product option value matches
+	// the given id.
+	ErrOptionValueNotFound = errors.New("option value not found")
+	// ErrOptionAlreadyExists is returned when an option name duplicates another
+	// option name on the same product.
+	ErrOptionAlreadyExists = errors.New("option already exists")
+	// ErrProductHandleAlreadyExists is returned when a handle duplicates another
+	// product's handle (store-wide uniqueness).
+	ErrProductHandleAlreadyExists = errors.New("handle already exists")
+	// ErrProductHasHistory is returned when a purge is blocked because the
+	// product's variants have stock movement history.
+	ErrProductHasHistory = errors.New("product has stock history")
 )
 
 // CreateProductParams carries everything the repository needs to persist a new
@@ -235,12 +250,53 @@ type QueryProductUseCase interface {
 	GetByHandle(ctx context.Context, handle string) (Product, error)
 }
 
+// UpdateProductUseCase is the application-layer contract for updating a product
+// header and managing its lifecycle (archive/restore).
+type UpdateProductUseCase interface {
+	Update(ctx context.Context, id uuid.UUID, input UpdateProductInput) (Product, error)
+	Archive(ctx context.Context, id uuid.UUID) error
+	Restore(ctx context.Context, id uuid.UUID) error
+}
+
+// DeleteProductUseCase is the application-layer contract for hard-deleting
+// (purging) a product.
+type DeleteProductUseCase interface {
+	Purge(ctx context.Context, id uuid.UUID) error
+}
+
+// OptionUseCase is the application-layer contract for managing a product's
+// options and their option values.
+type OptionUseCase interface {
+	Create(ctx context.Context, productID uuid.UUID, input CreateOptionInput) (ProductOption, error)
+	Rename(ctx context.Context, productID, optionID uuid.UUID, input UpdateOptionInput) (ProductOption, error)
+	Delete(ctx context.Context, productID, optionID uuid.UUID) error
+	Reorder(ctx context.Context, productID uuid.UUID, input ReorderOptionsInput) error
+	AddValue(ctx context.Context, productID, optionID uuid.UUID, input CreateOptionValueInput) (ProductOptionValue, error)
+	UpdateValue(ctx context.Context, productID, optionID, valueID uuid.UUID, input UpdateOptionValueInput) (ProductOptionValue, error)
+	DeleteValue(ctx context.Context, productID, optionID, valueID uuid.UUID) error
+}
+
 // ProductRepository is the persistence contract for the product module.
 type ProductRepository interface {
 	Create(ctx context.Context, params CreateProductParams) (Product, error)
 	FindAll(ctx context.Context, params ListProductParams) ([]Product, int, error)
 	FindByID(ctx context.Context, id uuid.UUID) (Product, error)
 	FindByHandle(ctx context.Context, handle string) (Product, error)
+
+	UpdateHeader(ctx context.Context, id uuid.UUID, input UpdateProductInput) (Product, error)
+	UpdateStatus(ctx context.Context, id uuid.UUID, status ProductStatus) error
+	Delete(ctx context.Context, id uuid.UUID) error
+
+	CreateOption(ctx context.Context, option ProductOption) (ProductOption, error)
+	RenameOption(ctx context.Context, productID, optionID uuid.UUID, name string) (ProductOption, error)
+	DeleteOption(ctx context.Context, productID, optionID uuid.UUID) error
+	ReorderOptions(ctx context.Context, productID uuid.UUID, positions []PositionUpdate) error
+	FindOptionByID(ctx context.Context, optionID uuid.UUID) (ProductOption, error)
+
+	CreateOptionValue(ctx context.Context, value ProductOptionValue) (ProductOptionValue, error)
+	UpdateOptionValue(ctx context.Context, valueID uuid.UUID, value *string, position *int) (ProductOptionValue, error)
+	DeleteOptionValue(ctx context.Context, valueID uuid.UUID) error
+	FindOptionValueByID(ctx context.Context, valueID uuid.UUID) (ProductOptionValue, error)
 }
 
 // CreateProductInput is the request body for creating a product.
@@ -284,4 +340,51 @@ type GalleryMediaInput struct {
 	URL      string  `json:"url" validate:"required"`
 	AltText  *string `json:"altText"`
 	Position int     `json:"position"`
+}
+
+// UpdateProductInput is the request body for PATCH /products/:id. All fields
+// are optional pointers: nil means "leave this column unchanged". Only product
+// header fields are updated; nested options/variants/media are never touched.
+type UpdateProductInput struct {
+	Title       *string        `json:"title" validate:"omitempty"`
+	Description *string        `json:"description"`
+	Vendor      *string        `json:"vendor"`
+	Handle      *string        `json:"handle" validate:"omitempty"`
+	CategoryID  *int           `json:"categoryId" validate:"omitempty,gt=0"`
+	Status      *ProductStatus `json:"status" validate:"omitempty,oneof=draft active archived"`
+}
+
+// CreateOptionInput is the request body for POST /products/:id/options.
+type CreateOptionInput struct {
+	Name   string   `json:"name" binding:"required" validate:"required"`
+	Values []string `json:"values" binding:"required" validate:"required,min=1"`
+}
+
+// UpdateOptionInput is the request body for PATCH /products/:id/options/:option_id.
+type UpdateOptionInput struct {
+	Name string `json:"name" binding:"required" validate:"required"`
+}
+
+// ReorderOptionsInput is the request body for PATCH /products/:id/options/reorder.
+type ReorderOptionsInput struct {
+	Positions []PositionUpdate `json:"positions" binding:"required" validate:"required,min=1,dive"`
+}
+
+// PositionUpdate is shared by any reorder endpoint (options today, variants later).
+type PositionUpdate struct {
+	ID       uuid.UUID `json:"id" binding:"required" validate:"required"`
+	Position int       `json:"position" validate:"gte=0"`
+}
+
+// CreateOptionValueInput is the request body for POST /products/:id/options/:option_id/values.
+type CreateOptionValueInput struct {
+	Value    string `json:"value" binding:"required" validate:"required"`
+	Position int    `json:"position" validate:"gte=0"`
+}
+
+// UpdateOptionValueInput is the request body for PATCH
+// /products/:id/options/:option_id/values/:value_id. Nil fields are left unchanged.
+type UpdateOptionValueInput struct {
+	Value    *string `json:"value"`
+	Position *int    `json:"position" validate:"omitempty,gte=0"`
 }
