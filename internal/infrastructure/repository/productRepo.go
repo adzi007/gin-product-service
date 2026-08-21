@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"gin-product-service/internal/domain"
@@ -148,7 +149,7 @@ func (r *productRepo) Create(ctx context.Context, params domain.CreateProductPar
 			pgUUID(locationID),
 			pgtype.UUID{}, // NULL
 			string(move.MoveType),
-			pgNumeric(move.Quantity),
+			move.Quantity,
 		)
 		if err != nil {
 			return domain.Product{}, err
@@ -163,8 +164,8 @@ func (r *productRepo) Create(ctx context.Context, params domain.CreateProductPar
 			pgUUID(level.ID),
 			pgUUID(level.InventoryItemID),
 			pgUUID(locationID),
-			pgNumeric(level.AvailableQty),
-			pgNumeric(level.ReservedQty),
+			level.AvailableQty,
+			level.ReservedQty,
 		)
 		if err != nil {
 			return domain.Product{}, err
@@ -195,6 +196,345 @@ func (r *productRepo) Create(ctx context.Context, params domain.CreateProductPar
 	// product.UpdatedAt = updatedAt
 
 	return product, nil
+}
+
+// FindAll returns a lightweight page of products (base columns plus the nested
+// category reference and min/max variant prices, no nested options/variants/
+// media) matching the given filter, plus the total count of matching rows
+// before pagination.
+func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductParams) ([]domain.Product, int, error) {
+
+	defer metrics.ObserveDB("product", "find_all")(time.Now())
+
+	// Build the base conditions. sort_by / sort_dir are whitelisted below
+	// (defense in depth) so they never come from raw user input.
+	where := ""
+	args := []interface{}{}
+	argIdx := 0
+
+	if params.Search != "" {
+		argIdx++
+		args = append(args, "%"+params.Search+"%")
+		where = fmt.Sprintf(" WHERE (products.title ILIKE $%d OR products.handle ILIKE $%d)", argIdx, argIdx)
+	}
+
+	// total count matching filters (before pagination)
+	countQuery := "SELECT COUNT(*) FROM products " + where
+	var total int
+	if err := r.db.GetDb().QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	// whitelist ORDER BY (only allow-list values, never raw user input)
+	sortBy := "products.created_at"
+	if params.SortBy == "title" {
+		sortBy = "products.title"
+	}
+
+	sortDir := "DESC"
+	if params.SortDir == "asc" {
+		sortDir = "ASC"
+	}
+
+	offset := (params.Page - 1) * params.PerPage
+
+	query := fmt.Sprintf(`
+		SELECT
+			products.id,
+			products.handle,
+			products.title,
+			products.description,
+			products.vendor,
+			products.category_id,
+			products.created_at,
+			products.updated_at,
+			category.slug AS category_slug,
+			category.name AS category_name,
+			COALESCE(price_stats.min_price, 0) AS start_price,
+			COALESCE(price_stats.max_price, 0) AS max_price
+
+		FROM products
+		LEFT JOIN category ON products.category_id = category.id
+		LEFT JOIN LATERAL (
+			SELECT MIN(v.price) AS min_price, MAX(v.price) AS max_price
+			FROM variants v
+			WHERE v.product_id = products.id AND v.is_deleted = false
+		) price_stats ON true
+		%s
+		ORDER BY %s %s
+		LIMIT $%d OFFSET $%d
+	`, where, sortBy, sortDir, argIdx+1, argIdx+2)
+
+	args = append(args, params.PerPage, offset)
+
+	rows, err := r.db.GetDb().Query(ctx, query, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	listRows, err := pgx.CollectRows(rows, pgx.RowToStructByName[productListRow])
+	if err != nil {
+		return nil, 0, err
+	}
+
+	products := make([]domain.Product, 0, len(listRows))
+	for _, row := range listRows {
+		p := row.Product
+		if row.CategorySlug != nil {
+			p.Category.Slug = *row.CategorySlug
+		}
+		if row.CategoryName != nil {
+			p.Category.Name = *row.CategoryName
+		}
+		p.Prices.StartPrice = row.StartPrice
+		p.Prices.MaxPrice = row.MaxPrice
+		products = append(products, p)
+	}
+
+	return products, total, nil
+}
+
+// FindByID returns a fully hydrated product (options, variants, media) by UUID.
+func (r *productRepo) FindByID(ctx context.Context, id uuid.UUID) (domain.Product, error) {
+
+	defer metrics.ObserveDB("product", "find_by_id")(time.Now())
+
+	return r.findProductBy(ctx, "products.id = $1", pgUUID(id))
+}
+
+// FindByHandle returns a fully hydrated product (options, variants, media) by handle.
+func (r *productRepo) FindByHandle(ctx context.Context, handle string) (domain.Product, error) {
+
+	defer metrics.ObserveDB("product", "find_by_handle")(time.Now())
+
+	return r.findProductBy(ctx, "products.handle = $1", handle)
+}
+
+// findProductBy loads a single products row (with its nested category
+// reference) plus its nested options, variants (with per-variant stock) and
+// media using separate read queries (no transaction needed for reads).
+func (r *productRepo) findProductBy(ctx context.Context, predicate string, arg interface{}) (domain.Product, error) {
+
+	query := fmt.Sprintf(`
+		SELECT
+			products.id,
+			products.handle,
+			products.title,
+			products.description,
+			products.vendor,
+			products.category_id,
+			products.created_at,
+			products.updated_at,
+			category.slug AS category_slug,
+			category.name AS category_name
+		FROM products
+		LEFT JOIN category ON products.category_id = category.id
+		WHERE %s`, predicate)
+
+	rows, err := r.db.GetDb().Query(ctx, query, arg)
+	if err != nil {
+		return domain.Product{}, err
+	}
+
+	row, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[productDetailRow])
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Product{}, domain.ErrProductNotFound
+		}
+		return domain.Product{}, err
+	}
+
+	product := row.Product
+	if row.CategorySlug != nil {
+		product.Category.Slug = *row.CategorySlug
+	}
+	if row.CategoryName != nil {
+		product.Category.Name = *row.CategoryName
+	}
+
+	options, err := r.findProductOptions(ctx, product.ID)
+	if err != nil {
+		return domain.Product{}, err
+	}
+	product.Options = options
+
+	variants, err := r.findProductVariants(ctx, product.ID)
+	if err != nil {
+		return domain.Product{}, err
+	}
+	product.Variants = variants
+
+	media, err := r.findProductMedia(ctx, product.ID)
+	if err != nil {
+		return domain.Product{}, err
+	}
+	product.Media = media
+
+	return product, nil
+}
+
+// findProductOptions loads product_options plus their nested option values.
+func (r *productRepo) findProductOptions(ctx context.Context, productID uuid.UUID) ([]domain.ProductOption, error) {
+
+	optionRows, err := r.db.GetDb().Query(ctx, `
+		SELECT id, product_id, name, position
+		FROM product_options
+		WHERE product_id = $1
+		ORDER BY position ASC, id ASC`, pgUUID(productID))
+	if err != nil {
+		return nil, err
+	}
+	defer optionRows.Close()
+
+	options, err := pgx.CollectRows(optionRows, pgx.RowToStructByName[domain.ProductOption])
+	if err != nil {
+		return nil, err
+	}
+	if len(options) == 0 {
+		return options, nil
+	}
+
+	valueRows, err := r.db.GetDb().Query(ctx, `
+		SELECT pov.id, pov.option_id, pov.value, pov.position
+		FROM product_option_values pov
+		JOIN product_options po ON po.id = pov.option_id
+		WHERE po.product_id = $1
+		ORDER BY po.position ASC, pov.position ASC, pov.id ASC`, pgUUID(productID))
+	if err != nil {
+		return nil, err
+	}
+	defer valueRows.Close()
+
+	values, err := pgx.CollectRows(valueRows, pgx.RowToStructByName[domain.ProductOptionValue])
+	if err != nil {
+		return nil, err
+	}
+
+	valuesByOption := make(map[uuid.UUID][]domain.ProductOptionValue, len(options))
+	for _, v := range values {
+		valuesByOption[v.OptionID] = append(valuesByOption[v.OptionID], v)
+	}
+
+	for i := range options {
+		options[i].Values = valuesByOption[options[i].ID]
+		if options[i].Values == nil {
+			options[i].Values = []domain.ProductOptionValue{}
+		}
+	}
+
+	return options, nil
+}
+
+// findProductVariants loads non-deleted variants, their per-variant available
+// stock (summed across all inventory levels), and their variant_media links.
+func (r *productRepo) findProductVariants(ctx context.Context, productID uuid.UUID) ([]domain.Variant, error) {
+
+	variantRows, err := r.db.GetDb().Query(ctx, `
+		SELECT
+			v.id,
+			v.product_id,
+			v.sku,
+			v.barcode,
+			v.title,
+			v.price,
+			v.weight,
+			v.options,
+			v.is_deleted,
+			v.created_at,
+			v.updated_at,
+			COALESCE((
+				SELECT SUM(il.available_qty)
+				FROM inventory_items ii
+				JOIN inventory_levels il ON il.inventory_item_id = ii.id
+				WHERE ii.variant_id = v.id
+			), 0) AS stock
+		FROM variants v
+		WHERE v.product_id = $1 AND v.is_deleted = false
+		ORDER BY v.created_at ASC, v.id ASC`, pgUUID(productID))
+	if err != nil {
+		return nil, err
+	}
+	defer variantRows.Close()
+
+	variants, err := pgx.CollectRows(variantRows, pgx.RowToStructByName[domain.Variant])
+	if err != nil {
+		return nil, err
+	}
+	if len(variants) == 0 {
+		return variants, nil
+	}
+
+	mediaRows, err := r.db.GetDb().Query(ctx, `
+		SELECT vm.variant_id, vm.media_id, vm.position
+		FROM variant_media vm
+		JOIN variants v ON v.id = vm.variant_id
+		WHERE v.product_id = $1 AND v.is_deleted = false
+		ORDER BY vm.position ASC`, pgUUID(productID))
+	if err != nil {
+		return nil, err
+	}
+	defer mediaRows.Close()
+
+	mediaLinks, err := pgx.CollectRows(mediaRows, pgx.RowToStructByName[domain.VariantMedia])
+	if err != nil {
+		return nil, err
+	}
+
+	mediaByVariant := make(map[uuid.UUID][]domain.VariantMedia, len(variants))
+	for _, m := range mediaLinks {
+		mediaByVariant[m.VariantID] = append(mediaByVariant[m.VariantID], m)
+	}
+
+	for i := range variants {
+		variants[i].Media = mediaByVariant[variants[i].ID]
+		if variants[i].Media == nil {
+			variants[i].Media = []domain.VariantMedia{}
+		}
+	}
+
+	return variants, nil
+}
+
+// findProductMedia loads the product's gallery media.
+func (r *productRepo) findProductMedia(ctx context.Context, productID uuid.UUID) ([]domain.ProductMedia, error) {
+
+	rows, err := r.db.GetDb().Query(ctx, `
+		SELECT id, product_id, type, url, alt_text, position, created_at, updated_at
+		FROM product_media
+		WHERE product_id = $1
+		ORDER BY position ASC, id ASC`, pgUUID(productID))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	media, err := pgx.CollectRows(rows, pgx.RowToStructByName[domain.ProductMedia])
+	if err != nil {
+		return nil, err
+	}
+
+	return media, nil
+}
+
+// productListRow is the row shape scanned by FindAll: base product columns
+// (via the embedded domain.Product) plus the joined category slug/name and the
+// computed min/max variant prices. Nested domain fields (Category/Prices) are
+// populated manually after scanning.
+type productListRow struct {
+	domain.Product
+	CategorySlug *string         `db:"category_slug"`
+	CategoryName *string         `db:"category_name"`
+	StartPrice   decimal.Decimal `db:"start_price"`
+	MaxPrice     decimal.Decimal `db:"max_price"`
+}
+
+// productDetailRow is the row shape scanned by findProductBy: base product
+// columns plus the joined category slug/name.
+type productDetailRow struct {
+	domain.Product
+	CategorySlug *string `db:"category_slug"`
+	CategoryName *string `db:"category_name"`
 }
 
 // pgUUID encodes a google/uuid.UUID as pgx's pgtype.UUID.

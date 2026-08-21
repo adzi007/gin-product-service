@@ -59,6 +59,9 @@ func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler, prod
 		products := v1.Group("/products")
 		{
 			products.POST("", productHandler.Create)
+			products.GET("", productHandler.Fetch)
+			// /:id also serves handle lookups — see ProductHandler.GetByID.
+			products.GET("/:id", productHandler.GetByID)
 		}
 	}
 

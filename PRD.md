@@ -252,7 +252,8 @@ type InventoryRepository interface {
 | `GET` | `/v1/categories` | List all categories |
 | `POST` | `/v1/products` | Create product with options, variant, gallery, & initial stock |
 | `GET` | `/v1/products` | List products with filtering & pagination |
-| `GET` | `/v1/products/:id_or_handle` | Get full product detail (Options, Variants, Gallery) |
+| `GET` | `/v1/products/:id` | Get full product detail (Options, Variants, Gallery) by product.id |
+| `GET` | `/v1/products/:slug` | Get full product detail (Options, Variants, Gallery) by product.handle |
 | `PUT` | `/v1/products/:id` | Update product master info |
 | `DELETE` | `/v1/products/:id` | Cascade delete product |
 | `POST` | `/v1/products/:id/media` | Upload/Add media item to product gallery |
@@ -596,8 +597,8 @@ Table inventory_levels {
   id uuid [pk, default: `gen_random_uuid()`]
   inventory_item_id uuid [not null]
   location_id uuid [not null]
-  available_qty numeric(14,4) [default: 0]
-  reserved_qty numeric(14,4) [default: 0]
+  available_qty integer
+  reserved_qty integer
   updated_at timestamptz [default: `now()`]
 
   indexes {
@@ -620,7 +621,7 @@ Table stock_moves {
   from_location_id uuid
   to_location_id uuid 
   move_type stock_move_type [not null]
-  quantity numeric(14,4) [not null]
+  quantity integer
   created_by uuid
   reason text
   created_at timestamptz [default: `now()`]
@@ -631,7 +632,7 @@ Table reservations {
   inventory_item_id uuid [not null]
   location_id uuid [not null]
   order_id uuid
-  quantity numeric(14,4) [not null]
+  quantity integer
   reserved_at timestamptz [default: `now()`]
   expires_at timestamptz
 }

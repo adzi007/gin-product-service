@@ -111,7 +111,7 @@ func (uc *insertProductUc) Create(ctx context.Context, input domain.CreateProduc
 		if v.TrackInventory != nil {
 			trackInventory = *v.TrackInventory
 		}
-		targetQty := decimal.NewFromInt(int64(v.Stock))
+		// targetQty := decimal.NewFromInt(int64(v.Stock))
 
 		variants = append(variants, domain.Variant{
 			ID:        variantID,
@@ -135,19 +135,22 @@ func (uc *insertProductUc) Create(ctx context.Context, input domain.CreateProduc
 		// ADJUST sets available_qty to an absolute target. There is no
 		// pre-existing inventory_levels row for a brand-new variant, so the
 		// "current" available_qty is 0 and the delta equals +stock.
-		delta := computeAdjustDelta(decimal.Zero, targetQty)
+		// delta := computeAdjustDelta(decimal.Zero, targetQty)
 		stockMoves = append(stockMoves, domain.StockMove{
 			ID:              uuid.Must(uuid.NewV7()),
 			InventoryItemID: inventoryItemID,
 			MoveType:        domain.StockMoveAdjust,
-			Quantity:        delta,
+			// Quantity:        delta,
+			Quantity: v.Stock,
 		})
 
 		inventoryLevels = append(inventoryLevels, domain.InventoryLevel{
 			ID:              uuid.Must(uuid.NewV7()),
 			InventoryItemID: inventoryItemID,
-			AvailableQty:    targetQty,
-			ReservedQty:     decimal.Zero,
+			// AvailableQty:    targetQty,
+			AvailableQty: v.Stock,
+			// ReservedQty:     decimal.Zero,
+			ReservedQty: 0,
 		})
 	}
 

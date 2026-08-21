@@ -28,12 +28,29 @@ type Product struct {
 	Title       string          `json:"title" db:"title"`
 	Description *string         `json:"description,omitempty" db:"description"`
 	Vendor      *string         `json:"vendor,omitempty" db:"vendor"`
-	CategoryID  int             `json:"category_id" db:"category_id"`
-	Options     []ProductOption `json:"options,omitempty"`
-	Variants    []Variant       `json:"variants,omitempty"`
-	Media       []ProductMedia  `json:"media,omitempty"`
+	CategoryID  int             `json:"-" db:"category_id"`
+	Category    ProductCategory `json:"category" db:"-"`
+	Prices      ProductPrices   `json:"prices" db:"-"`
+	Options     []ProductOption `json:"options,omitempty" db:"-"`
+	Variants    []Variant       `json:"variants,omitempty" db:"-"`
+	Media       []ProductMedia  `json:"media,omitempty" db:"-"`
 	CreatedAt   time.Time       `json:"created_at" db:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at" db:"updated_at"`
+	UpdatedAt   *time.Time      `json:"updated_at,omitempty" db:"updated_at"`
+}
+
+// ProductCategory is the nested category shape exposed on product responses.
+// It intentionally omits id/thumbnail/description — only slug and name are
+// surfaced to API consumers.
+type ProductCategory struct {
+	Slug string `json:"slug"`
+	Name string `json:"name"`
+}
+
+// ProductPrices holds the min/max variant prices exposed on product list
+// responses. Both values are computed across a product's non-deleted variants.
+type ProductPrices struct {
+	StartPrice decimal.Decimal `json:"startPrice"`
+	MaxPrice   decimal.Decimal `json:"maxPrice"`
 }
 
 type ProductOption struct {
@@ -41,7 +58,7 @@ type ProductOption struct {
 	ProductID uuid.UUID            `json:"product_id" db:"product_id"`
 	Name      string               `json:"name" db:"name"`
 	Position  int                  `json:"position" db:"position"`
-	Values    []ProductOptionValue `json:"values,omitempty"`
+	Values    []ProductOptionValue `json:"values,omitempty" db:"-"`
 }
 
 type ProductOptionValue struct {
@@ -66,12 +83,17 @@ type Variant struct {
 	Title     *string         `json:"title,omitempty" db:"title"`
 	Price     decimal.Decimal `json:"price" db:"price"`
 	Weight    decimal.Decimal `json:"weight" db:"weight"`
+	// Stock is the total available quantity across all inventory levels for
+	// this variant. It is computed (not stored) and only populated on the
+	// single-product detail path.
+	// Stock decimal.Decimal `json:"stock" db:"stock"`
+	Stock int `json:"stock" db:"stock"`
 	// Options stores the raw JSONB: [{"option":"Color","value":"Black"}].
 	Options   []byte         `json:"-" db:"options"`
 	IsDeleted bool           `json:"is_deleted" db:"is_deleted"`
-	Media     []VariantMedia `json:"media,omitempty"`
+	Media     []VariantMedia `json:"media,omitempty" db:"-"`
 	CreatedAt time.Time      `json:"created_at" db:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at" db:"updated_at"`
+	UpdatedAt *time.Time     `json:"updated_at,omitempty" db:"updated_at"`
 }
 
 // VariantMedia links a variant to a product_media row.
@@ -82,14 +104,14 @@ type VariantMedia struct {
 }
 
 type ProductMedia struct {
-	ID        uuid.UUID `json:"id" db:"id"`
-	ProductID uuid.UUID `json:"product_id" db:"product_id"`
-	Type      string    `json:"type" db:"type"` // "image", "video"
-	URL       string    `json:"url" db:"url"`
-	AltText   *string   `json:"alt_text,omitempty" db:"alt_text"`
-	Position  int       `json:"position" db:"position"`
-	CreatedAt time.Time `json:"created_at" db:"created_at"`
-	UpdatedAt time.Time `json:"updated_at" db:"updated_at"`
+	ID        uuid.UUID  `json:"id" db:"id"`
+	ProductID uuid.UUID  `json:"product_id" db:"product_id"`
+	Type      string     `json:"type" db:"type"` // "image", "video"
+	URL       string     `json:"url" db:"url"`
+	AltText   *string    `json:"alt_text,omitempty" db:"alt_text"`
+	Position  int        `json:"position" db:"position"`
+	CreatedAt time.Time  `json:"created_at" db:"created_at"`
+	UpdatedAt *time.Time `json:"updated_at,omitempty" db:"updated_at"`
 }
 
 type InventoryItem struct {
@@ -101,24 +123,27 @@ type InventoryItem struct {
 }
 
 type InventoryLevel struct {
-	ID              uuid.UUID       `json:"id" db:"id"`
-	InventoryItemID uuid.UUID       `json:"inventory_item_id" db:"inventory_item_id"`
-	LocationID      uuid.UUID       `json:"location_id" db:"location_id"`
-	AvailableQty    decimal.Decimal `json:"available_qty" db:"available_qty"`
-	ReservedQty     decimal.Decimal `json:"reserved_qty" db:"reserved_qty"`
-	UpdatedAt       time.Time       `json:"updated_at" db:"updated_at"`
+	ID              uuid.UUID `json:"id" db:"id"`
+	InventoryItemID uuid.UUID `json:"inventory_item_id" db:"inventory_item_id"`
+	LocationID      uuid.UUID `json:"location_id" db:"location_id"`
+	// AvailableQty    decimal.Decimal `json:"available_qty" db:"available_qty"`
+	// ReservedQty     decimal.Decimal `json:"reserved_qty" db:"reserved_qty"`
+	AvailableQty int       `json:"available_qty" db:"available_qty"`
+	ReservedQty  int       `json:"reserved_qty" db:"reserved_qty"`
+	UpdatedAt    time.Time `json:"updated_at" db:"updated_at"`
 }
 
 type StockMove struct {
-	ID              uuid.UUID       `json:"id" db:"id"`
-	InventoryItemID uuid.UUID       `json:"inventory_item_id" db:"inventory_item_id"`
-	FromLocationID  *uuid.UUID      `json:"from_location_id,omitempty" db:"from_location_id"`
-	ToLocationID    *uuid.UUID      `json:"to_location_id,omitempty" db:"to_location_id"`
-	MoveType        StockMoveType   `json:"move_type" db:"move_type"`
-	Quantity        decimal.Decimal `json:"quantity" db:"quantity"`
-	CreatedBy       *uuid.UUID      `json:"created_by,omitempty" db:"created_by"`
-	Reason          *string         `json:"reason,omitempty" db:"reason"`
-	CreatedAt       time.Time       `json:"created_at" db:"created_at"`
+	ID              uuid.UUID     `json:"id" db:"id"`
+	InventoryItemID uuid.UUID     `json:"inventory_item_id" db:"inventory_item_id"`
+	FromLocationID  *uuid.UUID    `json:"from_location_id,omitempty" db:"from_location_id"`
+	ToLocationID    *uuid.UUID    `json:"to_location_id,omitempty" db:"to_location_id"`
+	MoveType        StockMoveType `json:"move_type" db:"move_type"`
+	// Quantity        decimal.Decimal `json:"quantity" db:"quantity"`
+	Quantity  int        `json:"quantity" db:"quantity"`
+	CreatedBy *uuid.UUID `json:"created_by,omitempty" db:"created_by"`
+	Reason    *string    `json:"reason,omitempty" db:"reason"`
+	CreatedAt time.Time  `json:"created_at" db:"created_at"`
 }
 
 // Domain errors surfaced by the product module.
@@ -138,6 +163,8 @@ var (
 	// ErrDefaultLocationNotFound is returned when no location is flagged as the
 	// default location.
 	ErrDefaultLocationNotFound = errors.New("default location not configured")
+	// ErrProductNotFound is returned when no product matches the given id/handle.
+	ErrProductNotFound = errors.New("product not found")
 )
 
 // CreateProductParams carries everything the repository needs to persist a new
@@ -155,9 +182,38 @@ type InsertProductUseCase interface {
 	Create(ctx context.Context, input CreateProductInput) (Product, error)
 }
 
+// ListProductParams carries filter/pagination/sort input for listing products.
+// Mirrors domain.ListCategoryParams in category.go — keep field names consistent.
+type ListProductParams struct {
+	Search  string // matches against title and handle via ILIKE
+	Page    int
+	PerPage int
+	SortBy  string // whitelisted: "title", "created_at"
+	SortDir string // "asc" | "desc"
+}
+
+// PaginatedProducts carries the page data plus pagination metadata.
+type PaginatedProducts struct {
+	Data       []Product `json:"data"`
+	Total      int       `json:"total"`
+	Page       int       `json:"page"`
+	PerPage    int       `json:"per_page"`
+	TotalPages int       `json:"total_pages"`
+}
+
+// QueryProductUseCase is the application-layer contract for reading products.
+type QueryProductUseCase interface {
+	FindAll(ctx context.Context, params ListProductParams) (PaginatedProducts, error)
+	GetByID(ctx context.Context, id uuid.UUID) (Product, error)
+	GetByHandle(ctx context.Context, handle string) (Product, error)
+}
+
 // ProductRepository is the persistence contract for the product module.
 type ProductRepository interface {
 	Create(ctx context.Context, params CreateProductParams) (Product, error)
+	FindAll(ctx context.Context, params ListProductParams) ([]Product, int, error)
+	FindByID(ctx context.Context, id uuid.UUID) (Product, error)
+	FindByHandle(ctx context.Context, handle string) (Product, error)
 }
 
 // CreateProductInput is the request body for creating a product.

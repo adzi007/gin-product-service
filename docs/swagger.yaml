@@ -102,6 +102,87 @@ definitions:
       total_pages:
         type: integer
     type: object
+  domain.PaginatedProducts:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/domain.Product'
+        type: array
+      page:
+        type: integer
+      per_page:
+        type: integer
+      total:
+        type: integer
+      total_pages:
+        type: integer
+    type: object
+  domain.Product:
+    properties:
+      category_id:
+        type: integer
+      created_at:
+        type: string
+      description:
+        type: string
+      handle:
+        type: string
+      id:
+        type: string
+      media:
+        items:
+          $ref: '#/definitions/domain.ProductMedia'
+        type: array
+      options:
+        items:
+          $ref: '#/definitions/domain.ProductOption'
+        type: array
+      title:
+        type: string
+      updated_at:
+        type: string
+      variants:
+        items:
+          $ref: '#/definitions/domain.Variant'
+        type: array
+      vendor:
+        type: string
+    type: object
+  domain.ProductMedia:
+    properties:
+      alt_text:
+        type: string
+      created_at:
+        type: string
+      id:
+        type: string
+      position:
+        type: integer
+      product_id:
+        type: string
+      type:
+        description: '"image", "video"'
+        type: string
+      updated_at:
+        type: string
+      url:
+        type: string
+    type: object
+  domain.ProductOption:
+    properties:
+      id:
+        type: string
+      name:
+        type: string
+      position:
+        type: integer
+      product_id:
+        type: string
+      values:
+        items:
+          $ref: '#/definitions/domain.ProductOptionValue'
+        type: array
+    type: object
   domain.ProductOptionInput:
     properties:
       name:
@@ -114,6 +195,17 @@ definitions:
     required:
     - name
     - values
+    type: object
+  domain.ProductOptionValue:
+    properties:
+      id:
+        type: string
+      option_id:
+        type: string
+      position:
+        type: integer
+      value:
+        type: string
     type: object
   domain.UpdateCategoryInput:
     properties:
@@ -128,6 +220,33 @@ definitions:
         type: string
     required:
     - name
+    type: object
+  domain.Variant:
+    properties:
+      barcode:
+        type: string
+      created_at:
+        type: string
+      id:
+        type: string
+      is_deleted:
+        type: boolean
+      media:
+        items:
+          $ref: '#/definitions/domain.VariantMedia'
+        type: array
+      price:
+        type: number
+      product_id:
+        type: string
+      sku:
+        type: string
+      title:
+        type: string
+      updated_at:
+        type: string
+      weight:
+        type: number
     type: object
   domain.VariantInput:
     properties:
@@ -157,6 +276,13 @@ definitions:
     required:
     - price
     - weight
+    type: object
+  domain.VariantMedia:
+    properties:
+      id:
+        type: string
+      position:
+        type: integer
     type: object
   domain.VariantMediaInput:
     properties:
@@ -393,6 +519,49 @@ paths:
       tags:
       - categories
   /products:
+    get:
+      description: Get a paginated, filterable list of products
+      parameters:
+      - description: Filter by partial (case-insensitive) title or handle match
+        in: query
+        name: search
+        type: string
+      - description: Page number (1-indexed)
+        in: query
+        name: page
+        type: integer
+      - description: Items per page
+        in: query
+        name: per_page
+        type: integer
+      - description: 'Sort column. One of: title, created_at'
+        in: query
+        name: sort_by
+        type: string
+      - description: 'Sort direction. One of: asc, desc'
+        in: query
+        name: sort_dir
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/domain.PaginatedProducts'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List products
+      tags:
+      - products
     post:
       consumes:
       - application/json
@@ -429,6 +598,37 @@ paths:
             additionalProperties: true
             type: object
       summary: Create a product
+      tags:
+      - products
+  /products/{id}:
+    get:
+      description: Get a single product (with options, variants and media) by UUID
+        or handle
+      parameters:
+      - description: Product UUID or handle
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get a product by ID or handle
       tags:
       - products
 swagger: "2.0"
