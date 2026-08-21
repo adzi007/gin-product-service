@@ -44,7 +44,7 @@ func TestToProductDetailData_CategoryAndStock(t *testing.T) {
 	// 	t.Errorf("expected variant stock 25, got %s", data.Variants[0].Stock)
 	// }
 	if data.Variants[0].Stock != 25 {
-		t.Errorf("expected variant stock 25, got %s", data.Variants[0].Stock)
+		t.Errorf("expected variant stock 25, got %d", data.Variants[0].Stock)
 	}
 }
 

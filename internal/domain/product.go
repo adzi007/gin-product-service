@@ -23,19 +23,20 @@ const (
 
 // Product is the catalog master record.
 type Product struct {
-	ID          uuid.UUID       `json:"id" db:"id"`
-	Handle      string          `json:"handle" db:"handle"`
-	Title       string          `json:"title" db:"title"`
-	Description *string         `json:"description,omitempty" db:"description"`
-	Vendor      *string         `json:"vendor,omitempty" db:"vendor"`
-	CategoryID  int             `json:"-" db:"category_id"`
-	Category    ProductCategory `json:"category" db:"-"`
-	Prices      ProductPrices   `json:"prices" db:"-"`
-	Options     []ProductOption `json:"options,omitempty" db:"-"`
-	Variants    []Variant       `json:"variants,omitempty" db:"-"`
-	Media       []ProductMedia  `json:"media,omitempty" db:"-"`
-	CreatedAt   time.Time       `json:"created_at" db:"created_at"`
-	UpdatedAt   *time.Time      `json:"updated_at,omitempty" db:"updated_at"`
+	ID          uuid.UUID         `json:"id" db:"id"`
+	Handle      string            `json:"handle" db:"handle"`
+	Title       string            `json:"title" db:"title"`
+	Thumbnail   *ProductThumbnail `json:"thumbnail" db:"-"`
+	Description *string           `json:"description,omitempty" db:"description"`
+	Vendor      *string           `json:"vendor,omitempty" db:"vendor"`
+	CategoryID  int               `json:"-" db:"category_id"`
+	Category    ProductCategory   `json:"category" db:"-"`
+	Prices      ProductPrices     `json:"prices" db:"-"`
+	Options     []ProductOption   `json:"options,omitempty" db:"-"`
+	Variants    []Variant         `json:"variants,omitempty" db:"-"`
+	Media       []ProductMedia    `json:"media,omitempty" db:"-"`
+	CreatedAt   time.Time         `json:"created_at" db:"created_at"`
+	UpdatedAt   *time.Time        `json:"updated_at,omitempty" db:"updated_at"`
 }
 
 // ProductCategory is the nested category shape exposed on product responses.
@@ -51,6 +52,15 @@ type ProductCategory struct {
 type ProductPrices struct {
 	StartPrice decimal.Decimal `json:"startPrice"`
 	MaxPrice   decimal.Decimal `json:"maxPrice"`
+}
+
+// ProductThumbnail is the primary media image exposed on product list
+// responses. It mirrors the Type/AltText fields of ProductMedia, sourced from
+// the product_media row with position = 1.
+type ProductThumbnail struct {
+	Type    string  `json:"type"`
+	URL     string  `json:"url"`
+	AltText *string `json:"altText,omitempty"`
 }
 
 type ProductOption struct {

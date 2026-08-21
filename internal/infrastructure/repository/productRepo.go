@@ -251,7 +251,10 @@ func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductPara
 			category.slug AS category_slug,
 			category.name AS category_name,
 			COALESCE(price_stats.min_price, 0) AS start_price,
-			COALESCE(price_stats.max_price, 0) AS max_price
+			COALESCE(price_stats.max_price, 0) AS max_price,
+			thumbnail.type AS thumbnail_type,
+			thumbnail.url AS thumbnail_url,
+			thumbnail.alt_text AS thumbnail_alt_text
 
 		FROM products
 		LEFT JOIN category ON products.category_id = category.id
@@ -260,6 +263,12 @@ func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductPara
 			FROM variants v
 			WHERE v.product_id = products.id AND v.is_deleted = false
 		) price_stats ON true
+		LEFT JOIN LATERAL (
+			SELECT pm.type, pm.url, pm.alt_text
+			FROM product_media pm
+			WHERE pm.product_id = products.id AND pm.position = 1
+			LIMIT 1
+		) thumbnail ON true
 		%s
 		ORDER BY %s %s
 		LIMIT $%d OFFSET $%d
@@ -289,6 +298,13 @@ func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductPara
 		}
 		p.Prices.StartPrice = row.StartPrice
 		p.Prices.MaxPrice = row.MaxPrice
+		if row.ThumbnailURL != nil {
+			p.Thumbnail = &domain.ProductThumbnail{
+				Type:    *row.ThumbnailType,
+				URL:     *row.ThumbnailURL,
+				AltText: row.ThumbnailAltText,
+			}
+		}
 		products = append(products, p)
 	}
 
@@ -523,10 +539,13 @@ func (r *productRepo) findProductMedia(ctx context.Context, productID uuid.UUID)
 // populated manually after scanning.
 type productListRow struct {
 	domain.Product
-	CategorySlug *string         `db:"category_slug"`
-	CategoryName *string         `db:"category_name"`
-	StartPrice   decimal.Decimal `db:"start_price"`
-	MaxPrice     decimal.Decimal `db:"max_price"`
+	CategorySlug     *string         `db:"category_slug"`
+	CategoryName     *string         `db:"category_name"`
+	StartPrice       decimal.Decimal `db:"start_price"`
+	MaxPrice         decimal.Decimal `db:"max_price"`
+	ThumbnailType    *string         `db:"thumbnail_type"`
+	ThumbnailURL     *string         `db:"thumbnail_url"`
+	ThumbnailAltText *string         `db:"thumbnail_alt_text"`
 }
 
 // productDetailRow is the row shape scanned by findProductBy: base product
