@@ -1576,6 +1576,14 @@ func toProductData(p domain.Product) productData {
 	return data
 }
 
+// strOrEmpty returns the empty string when s is nil, otherwise *s.
+func strOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 func toProductDetailData(p domain.Product) productDetailData {
 	data := productDetailData{
 		ID:          p.ID,
@@ -1625,8 +1633,8 @@ func toProductDetailData(p domain.Product) productDetailData {
 
 		data.Variants = append(data.Variants, variantDetailData{
 			ID:      v.ID,
-			Title:   *v.Title,
-			Barcode: *v.Barcode,
+			Title:   strOrEmpty(v.Title),
+			Barcode: strOrEmpty(v.Barcode),
 			SKU:     v.SKU,
 			Price:   v.Price,
 			Stock:   v.Stock,
