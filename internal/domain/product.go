@@ -9,18 +9,6 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// StockMoveType enumerates the allowed stock movement kinds.
-type StockMoveType string
-
-const (
-	StockMoveIn        StockMoveType = "IN"
-	StockMoveOut       StockMoveType = "OUT"
-	StockMoveTransfer  StockMoveType = "TRANSFER"
-	StockMoveAdjust    StockMoveType = "ADJUST"
-	StockMoveReserve   StockMoveType = "RESERVE"
-	StockMoveUnreserve StockMoveType = "UNRESERVE"
-)
-
 // ProductStatus enumerates the allowed product lifecycle states.
 type ProductStatus string
 
@@ -89,43 +77,6 @@ type ProductOptionValue struct {
 	Position int       `json:"position" db:"position"`
 }
 
-// VariantOption is the typed representation of a single entry in the
-// variants.options JSONB column: [{"option":"Color","value":"Black"}].
-type VariantOption struct {
-	Option string `json:"option"`
-	Value  string `json:"value"`
-}
-
-type Variant struct {
-	ID        uuid.UUID       `json:"id" db:"id"`
-	ProductID uuid.UUID       `json:"product_id" db:"product_id"`
-	SKU       *string         `json:"sku,omitempty" db:"sku"`
-	Barcode   *string         `json:"barcode,omitempty" db:"barcode"`
-	Title     *string         `json:"title,omitempty" db:"title"`
-	Price     decimal.Decimal `json:"price" db:"price"`
-	Weight    decimal.Decimal `json:"weight" db:"weight"`
-	// Position is the display order of this variant within its product.
-	Position int `json:"position" db:"position"`
-	// Stock is the total available quantity across all inventory levels for
-	// this variant. It is computed (not stored) and only populated on the
-	// single-product detail path.
-	// Stock decimal.Decimal `json:"stock" db:"stock"`
-	Stock int `json:"stock" db:"stock"`
-	// Options stores the raw JSONB: [{"option":"Color","value":"Black"}].
-	Options   []byte         `json:"-" db:"options"`
-	IsDeleted bool           `json:"is_deleted" db:"is_deleted"`
-	Media     []VariantMedia `json:"media,omitempty" db:"-"`
-	CreatedAt time.Time      `json:"created_at" db:"created_at"`
-	UpdatedAt *time.Time     `json:"updated_at,omitempty" db:"updated_at"`
-}
-
-// VariantMedia links a variant to a product_media row.
-type VariantMedia struct {
-	VariantID uuid.UUID `json:"-" db:"variant_id"`
-	MediaID   uuid.UUID `json:"id" db:"media_id"`
-	Position  int       `json:"position" db:"position"`
-}
-
 type ProductMedia struct {
 	ID        uuid.UUID  `json:"id" db:"id"`
 	ProductID uuid.UUID  `json:"product_id" db:"product_id"`
@@ -135,38 +86,6 @@ type ProductMedia struct {
 	Position  int        `json:"position" db:"position"`
 	CreatedAt time.Time  `json:"created_at" db:"created_at"`
 	UpdatedAt *time.Time `json:"updated_at,omitempty" db:"updated_at"`
-}
-
-type InventoryItem struct {
-	ID             uuid.UUID  `json:"id" db:"id"`
-	VariantID      *uuid.UUID `json:"variant_id,omitempty" db:"variant_id"`
-	Description    *string    `json:"description,omitempty" db:"description"`
-	TrackInventory bool       `json:"track_inventory" db:"track_inventory"`
-	CreatedAt      time.Time  `json:"created_at" db:"created_at"`
-}
-
-type InventoryLevel struct {
-	ID              uuid.UUID `json:"id" db:"id"`
-	InventoryItemID uuid.UUID `json:"inventory_item_id" db:"inventory_item_id"`
-	LocationID      uuid.UUID `json:"location_id" db:"location_id"`
-	// AvailableQty    decimal.Decimal `json:"available_qty" db:"available_qty"`
-	// ReservedQty     decimal.Decimal `json:"reserved_qty" db:"reserved_qty"`
-	AvailableQty int       `json:"available_qty" db:"available_qty"`
-	ReservedQty  int       `json:"reserved_qty" db:"reserved_qty"`
-	UpdatedAt    time.Time `json:"updated_at" db:"updated_at"`
-}
-
-type StockMove struct {
-	ID              uuid.UUID     `json:"id" db:"id"`
-	InventoryItemID uuid.UUID     `json:"inventory_item_id" db:"inventory_item_id"`
-	FromLocationID  *uuid.UUID    `json:"from_location_id,omitempty" db:"from_location_id"`
-	ToLocationID    *uuid.UUID    `json:"to_location_id,omitempty" db:"to_location_id"`
-	MoveType        StockMoveType `json:"move_type" db:"move_type"`
-	// Quantity        decimal.Decimal `json:"quantity" db:"quantity"`
-	Quantity  int        `json:"quantity" db:"quantity"`
-	CreatedBy *uuid.UUID `json:"created_by,omitempty" db:"created_by"`
-	Reason    *string    `json:"reason,omitempty" db:"reason"`
-	CreatedAt time.Time  `json:"created_at" db:"created_at"`
 }
 
 // Domain errors surfaced by the product module.
@@ -298,19 +217,6 @@ type OptionUseCase interface {
 	DeleteValue(ctx context.Context, productID, optionID, valueID uuid.UUID) error
 }
 
-// VariantUseCase is the application-layer contract for managing a product's
-// variants (standalone CRUD, lifecycle and position reordering).
-type VariantUseCase interface {
-	Create(ctx context.Context, productID uuid.UUID, input CreateVariantInput) (Variant, error)
-	BulkCreate(ctx context.Context, productID uuid.UUID, input BulkCreateVariantsInput) ([]Variant, error)
-	Update(ctx context.Context, variantID uuid.UUID, input UpdateVariantInput) (Variant, error)
-	BulkUpdate(ctx context.Context, productID uuid.UUID, input BulkUpdateVariantsInput) ([]Variant, error)
-	Delete(ctx context.Context, variantID uuid.UUID) error
-	BulkDelete(ctx context.Context, productID uuid.UUID, input BulkDeleteVariantsInput) error
-	Restore(ctx context.Context, variantID uuid.UUID) (Variant, error)
-	Reorder(ctx context.Context, productID uuid.UUID, positions []PositionUpdate) error
-}
-
 // MediaUseCase is the application-layer contract for managing a product's
 // media gallery and attaching/detaching media to variants.
 type MediaUseCase interface {
@@ -393,23 +299,6 @@ type ProductOptionInput struct {
 	Values []string `json:"values" binding:"required" validate:"required,min=1"`
 }
 
-type VariantInput struct {
-	Title          *string             `json:"title"`
-	SKU            *string             `json:"sku"`
-	Barcode        *string             `json:"barcode"`
-	Price          *decimal.Decimal    `json:"price" binding:"required" validate:"required"`
-	Weight         *decimal.Decimal    `json:"weight" binding:"required" validate:"required"`
-	Options        map[string]string   `json:"options"`
-	Media          []VariantMediaInput `json:"media"`
-	TrackInventory *bool               `json:"track_inventory"`
-	Stock          int                 `json:"stock" validate:"gte=0"`
-}
-
-type VariantMediaInput struct {
-	ID       string `json:"id" validate:"required"`
-	Position int    `json:"position"`
-}
-
 type GalleryMediaInput struct {
 	ID       string  `json:"id" validate:"required"`
 	Type     string  `json:"type"`
@@ -463,73 +352,6 @@ type CreateOptionValueInput struct {
 type UpdateOptionValueInput struct {
 	Value    *string `json:"value"`
 	Position *int    `json:"position" validate:"omitempty,gte=0"`
-}
-
-// CreateVariantInput is the request body for POST /products/:id/variants.
-// It mirrors the persistable subset of VariantInput; the product id comes from
-// the URL param. Media entries may reference existing product_media rows by id
-// or describe brand-new media (type + url).
-type CreateVariantInput struct {
-	Title          *string                 `json:"title"`
-	SKU            *string                 `json:"sku"`
-	Barcode        *string                 `json:"barcode"`
-	Price          *decimal.Decimal        `json:"price" binding:"required" validate:"required"`
-	Weight         *decimal.Decimal        `json:"weight" binding:"required" validate:"required"`
-	Options        map[string]string       `json:"options"`
-	Media          []VariantMediaItemInput `json:"media"`
-	TrackInventory *bool                   `json:"track_inventory"`
-	Stock          int                     `json:"stock" validate:"gte=0"`
-}
-
-// VariantMediaItemInput is one entry in a variant's "media" array. If ID is
-// set, it references an existing product_media row (ownership is verified
-// against the variant's product). If ID is nil, Type/URL describe brand-new
-// media that must be inserted into product_media first.
-type VariantMediaItemInput struct {
-	ID       *uuid.UUID `json:"id"`
-	Type     string     `json:"type"`
-	URL      string     `json:"url"`
-	AltText  *string    `json:"altText"`
-	Position int        `json:"position"`
-}
-
-// BulkCreateVariantsInput is the request body for POST /products/:id/variants/bulk.
-type BulkCreateVariantsInput struct {
-	Variants []CreateVariantInput `json:"variants" binding:"required" validate:"required,min=1,dive"`
-}
-
-// UpdateVariantInput is the request body for PATCH /variants/:id. All fields
-// are optional pointers: nil means "leave this column unchanged". Stock is
-// optional (nil = don't touch stock) and media is append-only.
-type UpdateVariantInput struct {
-	SKU     *string                 `json:"sku" validate:"omitempty"`
-	Barcode *string                 `json:"barcode" validate:"omitempty"`
-	Title   *string                 `json:"title" validate:"omitempty"`
-	Price   *decimal.Decimal        `json:"price" validate:"omitempty"`
-	Weight  *decimal.Decimal        `json:"weight" validate:"omitempty"`
-	Stock   *int                    `json:"stock" validate:"omitempty,gte=0"`
-	Media   []VariantMediaItemInput `json:"media"`
-}
-
-// VariantUpdateItem is a single variant update within a bulk update request.
-type VariantUpdateItem struct {
-	ID     uuid.UUID          `json:"id" binding:"required" validate:"required"`
-	Fields UpdateVariantInput `json:"fields" binding:"required"`
-}
-
-// BulkUpdateVariantsInput is the request body for PATCH /products/:id/variants/bulk.
-type BulkUpdateVariantsInput struct {
-	Updates []VariantUpdateItem `json:"updates" binding:"required" validate:"required,min=1,dive"`
-}
-
-// BulkDeleteVariantsInput is the request body for POST /products/:id/variants/bulk-delete.
-type BulkDeleteVariantsInput struct {
-	IDs []uuid.UUID `json:"ids" binding:"required" validate:"required,min=1,dive"`
-}
-
-// ReorderVariantsInput is the request body for PATCH /products/:id/variants/reorder.
-type ReorderVariantsInput struct {
-	Positions []PositionUpdate `json:"positions" binding:"required" validate:"required,min=1,dive"`
 }
 
 // CreateMediaInput is a single media item for POST /products/:id/media.
