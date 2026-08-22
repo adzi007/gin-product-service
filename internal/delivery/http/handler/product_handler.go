@@ -1488,22 +1488,26 @@ type productCategoryData struct {
 // Unlike productData (used by Create), it exposes a nested category object
 // instead of category_id and adds per-variant stock.
 type productDetailData struct {
-	ID          uuid.UUID            `json:"id"`
-	Handle      string               `json:"handle"`
-	Title       string               `json:"title"`
-	Status      domain.ProductStatus `json:"status"`
-	Description *string              `json:"description,omitempty"`
-	Vendor      *string              `json:"vendor,omitempty"`
-	Category    productCategoryData  `json:"category"`
-	Options     []productOptionData  `json:"options"`
-	Variants    []variantDetailData  `json:"variants"`
-	CreatedAt   time.Time            `json:"created_at"`
+	ID          uuid.UUID                `json:"id"`
+	Handle      string                   `json:"handle"`
+	Title       string                   `json:"title"`
+	Status      domain.ProductStatus     `json:"status"`
+	Description *string                  `json:"description,omitempty"`
+	Vendor      *string                  `json:"vendor,omitempty"`
+	Category    productCategoryData      `json:"category"`
+	Options     []productOptionData      `json:"options"`
+	Variants    []variantDetailData      `json:"variants"`
+	CreatedAt   time.Time                `json:"created_at"`
+	Galleries   []productGalleryItemData `json:"galleries"`
 }
 
 type variantDetailData struct {
-	ID    uuid.UUID       `json:"id"`
-	SKU   *string         `json:"sku,omitempty"`
-	Price decimal.Decimal `json:"price"`
+	ID      uuid.UUID       `json:"id"`
+	Title   string          `json:"title"`
+	SKU     *string         `json:"sku,omitempty"`
+	Price   decimal.Decimal `json:"price"`
+	Weight  decimal.Decimal `json:"weight"`
+	Barcode string          `json:"barcode"`
 	// Stock   decimal.Decimal        `json:"stock"`
 	Stock   int                    `json:"stock"`
 	Options []domain.VariantOption `json:"options"`
@@ -1584,6 +1588,7 @@ func toProductDetailData(p domain.Product) productDetailData {
 		Options:     make([]productOptionData, 0, len(p.Options)),
 		Variants:    make([]variantDetailData, 0, len(p.Variants)),
 		CreatedAt:   p.CreatedAt,
+		Galleries:   toGalleryData(p.Media),
 	}
 
 	for _, opt := range p.Options {
@@ -1620,11 +1625,14 @@ func toProductDetailData(p domain.Product) productDetailData {
 
 		data.Variants = append(data.Variants, variantDetailData{
 			ID:      v.ID,
+			Title:   *v.Title,
+			Barcode: *v.Barcode,
 			SKU:     v.SKU,
 			Price:   v.Price,
 			Stock:   v.Stock,
 			Options: opts,
 			Media:   media,
+			Weight:  v.Weight,
 		})
 	}
 
@@ -1645,6 +1653,29 @@ type variantResponseData struct {
 	IsDeleted bool            `json:"is_deleted"`
 	CreatedAt time.Time       `json:"created_at"`
 	UpdatedAt *time.Time      `json:"updated_at,omitempty"`
+}
+
+// productGalleryItemData is the shape of each entry in productDetailData.Galleries.
+type productGalleryItemData struct {
+	ID       uuid.UUID `json:"id"`
+	Type     string    `json:"type"`
+	URL      string    `json:"url"`
+	AltText  *string   `json:"altText,omitempty"`
+	Position int       `json:"position"`
+}
+
+func toGalleryData(media []domain.ProductMedia) []productGalleryItemData {
+	data := make([]productGalleryItemData, 0, len(media))
+	for _, m := range media {
+		data = append(data, productGalleryItemData{
+			ID:       m.ID,
+			Type:     m.Type,
+			URL:      m.URL,
+			AltText:  m.AltText,
+			Position: m.Position,
+		})
+	}
+	return data
 }
 
 // mediaResponseData is the response shape for product gallery media endpoints.

@@ -50,8 +50,15 @@ func TestVariantUseCase_Create_GeneratesIDAndPosition(t *testing.T) {
 	if created.Position != 2 {
 		t.Errorf("expected position 2, got %d", created.Position)
 	}
-	if repo.createVariant.ID != created.ID {
+	if len(repo.createVariantsWithStockParams.Variants) != 1 {
+		t.Fatalf("repo did not receive 1 variant, got %d", len(repo.createVariantsWithStockParams.Variants))
+	}
+	if repo.createVariantsWithStockParams.Variants[0].ID != created.ID {
 		t.Error("repo did not receive the created variant")
+	}
+	if len(repo.createVariantsWithStockParams.StockMoves) != 1 ||
+		repo.createVariantsWithStockParams.StockMoves[0].MoveType != domain.StockMoveAdjust {
+		t.Error("expected a single ADJUST stock move for the created variant")
 	}
 }
 
@@ -115,8 +122,11 @@ func TestVariantUseCase_BulkCreate_PositionsSequential(t *testing.T) {
 	if created[0].Position != 1 || created[1].Position != 2 {
 		t.Errorf("expected positions 1 and 2, got %d and %d", created[0].Position, created[1].Position)
 	}
-	if len(repo.createVariants) != 2 {
-		t.Errorf("repo did not receive 2 variants, got %d", len(repo.createVariants))
+	if len(repo.createVariantsWithStockParams.Variants) != 2 {
+		t.Errorf("repo did not receive 2 variants, got %d", len(repo.createVariantsWithStockParams.Variants))
+	}
+	if len(repo.createVariantsWithStockParams.InventoryItems) != 2 {
+		t.Errorf("repo did not receive 2 inventory items, got %d", len(repo.createVariantsWithStockParams.InventoryItems))
 	}
 }
 

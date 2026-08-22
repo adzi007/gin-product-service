@@ -1139,7 +1139,7 @@ func (r *productRepo) CreateVariant(ctx context.Context, variant domain.Variant)
 		return domain.Variant{}, translateCreateError(err)
 	}
 
-	created, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.Variant])
+	created, err := pgx.CollectOneRow(rows, pgx.RowToStructByNameLax[domain.Variant])
 	if err != nil {
 		return domain.Variant{}, err
 	}
@@ -1187,7 +1187,7 @@ func (r *productRepo) CreateVariants(ctx context.Context, variants []domain.Vari
 		return nil, translateCreateError(err)
 	}
 
-	created, err := pgx.CollectRows(rows, pgx.RowToStructByName[domain.Variant])
+	created, err := pgx.CollectRows(rows, pgx.RowToStructByNameLax[domain.Variant])
 	if err != nil {
 		return nil, err
 	}
@@ -1204,6 +1204,272 @@ func (r *productRepo) CreateVariants(ctx context.Context, variants []domain.Vari
 	}
 
 	return ordered, nil
+}
+
+// CreateVariantsWithStock persists one or more new variants together with their
+// inventory items, initial ADJUST stock moves, inventory levels and media links
+// inside a single transaction. It mirrors the variant-writing portion of Create.
+func (r *productRepo) CreateVariantsWithStock(ctx context.Context, params domain.CreateVariantsParams) ([]domain.Variant, error) {
+
+	defer metrics.ObserveDB("product", "create_variants_with_stock")(time.Now())
+
+	tx, err := r.db.GetDb().Begin(ctx)
+	if err != nil {
+		fmt.Println("DEBUG Repo CreateVariantsWithStock 1", err.Error())
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Resolve the default location once per request, not per variant.
+	var locationUUID pgtype.UUID
+	err = tx.QueryRow(ctx, `SELECT id FROM locations WHERE is_default = true LIMIT 1`).Scan(&locationUUID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			fmt.Println("DEBUG Repo CreateVariantsWithStock 2", err.Error())
+			return nil, domain.ErrDefaultLocationNotFound
+		}
+		fmt.Println("DEBUG Repo CreateVariantsWithStock 3", err.Error())
+		return nil, err
+	}
+	locationID := uuid.UUID(locationUUID.Bytes)
+
+	// 1. Brand-new product_media rows.
+	for _, m := range params.NewMedia {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO product_media (id, product_id, type, url, alt_text, position)
+			VALUES ($1, $2, $3, $4, $5, $6)`,
+			pgUUID(m.ID), pgUUID(m.ProductID), m.Type, m.URL, m.AltText, m.Position,
+		)
+		if err != nil {
+			fmt.Println("DEBUG Repo CreateVariantsWithStock 4", err.Error())
+			return nil, err
+		}
+	}
+
+	// 2. variants, using RETURNING so callers get back real created_at/etc.
+	createdVariants := make([]domain.Variant, 0, len(params.Variants))
+	if len(params.Variants) > 0 {
+		placeholders := make([]string, 0, len(params.Variants))
+		args := make([]interface{}, 0, len(params.Variants)*9)
+		for _, v := range params.Variants {
+			n := len(args)
+			placeholders = append(placeholders, fmt.Sprintf(
+				"($%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, $%d, false)",
+				n+1, n+2, n+3, n+4, n+5, n+6, n+7, n+8, n+9,
+			))
+			args = append(args,
+				pgUUID(v.ID),
+				pgUUID(v.ProductID),
+				v.SKU,
+				v.Barcode,
+				v.Title,
+				pgNumeric(v.Price),
+				pgNumeric(v.Weight),
+				v.Position,
+				v.Options,
+			)
+		}
+
+		query := fmt.Sprintf(`
+			INSERT INTO variants (id, product_id, sku, barcode, title, price, weight, position, options, is_deleted)
+			VALUES %s
+			RETURNING `+variantColumns, strings.Join(placeholders, ", "))
+
+		rows, err := tx.Query(ctx, query, args...)
+		if err != nil {
+			fmt.Println("DEBUG Repo CreateVariantsWithStock 5", err.Error())
+			return nil, translateCreateError(err)
+		}
+
+		created, err := pgx.CollectRows(rows, pgx.RowToStructByNameLax[domain.Variant])
+		if err != nil {
+			fmt.Println("DEBUG Repo CreateVariantsWithStock 6", err.Error())
+			return nil, err
+		}
+
+		// RETURNING order is not guaranteed for multi-row inserts, so reorder
+		// the result to match the input slice.
+		byID := make(map[uuid.UUID]domain.Variant, len(created))
+		for _, v := range created {
+			byID[v.ID] = v
+		}
+		for _, v := range params.Variants {
+			createdVariants = append(createdVariants, byID[v.ID])
+		}
+	}
+
+	// 3. inventory_items.
+	for _, item := range params.InventoryItems {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO inventory_items (id, variant_id, description, track_inventory)
+			VALUES ($1, $2, $3, $4)`,
+			pgUUID(item.ID),
+			pgUUIDPtr(item.VariantID),
+			item.Description,
+			item.TrackInventory,
+		)
+		if err != nil {
+			fmt.Println("DEBUG Repo CreateVariantsWithStock 7", err.Error())
+			return nil, err
+		}
+	}
+
+	// 4. stock_moves (one ADJUST move per variant). ADJUST only touches the
+	// from location, so to_location_id stays NULL.
+	for _, move := range params.StockMoves {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO stock_moves (id, inventory_item_id, from_location_id, to_location_id, move_type, quantity)
+			VALUES ($1, $2, $3, $4, $5, $6)`,
+			pgUUID(move.ID),
+			pgUUID(move.InventoryItemID),
+			pgUUID(locationID),
+			pgtype.UUID{}, // NULL
+			string(move.MoveType),
+			move.Quantity,
+		)
+		if err != nil {
+			fmt.Println("DEBUG Repo CreateVariantsWithStock 8", err.Error())
+			return nil, err
+		}
+	}
+
+	// 5. inventory_levels (initial level for the item/location pair).
+	for _, level := range params.InventoryLevels {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO inventory_levels (id, inventory_item_id, location_id, available_qty, reserved_qty)
+			VALUES ($1, $2, $3, $4, $5)`,
+			pgUUID(level.ID),
+			pgUUID(level.InventoryItemID),
+			pgUUID(locationID),
+			level.AvailableQty,
+			level.ReservedQty,
+		)
+		if err != nil {
+			fmt.Println("DEBUG Repo CreateVariantsWithStock 9", err.Error())
+			return nil, err
+		}
+	}
+
+	// 6. variant_media links.
+	for _, vm := range params.VariantMedia {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO variant_media (variant_id, media_id, position)
+			VALUES ($1, $2, $3)`,
+			pgUUID(vm.VariantID),
+			pgUUID(vm.MediaID),
+			vm.Position,
+		)
+		if err != nil {
+			fmt.Println("DEBUG Repo CreateVariantsWithStock 10", err.Error())
+			return nil, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		fmt.Println("DEBUG Repo CreateVariantsWithStock 11", err.Error())
+		return nil, err
+	}
+
+	fmt.Println("DEBUG Repo CreateVariantsWithStock END")
+
+	return createdVariants, nil
+}
+
+// AdjustVariantStock records an ADJUST stock move that sets a variant's
+// available quantity at the default location to the given absolute target,
+// upserting the inventory_levels row for that item/location pair.
+func (r *productRepo) AdjustVariantStock(ctx context.Context, variantID uuid.UUID, targetQty int) (domain.InventoryLevel, error) {
+
+	defer metrics.ObserveDB("product", "adjust_variant_stock")(time.Now())
+
+	tx, err := r.db.GetDb().Begin(ctx)
+	if err != nil {
+		return domain.InventoryLevel{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Resolve the default location.
+	var locationUUID pgtype.UUID
+	err = tx.QueryRow(ctx, `SELECT id FROM locations WHERE is_default = true LIMIT 1`).Scan(&locationUUID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.InventoryLevel{}, domain.ErrDefaultLocationNotFound
+		}
+		return domain.InventoryLevel{}, err
+	}
+	locationID := uuid.UUID(locationUUID.Bytes)
+
+	// Look up the variant's inventory item.
+	var inventoryItemID pgtype.UUID
+	err = tx.QueryRow(ctx, `SELECT id FROM inventory_items WHERE variant_id = $1`, pgUUID(variantID)).Scan(&inventoryItemID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.InventoryLevel{}, domain.ErrVariantNotFound
+		}
+		return domain.InventoryLevel{}, err
+	}
+	itemID := uuid.UUID(inventoryItemID.Bytes)
+
+	// Current available quantity (0 when no level row exists yet).
+	var currentQty int
+	err = tx.QueryRow(ctx, `
+		SELECT available_qty
+		FROM inventory_levels
+		WHERE inventory_item_id = $1 AND location_id = $2`,
+		pgUUID(itemID), pgUUID(locationID),
+	).Scan(&currentQty)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return domain.InventoryLevel{}, err
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		currentQty = 0
+	}
+
+	delta := targetQty - currentQty
+
+	// Record the ADJUST stock move (from the default location).
+	_, err = tx.Exec(ctx, `
+		INSERT INTO stock_moves (id, inventory_item_id, from_location_id, to_location_id, move_type, quantity)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		pgUUID(uuid.Must(uuid.NewV7())),
+		pgUUID(itemID),
+		pgUUID(locationID),
+		pgtype.UUID{}, // NULL
+		string(domain.StockMoveAdjust),
+		delta,
+	)
+	if err != nil {
+		return domain.InventoryLevel{}, err
+	}
+
+	// Upsert the inventory level to the absolute target. Relies on the unique
+	// (inventory_item_id, location_id) index (see migrations/0002_...).
+	rows, err := tx.Query(ctx, `
+		INSERT INTO inventory_levels (id, inventory_item_id, location_id, available_qty, reserved_qty)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (inventory_item_id, location_id) DO UPDATE
+		SET available_qty = EXCLUDED.available_qty, updated_at = now()
+		RETURNING id, inventory_item_id, location_id, available_qty, reserved_qty, COALESCE(updated_at, now()) AS updated_at`,
+		pgUUID(uuid.Must(uuid.NewV7())),
+		pgUUID(itemID),
+		pgUUID(locationID),
+		targetQty,
+		0,
+	)
+	if err != nil {
+		return domain.InventoryLevel{}, err
+	}
+
+	level, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.InventoryLevel])
+	if err != nil {
+		return domain.InventoryLevel{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return domain.InventoryLevel{}, err
+	}
+
+	return level, nil
 }
 
 // FindVariantByID loads a single variant (including its computed stock) by id.
@@ -1290,7 +1556,7 @@ func (r *productRepo) UpdateVariant(ctx context.Context, variantID uuid.UUID, in
 		if err != nil {
 			return domain.Variant{}, err
 		}
-		variant, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.Variant])
+		variant, err := pgx.CollectOneRow(rows, pgx.RowToStructByNameLax[domain.Variant])
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return domain.Variant{}, domain.ErrVariantNotFound
@@ -1315,7 +1581,7 @@ func (r *productRepo) UpdateVariant(ctx context.Context, variantID uuid.UUID, in
 		return domain.Variant{}, translateCreateError(err)
 	}
 
-	variant, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.Variant])
+	variant, err := pgx.CollectOneRow(rows, pgx.RowToStructByNameLax[domain.Variant])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.Variant{}, domain.ErrVariantNotFound
@@ -1441,7 +1707,7 @@ func (r *productRepo) RestoreVariant(ctx context.Context, variantID uuid.UUID) (
 		return domain.Variant{}, err
 	}
 
-	variant, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.Variant])
+	variant, err := pgx.CollectOneRow(rows, pgx.RowToStructByNameLax[domain.Variant])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.Variant{}, domain.ErrVariantNotFound
@@ -1714,6 +1980,48 @@ func (r *productRepo) AttachVariantMedia(ctx context.Context, variantID, mediaID
 	}
 
 	return link, nil
+}
+
+// AttachNewOrExistingVariantMedia appends media to a variant in a single
+// transaction: it inserts any brand-new product_media rows, then inserts the
+// variant_media links. Existing variant_media links are never removed.
+func (r *productRepo) AttachNewOrExistingVariantMedia(ctx context.Context, newMedia []domain.ProductMedia, links []domain.VariantMedia) error {
+
+	defer metrics.ObserveDB("product", "attach_new_or_existing_variant_media")(time.Now())
+
+	tx, err := r.db.GetDb().Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	for _, m := range newMedia {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO product_media (id, product_id, type, url, alt_text, position)
+			VALUES ($1, $2, $3, $4, $5, $6)`,
+			pgUUID(m.ID), pgUUID(m.ProductID), m.Type, m.URL, m.AltText, m.Position,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	for _, vm := range links {
+		_, err = tx.Exec(ctx, `
+			INSERT INTO variant_media (variant_id, media_id, position)
+			VALUES ($1, $2, $3)`,
+			pgUUID(vm.VariantID), pgUUID(vm.MediaID), vm.Position,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // DetachVariantMedia removes a variant_media link only; the underlying media

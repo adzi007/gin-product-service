@@ -170,6 +170,10 @@ definitions:
     properties:
       barcode:
         type: string
+      media:
+        items:
+          $ref: '#/definitions/domain.VariantMediaItemInput'
+        type: array
       options:
         additionalProperties:
           type: string
@@ -178,8 +182,13 @@ definitions:
         type: number
       sku:
         type: string
+      stock:
+        minimum: 0
+        type: integer
       title:
         type: string
+      track_inventory:
+        type: boolean
       weight:
         type: number
     required:
@@ -461,15 +470,20 @@ definitions:
     properties:
       barcode:
         type: string
+      media:
+        items:
+          $ref: '#/definitions/domain.VariantMediaItemInput'
+        type: array
       price:
-        minimum: 0
         type: number
       sku:
         type: string
+      stock:
+        minimum: 0
+        type: integer
       title:
         type: string
       weight:
-        minimum: 0
         type: number
     type: object
   domain.Variant:
@@ -553,6 +567,19 @@ definitions:
         type: integer
     required:
     - id
+    type: object
+  domain.VariantMediaItemInput:
+    properties:
+      altText:
+        type: string
+      id:
+        type: string
+      position:
+        type: integer
+      type:
+        type: string
+      url:
+        type: string
     type: object
   domain.VariantUpdateItem:
     properties:

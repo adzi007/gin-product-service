@@ -225,6 +225,18 @@ type CreateProductParams struct {
 	InventoryLevels []InventoryLevel
 }
 
+// CreateVariantsParams carries everything the repository needs to persist one
+// or more new variants (and their inventory rows/media) atomically. Used by
+// both the single-create and bulk-create variant endpoints.
+type CreateVariantsParams struct {
+	Variants        []Variant
+	InventoryItems  []InventoryItem
+	StockMoves      []StockMove
+	InventoryLevels []InventoryLevel
+	NewMedia        []ProductMedia // brand-new media to insert into product_media
+	VariantMedia    []VariantMedia // links to insert into variant_media (covers both new and existing media)
+}
+
 // InsertProductUseCase is the application-layer contract for creating a product.
 type InsertProductUseCase interface {
 	Create(ctx context.Context, input CreateProductInput) (Product, error)
@@ -335,6 +347,8 @@ type ProductRepository interface {
 
 	CreateVariant(ctx context.Context, variant Variant) (Variant, error)
 	CreateVariants(ctx context.Context, variants []Variant) ([]Variant, error)
+	CreateVariantsWithStock(ctx context.Context, params CreateVariantsParams) ([]Variant, error)
+	AdjustVariantStock(ctx context.Context, variantID uuid.UUID, targetQty int) (InventoryLevel, error)
 	FindVariantByID(ctx context.Context, variantID uuid.UUID) (Variant, error)
 	UpdateVariant(ctx context.Context, variantID uuid.UUID, input UpdateVariantInput) (Variant, error)
 	DeleteVariant(ctx context.Context, variantID uuid.UUID, hard bool) error
@@ -354,6 +368,11 @@ type ProductRepository interface {
 	AttachVariantMedia(ctx context.Context, variantID, mediaID uuid.UUID) (VariantMedia, error)
 	DetachVariantMedia(ctx context.Context, variantID, mediaID uuid.UUID) error
 	ReorderVariantMedia(ctx context.Context, variantID uuid.UUID, positions []PositionUpdate) error
+
+	// AttachNewOrExistingVariantMedia appends media links to a variant during
+	// update. It inserts any brand-new media rows (newMedia) into product_media
+	// and then inserts the variant_media links; it never touches existing links.
+	AttachNewOrExistingVariantMedia(ctx context.Context, newMedia []ProductMedia, links []VariantMedia) error
 }
 
 // CreateProductInput is the request body for creating a product.
@@ -448,14 +467,30 @@ type UpdateOptionValueInput struct {
 
 // CreateVariantInput is the request body for POST /products/:id/variants.
 // It mirrors the persistable subset of VariantInput; the product id comes from
-// the URL param and media attachments are handled by a dedicated endpoint.
+// the URL param. Media entries may reference existing product_media rows by id
+// or describe brand-new media (type + url).
 type CreateVariantInput struct {
-	Title   *string           `json:"title"`
-	SKU     *string           `json:"sku"`
-	Barcode *string           `json:"barcode"`
-	Price   *decimal.Decimal  `json:"price" binding:"required" validate:"required"`
-	Weight  *decimal.Decimal  `json:"weight" binding:"required" validate:"required"`
-	Options map[string]string `json:"options"`
+	Title          *string                 `json:"title"`
+	SKU            *string                 `json:"sku"`
+	Barcode        *string                 `json:"barcode"`
+	Price          *decimal.Decimal        `json:"price" binding:"required" validate:"required"`
+	Weight         *decimal.Decimal        `json:"weight" binding:"required" validate:"required"`
+	Options        map[string]string       `json:"options"`
+	Media          []VariantMediaItemInput `json:"media"`
+	TrackInventory *bool                   `json:"track_inventory"`
+	Stock          int                     `json:"stock" validate:"gte=0"`
+}
+
+// VariantMediaItemInput is one entry in a variant's "media" array. If ID is
+// set, it references an existing product_media row (ownership is verified
+// against the variant's product). If ID is nil, Type/URL describe brand-new
+// media that must be inserted into product_media first.
+type VariantMediaItemInput struct {
+	ID       *uuid.UUID `json:"id"`
+	Type     string     `json:"type"`
+	URL      string     `json:"url"`
+	AltText  *string    `json:"altText"`
+	Position int        `json:"position"`
 }
 
 // BulkCreateVariantsInput is the request body for POST /products/:id/variants/bulk.
@@ -464,18 +499,21 @@ type BulkCreateVariantsInput struct {
 }
 
 // UpdateVariantInput is the request body for PATCH /variants/:id. All fields
-// are optional pointers: nil means "leave this column unchanged".
+// are optional pointers: nil means "leave this column unchanged". Stock is
+// optional (nil = don't touch stock) and media is append-only.
 type UpdateVariantInput struct {
-	SKU     *string          `json:"sku" validate:"omitempty"`
-	Barcode *string          `json:"barcode" validate:"omitempty"`
-	Title   *string          `json:"title" validate:"omitempty"`
-	Price   *decimal.Decimal `json:"price" validate:"omitempty"`
-	Weight  *decimal.Decimal `json:"weight" validate:"omitempty"`
+	SKU     *string                 `json:"sku" validate:"omitempty"`
+	Barcode *string                 `json:"barcode" validate:"omitempty"`
+	Title   *string                 `json:"title" validate:"omitempty"`
+	Price   *decimal.Decimal        `json:"price" validate:"omitempty"`
+	Weight  *decimal.Decimal        `json:"weight" validate:"omitempty"`
+	Stock   *int                    `json:"stock" validate:"omitempty,gte=0"`
+	Media   []VariantMediaItemInput `json:"media"`
 }
 
 // VariantUpdateItem is a single variant update within a bulk update request.
 type VariantUpdateItem struct {
-	ID     uuid.UUID         `json:"id" binding:"required" validate:"required"`
+	ID     uuid.UUID          `json:"id" binding:"required" validate:"required"`
 	Fields UpdateVariantInput `json:"fields" binding:"required"`
 }
 

@@ -2415,6 +2415,12 @@ const docTemplate = `{
                 "barcode": {
                     "type": "string"
                 },
+                "media": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/domain.VariantMediaItemInput"
+                    }
+                },
                 "options": {
                     "type": "object",
                     "additionalProperties": {
@@ -2427,8 +2433,15 @@ const docTemplate = `{
                 "sku": {
                     "type": "string"
                 },
+                "stock": {
+                    "type": "integer",
+                    "minimum": 0
+                },
                 "title": {
                     "type": "string"
+                },
+                "track_inventory": {
+                    "type": "boolean"
                 },
                 "weight": {
                     "type": "number"
@@ -2851,19 +2864,27 @@ const docTemplate = `{
                 "barcode": {
                     "type": "string"
                 },
+                "media": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/domain.VariantMediaItemInput"
+                    }
+                },
                 "price": {
-                    "type": "number",
-                    "minimum": 0
+                    "type": "number"
                 },
                 "sku": {
                     "type": "string"
+                },
+                "stock": {
+                    "type": "integer",
+                    "minimum": 0
                 },
                 "title": {
                     "type": "string"
                 },
                 "weight": {
-                    "type": "number",
-                    "minimum": 0
+                    "type": "number"
                 }
             }
         },
@@ -2981,6 +3002,26 @@ const docTemplate = `{
                 },
                 "position": {
                     "type": "integer"
+                }
+            }
+        },
+        "domain.VariantMediaItemInput": {
+            "type": "object",
+            "properties": {
+                "altText": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "position": {
+                    "type": "integer"
+                },
+                "type": {
+                    "type": "string"
+                },
+                "url": {
+                    "type": "string"
                 }
             }
         },

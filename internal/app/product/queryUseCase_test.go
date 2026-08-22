@@ -71,6 +71,14 @@ type fakeProductRepo struct {
 	createVariants    []domain.Variant
 	createVariantsErr error
 
+	createVariantsWithStockParams domain.CreateVariantsParams
+	createVariantsWithStockErr    error
+
+	adjustVariantStockVariantID uuid.UUID
+	adjustVariantStockTargetQty int
+	adjustVariantStockResult    domain.InventoryLevel
+	adjustVariantStockErr       error
+
 	findVariantByIDData domain.Variant
 	findVariantByIDErr  error
 
@@ -117,6 +125,10 @@ type fakeProductRepo struct {
 	attachVariantMediaVariantID uuid.UUID
 	attachVariantMediaMediaID   uuid.UUID
 	attachVariantMediaErr       error
+
+	attachNewOrExistingVariantMediaNewMedia []domain.ProductMedia
+	attachNewOrExistingVariantMediaLinks    []domain.VariantMedia
+	attachNewOrExistingVariantMediaErr      error
 
 	detachVariantMediaVariantID uuid.UUID
 	detachVariantMediaMediaID   uuid.UUID
@@ -257,6 +269,26 @@ func (f *fakeProductRepo) CreateVariants(ctx context.Context, variants []domain.
 	return variants, nil
 }
 
+func (f *fakeProductRepo) CreateVariantsWithStock(ctx context.Context, params domain.CreateVariantsParams) ([]domain.Variant, error) {
+	f.createVariantsWithStockParams = params
+	if f.createVariantsWithStockErr != nil {
+		return nil, f.createVariantsWithStockErr
+	}
+	return params.Variants, nil
+}
+
+func (f *fakeProductRepo) AdjustVariantStock(ctx context.Context, variantID uuid.UUID, targetQty int) (domain.InventoryLevel, error) {
+	f.adjustVariantStockVariantID = variantID
+	f.adjustVariantStockTargetQty = targetQty
+	if f.adjustVariantStockErr != nil {
+		return domain.InventoryLevel{}, f.adjustVariantStockErr
+	}
+	if f.adjustVariantStockResult.ID != uuid.Nil {
+		return f.adjustVariantStockResult, nil
+	}
+	return domain.InventoryLevel{InventoryItemID: uuid.New(), AvailableQty: targetQty}, nil
+}
+
 func (f *fakeProductRepo) FindVariantByID(ctx context.Context, variantID uuid.UUID) (domain.Variant, error) {
 	if f.findVariantByIDErr != nil {
 		return domain.Variant{}, f.findVariantByIDErr
@@ -352,6 +384,12 @@ func (f *fakeProductRepo) AttachVariantMedia(ctx context.Context, variantID, med
 		return domain.VariantMedia{}, f.attachVariantMediaErr
 	}
 	return domain.VariantMedia{VariantID: variantID, MediaID: mediaID}, nil
+}
+
+func (f *fakeProductRepo) AttachNewOrExistingVariantMedia(ctx context.Context, newMedia []domain.ProductMedia, links []domain.VariantMedia) error {
+	f.attachNewOrExistingVariantMediaNewMedia = newMedia
+	f.attachNewOrExistingVariantMediaLinks = links
+	return f.attachNewOrExistingVariantMediaErr
 }
 
 func (f *fakeProductRepo) DetachVariantMedia(ctx context.Context, variantID, mediaID uuid.UUID) error {
