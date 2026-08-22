@@ -62,16 +62,16 @@ type VariantInput struct {
 	Title          *string             `json:"title"`
 	SKU            *string             `json:"sku"`
 	Barcode        *string             `json:"barcode"`
-	Price          *decimal.Decimal    `json:"price" binding:"required" validate:"required"`
-	Weight         *decimal.Decimal    `json:"weight" binding:"required" validate:"required"`
+	Price          *decimal.Decimal    `json:"price"`
+	Weight         *decimal.Decimal    `json:"weight"`
 	Options        map[string]string   `json:"options"`
 	Media          []VariantMediaInput `json:"media"`
 	TrackInventory *bool               `json:"track_inventory"`
-	Stock          int                 `json:"stock" validate:"gte=0"`
+	Stock          int                 `json:"stock"`
 }
 
 type VariantMediaInput struct {
-	ID       string `json:"id" validate:"required"`
+	ID       string `json:"id"`
 	Position int    `json:"position"`
 }
 
@@ -83,12 +83,12 @@ type CreateVariantInput struct {
 	Title          *string                 `json:"title"`
 	SKU            *string                 `json:"sku"`
 	Barcode        *string                 `json:"barcode"`
-	Price          *decimal.Decimal        `json:"price" binding:"required" validate:"required"`
-	Weight         *decimal.Decimal        `json:"weight" binding:"required" validate:"required"`
+	Price          *decimal.Decimal        `json:"price"`
+	Weight         *decimal.Decimal        `json:"weight"`
 	Options        map[string]string       `json:"options"`
 	Media          []VariantMediaItemInput `json:"media"`
 	TrackInventory *bool                   `json:"track_inventory"`
-	Stock          int                     `json:"stock" validate:"gte=0"`
+	Stock          int                     `json:"stock"`
 }
 
 // VariantMediaItemInput is one entry in a variant's "media" array. If ID is
@@ -105,39 +105,34 @@ type VariantMediaItemInput struct {
 
 // BulkCreateVariantsInput is the request body for POST /products/:id/variants/bulk.
 type BulkCreateVariantsInput struct {
-	Variants []CreateVariantInput `json:"variants" binding:"required" validate:"required,min=1,dive"`
+	Variants []CreateVariantInput `json:"variants"`
 }
 
 // UpdateVariantInput is the request body for PATCH /variants/:id. All fields
 // are optional pointers: nil means "leave this column unchanged". Stock is
 // optional (nil = don't touch stock) and media is append-only.
 type UpdateVariantInput struct {
-	SKU     *string                 `json:"sku" validate:"omitempty"`
-	Barcode *string                 `json:"barcode" validate:"omitempty"`
-	Title   *string                 `json:"title" validate:"omitempty"`
-	Price   *decimal.Decimal        `json:"price" validate:"omitempty"`
-	Weight  *decimal.Decimal        `json:"weight" validate:"omitempty"`
-	Stock   *int                    `json:"stock" validate:"omitempty,gte=0"`
+	SKU     *string                 `json:"sku"`
+	Barcode *string                 `json:"barcode"`
+	Title   *string                 `json:"title"`
+	Price   *decimal.Decimal        `json:"price"`
+	Weight  *decimal.Decimal        `json:"weight"`
+	Stock   *int                    `json:"stock"`
 	Media   []VariantMediaItemInput `json:"media"`
 }
 
 // VariantUpdateItem is a single variant update within a bulk update request.
 type VariantUpdateItem struct {
-	ID     uuid.UUID          `json:"id" binding:"required" validate:"required"`
-	Fields UpdateVariantInput `json:"fields" binding:"required"`
+	ID     uuid.UUID          `json:"id"`
+	Fields UpdateVariantInput `json:"fields"`
 }
 
 // BulkUpdateVariantsInput is the request body for PATCH /products/:id/variants/bulk.
 type BulkUpdateVariantsInput struct {
-	Updates []VariantUpdateItem `json:"updates" binding:"required" validate:"required,min=1,dive"`
+	Updates []VariantUpdateItem `json:"updates"`
 }
 
 // BulkDeleteVariantsInput is the request body for POST /products/:id/variants/bulk-delete.
 type BulkDeleteVariantsInput struct {
-	IDs []uuid.UUID `json:"ids" binding:"required" validate:"required,min=1,dive"`
-}
-
-// ReorderVariantsInput is the request body for PATCH /products/:id/variants/reorder.
-type ReorderVariantsInput struct {
-	Positions []PositionUpdate `json:"positions" binding:"required" validate:"required,min=1,dive"`
+	IDs []uuid.UUID `json:"ids"`
 }

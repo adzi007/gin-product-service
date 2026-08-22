@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"gin-product-service/internal/delivery/http/dto"
 	"gin-product-service/internal/domain"
 
 	"github.com/gin-gonic/gin"
@@ -51,7 +52,7 @@ func NewProductHandler(
 // @Tags         products
 // @Accept       json
 // @Produce      json
-// @Param        body body domain.CreateProductInput true "Product to create"
+// @Param        body body dto.CreateProductInput true "Product to create"
 // @Success      201  {object} map[string]any
 // @Failure      400  {object} map[string]any
 // @Failure      409  {object} map[string]any
@@ -61,7 +62,7 @@ func (h *ProductHandler) Create(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	var input domain.CreateProductInput
+	var input dto.CreateProductInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
 		return
@@ -85,7 +86,7 @@ func (h *ProductHandler) Create(c *gin.Context) {
 		return
 	}
 
-	created, err := h.insertUseCase.Create(ctx, input)
+	created, err := h.insertUseCase.Create(ctx, input.ToDomain())
 	if err != nil {
 		status, code := mapProductError(err)
 		c.JSON(status, errorResponse(code, err.Error()))
@@ -220,7 +221,7 @@ func (h *ProductHandler) GetByID(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        id   path string true "Product UUID"
-// @Param        body body domain.UpdateProductInput true "Fields to update"
+// @Param        body body dto.UpdateProductInput true "Fields to update"
 // @Success      200  {object} map[string]any
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
@@ -236,7 +237,7 @@ func (h *ProductHandler) Update(c *gin.Context) {
 		return
 	}
 
-	var input domain.UpdateProductInput
+	var input dto.UpdateProductInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
 		return
@@ -260,7 +261,7 @@ func (h *ProductHandler) Update(c *gin.Context) {
 		return
 	}
 
-	updated, err := h.updateUseCase.Update(ctx, id, input)
+	updated, err := h.updateUseCase.Update(ctx, id, input.ToDomain())
 	if err != nil {
 		status, code := mapProductError(err)
 		c.JSON(status, errorResponse(code, err.Error()))
@@ -377,7 +378,7 @@ func (h *ProductHandler) Purge(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        id   path string true "Product UUID"
-// @Param        body body domain.CreateOptionInput true "Option to create"
+// @Param        body body dto.CreateOptionInput true "Option to create"
 // @Success      201  {object} map[string]any
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
@@ -393,7 +394,7 @@ func (h *ProductHandler) CreateOption(c *gin.Context) {
 		return
 	}
 
-	var input domain.CreateOptionInput
+	var input dto.CreateOptionInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
 		return
@@ -417,7 +418,7 @@ func (h *ProductHandler) CreateOption(c *gin.Context) {
 		return
 	}
 
-	created, err := h.optionUseCase.Create(ctx, id, input)
+	created, err := h.optionUseCase.Create(ctx, id, input.ToDomain())
 	if err != nil {
 		status, code := mapProductError(err)
 		c.JSON(status, errorResponse(code, err.Error()))
@@ -438,7 +439,7 @@ func (h *ProductHandler) CreateOption(c *gin.Context) {
 // @Produce      json
 // @Param        id        path string true "Product UUID"
 // @Param        option_id path string true "Option UUID"
-// @Param        body      body domain.UpdateOptionInput true "New option name"
+// @Param        body      body dto.UpdateOptionInput true "New option name"
 // @Success      200  {object} map[string]any
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
@@ -457,7 +458,7 @@ func (h *ProductHandler) RenameOption(c *gin.Context) {
 		return
 	}
 
-	var input domain.UpdateOptionInput
+	var input dto.UpdateOptionInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
 		return
@@ -468,7 +469,7 @@ func (h *ProductHandler) RenameOption(c *gin.Context) {
 		return
 	}
 
-	renamed, err := h.optionUseCase.Rename(ctx, id, optionID, input)
+	renamed, err := h.optionUseCase.Rename(ctx, id, optionID, input.ToDomain())
 	if err != nil {
 		status, code := mapProductError(err)
 		c.JSON(status, errorResponse(code, err.Error()))
@@ -525,7 +526,7 @@ func (h *ProductHandler) DeleteOption(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        id   path string true "Product UUID"
-// @Param        body body domain.ReorderOptionsInput true "New positions"
+// @Param        body body dto.ReorderOptionsInput true "New positions"
 // @Success      200  {object} map[string]any
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
@@ -540,7 +541,7 @@ func (h *ProductHandler) ReorderOptions(c *gin.Context) {
 		return
 	}
 
-	var input domain.ReorderOptionsInput
+	var input dto.ReorderOptionsInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
 		return
@@ -551,7 +552,7 @@ func (h *ProductHandler) ReorderOptions(c *gin.Context) {
 		return
 	}
 
-	if err := h.optionUseCase.Reorder(ctx, id, input); err != nil {
+	if err := h.optionUseCase.Reorder(ctx, id, input.ToDomain()); err != nil {
 		status, code := mapProductError(err)
 		c.JSON(status, errorResponse(code, err.Error()))
 		return
@@ -571,7 +572,7 @@ func (h *ProductHandler) ReorderOptions(c *gin.Context) {
 // @Produce      json
 // @Param        id        path string true "Product UUID"
 // @Param        option_id path string true "Option UUID"
-// @Param        body      body domain.CreateOptionValueInput true "Value to add"
+// @Param        body      body dto.CreateOptionValueInput true "Value to add"
 // @Success      201  {object} map[string]any
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
@@ -590,7 +591,7 @@ func (h *ProductHandler) AddOptionValue(c *gin.Context) {
 		return
 	}
 
-	var input domain.CreateOptionValueInput
+	var input dto.CreateOptionValueInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
 		return
@@ -601,7 +602,7 @@ func (h *ProductHandler) AddOptionValue(c *gin.Context) {
 		return
 	}
 
-	created, err := h.optionUseCase.AddValue(ctx, id, optionID, input)
+	created, err := h.optionUseCase.AddValue(ctx, id, optionID, input.ToDomain())
 	if err != nil {
 		status, code := mapProductError(err)
 		c.JSON(status, errorResponse(code, err.Error()))
@@ -623,7 +624,7 @@ func (h *ProductHandler) AddOptionValue(c *gin.Context) {
 // @Param        id        path string true "Product UUID"
 // @Param        option_id path string true "Option UUID"
 // @Param        value_id  path string true "Option value UUID"
-// @Param        body      body domain.UpdateOptionValueInput true "Fields to update"
+// @Param        body      body dto.UpdateOptionValueInput true "Fields to update"
 // @Success      200  {object} map[string]any
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
@@ -646,7 +647,7 @@ func (h *ProductHandler) UpdateOptionValue(c *gin.Context) {
 		return
 	}
 
-	var input domain.UpdateOptionValueInput
+	var input dto.UpdateOptionValueInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
 		return
@@ -657,7 +658,7 @@ func (h *ProductHandler) UpdateOptionValue(c *gin.Context) {
 		return
 	}
 
-	updated, err := h.optionUseCase.UpdateValue(ctx, id, optionID, valueID, input)
+	updated, err := h.optionUseCase.UpdateValue(ctx, id, optionID, valueID, input.ToDomain())
 	if err != nil {
 		status, code := mapProductError(err)
 		c.JSON(status, errorResponse(code, err.Error()))
@@ -719,7 +720,7 @@ func (h *ProductHandler) DeleteOptionValue(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        id   path string true "Product UUID"
-// @Param        body body domain.CreateVariantInput true "Variant to create"
+// @Param        body body dto.CreateVariantInput true "Variant to create"
 // @Success      201  {object} map[string]any
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
@@ -735,7 +736,7 @@ func (h *ProductHandler) CreateVariant(c *gin.Context) {
 		return
 	}
 
-	var input domain.CreateVariantInput
+	var input dto.CreateVariantInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
 		return
@@ -746,7 +747,7 @@ func (h *ProductHandler) CreateVariant(c *gin.Context) {
 		return
 	}
 
-	created, err := h.variantUseCase.Create(ctx, id, input)
+	created, err := h.variantUseCase.Create(ctx, id, input.ToDomain())
 	if err != nil {
 		status, code := mapProductError(err)
 		c.JSON(status, errorResponse(code, err.Error()))
@@ -766,7 +767,7 @@ func (h *ProductHandler) CreateVariant(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        id   path string true "Product UUID"
-// @Param        body body domain.BulkCreateVariantsInput true "Variants to create"
+// @Param        body body dto.BulkCreateVariantsInput true "Variants to create"
 // @Success      201  {object} map[string]any
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
@@ -782,7 +783,7 @@ func (h *ProductHandler) BulkCreateVariants(c *gin.Context) {
 		return
 	}
 
-	var input domain.BulkCreateVariantsInput
+	var input dto.BulkCreateVariantsInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
 		return
@@ -793,7 +794,7 @@ func (h *ProductHandler) BulkCreateVariants(c *gin.Context) {
 		return
 	}
 
-	created, err := h.variantUseCase.BulkCreate(ctx, id, input)
+	created, err := h.variantUseCase.BulkCreate(ctx, id, input.ToDomain())
 	if err != nil {
 		status, code := mapProductError(err)
 		c.JSON(status, errorResponse(code, err.Error()))
@@ -813,7 +814,7 @@ func (h *ProductHandler) BulkCreateVariants(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        id   path string true "Variant UUID"
-// @Param        body body domain.UpdateVariantInput true "Fields to update"
+// @Param        body body dto.UpdateVariantInput true "Fields to update"
 // @Success      200  {object} map[string]any
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
@@ -829,7 +830,7 @@ func (h *ProductHandler) UpdateVariant(c *gin.Context) {
 		return
 	}
 
-	var input domain.UpdateVariantInput
+	var input dto.UpdateVariantInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
 		return
@@ -840,7 +841,7 @@ func (h *ProductHandler) UpdateVariant(c *gin.Context) {
 		return
 	}
 
-	updated, err := h.variantUseCase.Update(ctx, id, input)
+	updated, err := h.variantUseCase.Update(ctx, id, input.ToDomain())
 	if err != nil {
 		status, code := mapProductError(err)
 		c.JSON(status, errorResponse(code, err.Error()))
@@ -860,7 +861,7 @@ func (h *ProductHandler) UpdateVariant(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        id   path string true "Product UUID"
-// @Param        body body domain.BulkUpdateVariantsInput true "Variant updates"
+// @Param        body body dto.BulkUpdateVariantsInput true "Variant updates"
 // @Success      200  {object} map[string]any
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
@@ -876,7 +877,7 @@ func (h *ProductHandler) BulkUpdateVariants(c *gin.Context) {
 		return
 	}
 
-	var input domain.BulkUpdateVariantsInput
+	var input dto.BulkUpdateVariantsInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
 		return
@@ -887,7 +888,7 @@ func (h *ProductHandler) BulkUpdateVariants(c *gin.Context) {
 		return
 	}
 
-	updated, err := h.variantUseCase.BulkUpdate(ctx, id, input)
+	updated, err := h.variantUseCase.BulkUpdate(ctx, id, input.ToDomain())
 	if err != nil {
 		status, code := mapProductError(err)
 		c.JSON(status, errorResponse(code, err.Error()))
@@ -939,7 +940,7 @@ func (h *ProductHandler) DeleteVariant(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        id   path string true "Product UUID"
-// @Param        body body domain.BulkDeleteVariantsInput true "Variant IDs to delete"
+// @Param        body body dto.BulkDeleteVariantsInput true "Variant IDs to delete"
 // @Success      200  {object} map[string]any
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
@@ -954,7 +955,7 @@ func (h *ProductHandler) BulkDeleteVariants(c *gin.Context) {
 		return
 	}
 
-	var input domain.BulkDeleteVariantsInput
+	var input dto.BulkDeleteVariantsInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
 		return
@@ -965,7 +966,7 @@ func (h *ProductHandler) BulkDeleteVariants(c *gin.Context) {
 		return
 	}
 
-	if err := h.variantUseCase.BulkDelete(ctx, id, input); err != nil {
+	if err := h.variantUseCase.BulkDelete(ctx, id, input.ToDomain()); err != nil {
 		status, code := mapProductError(err)
 		c.JSON(status, errorResponse(code, err.Error()))
 		return
@@ -1017,7 +1018,7 @@ func (h *ProductHandler) RestoreVariant(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        id   path string true "Product UUID"
-// @Param        body body domain.ReorderVariantsInput true "New positions"
+// @Param        body body dto.ReorderVariantsInput true "New positions"
 // @Success      200  {object} map[string]any
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
@@ -1032,7 +1033,7 @@ func (h *ProductHandler) ReorderVariants(c *gin.Context) {
 		return
 	}
 
-	var input domain.ReorderVariantsInput
+	var input dto.ReorderVariantsInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
 		return
@@ -1043,7 +1044,7 @@ func (h *ProductHandler) ReorderVariants(c *gin.Context) {
 		return
 	}
 
-	if err := h.variantUseCase.Reorder(ctx, id, input.Positions); err != nil {
+	if err := h.variantUseCase.Reorder(ctx, id, input.ToDomainPositions()); err != nil {
 		status, code := mapProductError(err)
 		c.JSON(status, errorResponse(code, err.Error()))
 		return
@@ -1062,7 +1063,7 @@ func (h *ProductHandler) ReorderVariants(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        id   path string true "Product UUID"
-// @Param        body body domain.BulkCreateMediaInput true "Media to create"
+// @Param        body body dto.BulkCreateMediaInput true "Media to create"
 // @Success      201  {object} map[string]any
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
@@ -1077,7 +1078,7 @@ func (h *ProductHandler) CreateMedia(c *gin.Context) {
 		return
 	}
 
-	var input domain.BulkCreateMediaInput
+	var input dto.BulkCreateMediaInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
 		return
@@ -1088,7 +1089,7 @@ func (h *ProductHandler) CreateMedia(c *gin.Context) {
 		return
 	}
 
-	created, err := h.mediaUseCase.Create(ctx, id, input)
+	created, err := h.mediaUseCase.Create(ctx, id, input.ToDomain())
 	if err != nil {
 		status, code := mapProductError(err)
 		c.JSON(status, errorResponse(code, err.Error()))
@@ -1109,7 +1110,7 @@ func (h *ProductHandler) CreateMedia(c *gin.Context) {
 // @Produce      json
 // @Param        id       path string true "Product UUID"
 // @Param        media_id path string true "Media UUID"
-// @Param        body     body domain.UpdateMediaInput true "Fields to update"
+// @Param        body     body dto.UpdateMediaInput true "Fields to update"
 // @Success      200  {object} map[string]any
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
@@ -1128,7 +1129,7 @@ func (h *ProductHandler) UpdateMedia(c *gin.Context) {
 		return
 	}
 
-	var input domain.UpdateMediaInput
+	var input dto.UpdateMediaInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
 		return
@@ -1139,7 +1140,7 @@ func (h *ProductHandler) UpdateMedia(c *gin.Context) {
 		return
 	}
 
-	updated, err := h.mediaUseCase.Update(ctx, id, mediaID, input)
+	updated, err := h.mediaUseCase.Update(ctx, id, mediaID, input.ToDomain())
 	if err != nil {
 		status, code := mapProductError(err)
 		c.JSON(status, errorResponse(code, err.Error()))
@@ -1196,7 +1197,7 @@ func (h *ProductHandler) DeleteMedia(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        id   path string true "Product UUID"
-// @Param        body body domain.ReorderMediaInput true "New positions"
+// @Param        body body dto.ReorderMediaInput true "New positions"
 // @Success      200  {object} map[string]any
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
@@ -1211,7 +1212,7 @@ func (h *ProductHandler) ReorderMedia(c *gin.Context) {
 		return
 	}
 
-	var input domain.ReorderMediaInput
+	var input dto.ReorderMediaInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
 		return
@@ -1222,7 +1223,7 @@ func (h *ProductHandler) ReorderMedia(c *gin.Context) {
 		return
 	}
 
-	if err := h.mediaUseCase.Reorder(ctx, id, input.Positions); err != nil {
+	if err := h.mediaUseCase.Reorder(ctx, id, input.ToDomainPositions()); err != nil {
 		status, code := mapProductError(err)
 		c.JSON(status, errorResponse(code, err.Error()))
 		return
@@ -1241,7 +1242,7 @@ func (h *ProductHandler) ReorderMedia(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        id   path string true "Variant UUID"
-// @Param        body body domain.AttachVariantMediaInput true "Media to attach"
+// @Param        body body dto.AttachVariantMediaInput true "Media to attach"
 // @Success      201  {object} map[string]any
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
@@ -1256,7 +1257,7 @@ func (h *ProductHandler) AttachVariantMedia(c *gin.Context) {
 		return
 	}
 
-	var input domain.AttachVariantMediaInput
+	var input dto.AttachVariantMediaInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
 		return
@@ -1267,7 +1268,7 @@ func (h *ProductHandler) AttachVariantMedia(c *gin.Context) {
 		return
 	}
 
-	link, err := h.mediaUseCase.AttachToVariant(ctx, id, input)
+	link, err := h.mediaUseCase.AttachToVariant(ctx, id, input.ToDomain())
 	if err != nil {
 		status, code := mapProductError(err)
 		c.JSON(status, errorResponse(code, err.Error()))
@@ -1324,7 +1325,7 @@ func (h *ProductHandler) DetachVariantMedia(c *gin.Context) {
 // @Accept       json
 // @Produce      json
 // @Param        id   path string true "Variant UUID"
-// @Param        body body domain.ReorderMediaInput true "New positions"
+// @Param        body body dto.ReorderMediaInput true "New positions"
 // @Success      200  {object} map[string]any
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
@@ -1339,7 +1340,7 @@ func (h *ProductHandler) ReorderVariantMedia(c *gin.Context) {
 		return
 	}
 
-	var input domain.ReorderMediaInput
+	var input dto.ReorderMediaInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
 		return
@@ -1350,7 +1351,7 @@ func (h *ProductHandler) ReorderVariantMedia(c *gin.Context) {
 		return
 	}
 
-	if err := h.mediaUseCase.ReorderVariantMedia(ctx, id, input.Positions); err != nil {
+	if err := h.mediaUseCase.ReorderVariantMedia(ctx, id, input.ToDomainPositions()); err != nil {
 		status, code := mapProductError(err)
 		c.JSON(status, errorResponse(code, err.Error()))
 		return

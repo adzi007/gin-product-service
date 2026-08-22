@@ -283,26 +283,26 @@ type ProductRepository interface {
 
 // CreateProductInput is the request body for creating a product.
 type CreateProductInput struct {
-	Handle      string               `json:"handle" binding:"required" validate:"required"`
-	Title       string               `json:"title" binding:"required" validate:"required"`
+	Handle      string               `json:"handle"`
+	Title       string               `json:"title"`
 	Description *string              `json:"description"`
 	Vendor      *string              `json:"vendor"`
-	CategoryID  int                  `json:"categoryId" binding:"required" validate:"required,gt=0"`
-	Status      *ProductStatus       `json:"status" binding:"omitempty" validate:"omitempty,oneof=draft active archived"`
-	Options     []ProductOptionInput `json:"options" validate:"dive"`
-	Variants    []VariantInput       `json:"variants" binding:"required" validate:"required,min=1,dive"`
-	Gallery     []GalleryMediaInput  `json:"gallery" validate:"dive"`
+	CategoryID  int                  `json:"categoryId"`
+	Status      *ProductStatus       `json:"status"`
+	Options     []ProductOptionInput `json:"options"`
+	Variants    []VariantInput       `json:"variants"`
+	Gallery     []GalleryMediaInput  `json:"gallery"`
 }
 
 type ProductOptionInput struct {
-	Name   string   `json:"name" binding:"required" validate:"required"`
-	Values []string `json:"values" binding:"required" validate:"required,min=1"`
+	Name   string   `json:"name"`
+	Values []string `json:"values"`
 }
 
 type GalleryMediaInput struct {
-	ID       string  `json:"id" validate:"required"`
+	ID       string  `json:"id"`
 	Type     string  `json:"type"`
-	URL      string  `json:"url" validate:"required"`
+	URL      string  `json:"url"`
 	AltText  *string `json:"altText"`
 	Position int     `json:"position"`
 }
@@ -311,60 +311,60 @@ type GalleryMediaInput struct {
 // are optional pointers: nil means "leave this column unchanged". Only product
 // header fields are updated; nested options/variants/media are never touched.
 type UpdateProductInput struct {
-	Title       *string        `json:"title" validate:"omitempty"`
+	Title       *string        `json:"title"`
 	Description *string        `json:"description"`
 	Vendor      *string        `json:"vendor"`
-	Handle      *string        `json:"handle" validate:"omitempty"`
-	CategoryID  *int           `json:"categoryId" validate:"omitempty,gt=0"`
-	Status      *ProductStatus `json:"status" validate:"omitempty,oneof=draft active archived"`
+	Handle      *string        `json:"handle"`
+	CategoryID  *int           `json:"categoryId"`
+	Status      *ProductStatus `json:"status"`
 }
 
 // CreateOptionInput is the request body for POST /products/:id/options.
 type CreateOptionInput struct {
-	Name   string   `json:"name" binding:"required" validate:"required"`
-	Values []string `json:"values" binding:"required" validate:"required,min=1"`
+	Name   string   `json:"name"`
+	Values []string `json:"values"`
 }
 
 // UpdateOptionInput is the request body for PATCH /products/:id/options/:option_id.
 type UpdateOptionInput struct {
-	Name string `json:"name" binding:"required" validate:"required"`
+	Name string `json:"name"`
 }
 
 // ReorderOptionsInput is the request body for PATCH /products/:id/options/reorder.
 type ReorderOptionsInput struct {
-	Positions []PositionUpdate `json:"positions" binding:"required" validate:"required,min=1,dive"`
+	Positions []PositionUpdate `json:"positions"`
 }
 
-// PositionUpdate is shared by any reorder endpoint (options today, variants later).
+// PositionUpdate is shared by any reorder endpoint (options, variants and media).
 type PositionUpdate struct {
-	ID       uuid.UUID `json:"id" binding:"required" validate:"required"`
-	Position int       `json:"position" validate:"gte=0"`
+	ID       uuid.UUID `json:"id"`
+	Position int       `json:"position"`
 }
 
 // CreateOptionValueInput is the request body for POST /products/:id/options/:option_id/values.
 type CreateOptionValueInput struct {
-	Value    string `json:"value" binding:"required" validate:"required"`
-	Position int    `json:"position" validate:"gte=0"`
+	Value    string `json:"value"`
+	Position int    `json:"position"`
 }
 
 // UpdateOptionValueInput is the request body for PATCH
 // /products/:id/options/:option_id/values/:value_id. Nil fields are left unchanged.
 type UpdateOptionValueInput struct {
 	Value    *string `json:"value"`
-	Position *int    `json:"position" validate:"omitempty,gte=0"`
+	Position *int    `json:"position"`
 }
 
 // CreateMediaInput is a single media item for POST /products/:id/media.
 type CreateMediaInput struct {
-	Type     string  `json:"type" binding:"required" validate:"required,oneof=image video"`
-	URL      string  `json:"url" binding:"required" validate:"required"`
+	Type     string  `json:"type"`
+	URL      string  `json:"url"`
 	AltText  *string `json:"altText"`
-	Position int     `json:"position" validate:"gte=0"`
+	Position int     `json:"position"`
 }
 
 // BulkCreateMediaInput is the request body for POST /products/:id/media.
 type BulkCreateMediaInput struct {
-	Media []CreateMediaInput `json:"media" binding:"required" validate:"required,min=1,dive"`
+	Media []CreateMediaInput `json:"media"`
 }
 
 // UpdateMediaInput is the request body for PATCH /products/:id/media/:media_id.
@@ -377,11 +377,5 @@ type UpdateMediaInput struct {
 // It references an existing product_media row to link to the variant. The
 // position is auto-assigned by the repository.
 type AttachVariantMediaInput struct {
-	MediaID uuid.UUID `json:"media_id" binding:"required" validate:"required"`
-}
-
-// ReorderMediaInput is the request body for PATCH /products/:id/media/reorder
-// and PATCH /variants/:id/media/reorder.
-type ReorderMediaInput struct {
-	Positions []PositionUpdate `json:"positions" binding:"required" validate:"required,min=1,dive"`
+	MediaID uuid.UUID `json:"media_id"`
 }
