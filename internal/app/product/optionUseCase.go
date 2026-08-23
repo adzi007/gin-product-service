@@ -12,11 +12,13 @@ import (
 
 type optionUc struct {
 	productRepo domain.ProductRepository
+	optionRepo  domain.OptionRepository
 }
 
-func NewOptionUseCase(productRepo domain.ProductRepository) domain.OptionUseCase {
+func NewOptionUseCase(productRepo domain.ProductRepository, optionRepo domain.OptionRepository) domain.OptionUseCase {
 	return &optionUc{
 		productRepo: productRepo,
+		optionRepo:  optionRepo,
 	}
 }
 
@@ -49,7 +51,7 @@ func (uc *optionUc) Create(ctx context.Context, productID uuid.UUID, input domai
 		})
 	}
 
-	created, err := uc.productRepo.CreateOption(ctx, option)
+	created, err := uc.optionRepo.CreateOption(ctx, option)
 	if err != nil {
 		logger.L(ctx).Error("create option failed", zap.Error(err), zap.String("product_id", productID.String()), zap.String("option_id", optionID.String()))
 		return domain.ProductOption{}, err
@@ -62,7 +64,7 @@ func (uc *optionUc) Create(ctx context.Context, productID uuid.UUID, input domai
 
 func (uc *optionUc) Rename(ctx context.Context, productID, optionID uuid.UUID, input domain.UpdateOptionInput) (domain.ProductOption, error) {
 
-	renamed, err := uc.productRepo.RenameOption(ctx, productID, optionID, input.Name)
+	renamed, err := uc.optionRepo.RenameOption(ctx, productID, optionID, input.Name)
 	if err != nil {
 		logger.L(ctx).Error("rename option failed", zap.Error(err), zap.String("product_id", productID.String()), zap.String("option_id", optionID.String()))
 		return domain.ProductOption{}, err
@@ -75,7 +77,7 @@ func (uc *optionUc) Rename(ctx context.Context, productID, optionID uuid.UUID, i
 
 func (uc *optionUc) Delete(ctx context.Context, productID, optionID uuid.UUID) error {
 
-	err := uc.productRepo.DeleteOption(ctx, productID, optionID)
+	err := uc.optionRepo.DeleteOption(ctx, productID, optionID)
 	if err != nil {
 		logger.L(ctx).Error("delete option failed", zap.Error(err), zap.String("product_id", productID.String()), zap.String("option_id", optionID.String()))
 		return err
@@ -88,7 +90,7 @@ func (uc *optionUc) Delete(ctx context.Context, productID, optionID uuid.UUID) e
 
 func (uc *optionUc) Reorder(ctx context.Context, productID uuid.UUID, input domain.ReorderOptionsInput) error {
 
-	err := uc.productRepo.ReorderOptions(ctx, productID, input.Positions)
+	err := uc.optionRepo.ReorderOptions(ctx, productID, input.Positions)
 	if err != nil {
 		logger.L(ctx).Error("reorder options failed", zap.Error(err), zap.String("product_id", productID.String()))
 		return err
@@ -110,7 +112,7 @@ func (uc *optionUc) AddValue(ctx context.Context, productID, optionID uuid.UUID,
 		Position: input.Position,
 	}
 
-	created, err := uc.productRepo.CreateOptionValue(ctx, value)
+	created, err := uc.optionRepo.CreateOptionValue(ctx, value)
 	if err != nil {
 		logger.L(ctx).Error("add option value failed", zap.Error(err), zap.String("product_id", productID.String()), zap.String("option_id", optionID.String()))
 		return domain.ProductOptionValue{}, err
@@ -123,7 +125,7 @@ func (uc *optionUc) AddValue(ctx context.Context, productID, optionID uuid.UUID,
 
 func (uc *optionUc) UpdateValue(ctx context.Context, productID, optionID, valueID uuid.UUID, input domain.UpdateOptionValueInput) (domain.ProductOptionValue, error) {
 
-	updated, err := uc.productRepo.UpdateOptionValue(ctx, valueID, input.Value, input.Position)
+	updated, err := uc.optionRepo.UpdateOptionValue(ctx, valueID, input.Value, input.Position)
 	if err != nil {
 		logger.L(ctx).Error("update option value failed", zap.Error(err), zap.String("product_id", productID.String()), zap.String("option_id", optionID.String()), zap.String("value_id", valueID.String()))
 		return domain.ProductOptionValue{}, err
@@ -136,7 +138,7 @@ func (uc *optionUc) UpdateValue(ctx context.Context, productID, optionID, valueI
 
 func (uc *optionUc) DeleteValue(ctx context.Context, productID, optionID, valueID uuid.UUID) error {
 
-	err := uc.productRepo.DeleteOptionValue(ctx, valueID)
+	err := uc.optionRepo.DeleteOptionValue(ctx, valueID)
 	if err != nil {
 		logger.L(ctx).Error("delete option value failed", zap.Error(err), zap.String("product_id", productID.String()), zap.String("option_id", optionID.String()), zap.String("value_id", valueID.String()))
 		return err

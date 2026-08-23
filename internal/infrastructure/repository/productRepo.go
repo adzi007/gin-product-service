@@ -23,9 +23,16 @@ type productRepo struct {
 	db database.Database
 }
 
-func NewProductRepo(db database.Database) domain.ProductRepository {
+func NewProductRepo(db database.Database) *productRepo {
 	return &productRepo{db: db}
 }
+
+var (
+	_ domain.ProductRepository = (*productRepo)(nil)
+	_ domain.OptionRepository  = (*productRepo)(nil)
+	_ domain.VariantRepository = (*productRepo)(nil)
+	_ domain.MediaRepository   = (*productRepo)(nil)
+)
 
 // Create persists a product and all of its related rows (options, option
 // values, variants, inventory items, stock moves, inventory levels, media and

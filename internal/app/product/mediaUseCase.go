@@ -12,11 +12,15 @@ import (
 
 type mediaUc struct {
 	productRepo domain.ProductRepository
+	mediaRepo   domain.MediaRepository
+	variantRepo domain.VariantRepository
 }
 
-func NewMediaUseCase(productRepo domain.ProductRepository) domain.MediaUseCase {
+func NewMediaUseCase(productRepo domain.ProductRepository, mediaRepo domain.MediaRepository, variantRepo domain.VariantRepository) domain.MediaUseCase {
 	return &mediaUc{
 		productRepo: productRepo,
+		mediaRepo:   mediaRepo,
+		variantRepo: variantRepo,
 	}
 }
 
@@ -42,7 +46,7 @@ func (uc *mediaUc) Create(ctx context.Context, productID uuid.UUID, input domain
 		})
 	}
 
-	created, err := uc.productRepo.CreateProductMedia(ctx, media)
+	created, err := uc.mediaRepo.CreateProductMedia(ctx, media)
 	if err != nil {
 		logger.L(ctx).Error("create media failed", zap.Error(err), zap.String("product_id", productID.String()))
 		return nil, err
@@ -59,7 +63,7 @@ func (uc *mediaUc) Update(ctx context.Context, productID, mediaID uuid.UUID, inp
 		return domain.ProductMedia{}, err
 	}
 
-	updated, err := uc.productRepo.UpdateProductMedia(ctx, mediaID, input.AltText)
+	updated, err := uc.mediaRepo.UpdateProductMedia(ctx, mediaID, input.AltText)
 	if err != nil {
 		logger.L(ctx).Error("update media failed", zap.Error(err), zap.String("media_id", mediaID.String()))
 		return domain.ProductMedia{}, err
@@ -76,7 +80,7 @@ func (uc *mediaUc) Delete(ctx context.Context, productID, mediaID uuid.UUID) err
 		return err
 	}
 
-	err := uc.productRepo.DeleteProductMedia(ctx, mediaID)
+	err := uc.mediaRepo.DeleteProductMedia(ctx, mediaID)
 	if err != nil {
 		logger.L(ctx).Error("delete media failed", zap.Error(err), zap.String("media_id", mediaID.String()))
 		return err
@@ -89,7 +93,7 @@ func (uc *mediaUc) Delete(ctx context.Context, productID, mediaID uuid.UUID) err
 
 func (uc *mediaUc) Reorder(ctx context.Context, productID uuid.UUID, positions []domain.PositionUpdate) error {
 
-	err := uc.productRepo.ReorderProductMedia(ctx, productID, positions)
+	err := uc.mediaRepo.ReorderProductMedia(ctx, productID, positions)
 	if err != nil {
 		logger.L(ctx).Error("reorder media failed", zap.Error(err), zap.String("product_id", productID.String()))
 		return err
@@ -102,13 +106,13 @@ func (uc *mediaUc) Reorder(ctx context.Context, productID uuid.UUID, positions [
 
 func (uc *mediaUc) AttachToVariant(ctx context.Context, variantID uuid.UUID, input domain.AttachVariantMediaInput) (domain.VariantMedia, error) {
 
-	variant, err := uc.productRepo.FindVariantByID(ctx, variantID)
+	variant, err := uc.variantRepo.FindVariantByID(ctx, variantID)
 	if err != nil {
 		logger.L(ctx).Error("attach media to variant failed", zap.Error(err), zap.String("variant_id", variantID.String()))
 		return domain.VariantMedia{}, err
 	}
 
-	media, err := uc.productRepo.FindMediaByID(ctx, input.MediaID)
+	media, err := uc.mediaRepo.FindMediaByID(ctx, input.MediaID)
 	if err != nil {
 		logger.L(ctx).Error("attach media to variant failed", zap.Error(err), zap.String("media_id", input.MediaID.String()))
 		return domain.VariantMedia{}, err
@@ -120,7 +124,7 @@ func (uc *mediaUc) AttachToVariant(ctx context.Context, variantID uuid.UUID, inp
 		return domain.VariantMedia{}, domain.ErrMediaNotFound
 	}
 
-	link, err := uc.productRepo.AttachVariantMedia(ctx, variantID, input.MediaID)
+	link, err := uc.mediaRepo.AttachVariantMedia(ctx, variantID, input.MediaID)
 	if err != nil {
 		logger.L(ctx).Error("attach media to variant failed", zap.Error(err), zap.String("variant_id", variantID.String()), zap.String("media_id", input.MediaID.String()))
 		return domain.VariantMedia{}, err
@@ -133,7 +137,7 @@ func (uc *mediaUc) AttachToVariant(ctx context.Context, variantID uuid.UUID, inp
 
 func (uc *mediaUc) DetachFromVariant(ctx context.Context, variantID, mediaID uuid.UUID) error {
 
-	err := uc.productRepo.DetachVariantMedia(ctx, variantID, mediaID)
+	err := uc.mediaRepo.DetachVariantMedia(ctx, variantID, mediaID)
 	if err != nil {
 		logger.L(ctx).Error("detach media from variant failed", zap.Error(err), zap.String("variant_id", variantID.String()), zap.String("media_id", mediaID.String()))
 		return err
@@ -146,7 +150,7 @@ func (uc *mediaUc) DetachFromVariant(ctx context.Context, variantID, mediaID uui
 
 func (uc *mediaUc) ReorderVariantMedia(ctx context.Context, variantID uuid.UUID, positions []domain.PositionUpdate) error {
 
-	err := uc.productRepo.ReorderVariantMedia(ctx, variantID, positions)
+	err := uc.mediaRepo.ReorderVariantMedia(ctx, variantID, positions)
 	if err != nil {
 		logger.L(ctx).Error("reorder variant media failed", zap.Error(err), zap.String("variant_id", variantID.String()))
 		return err
@@ -162,7 +166,7 @@ func (uc *mediaUc) ReorderVariantMedia(ctx context.Context, variantID uuid.UUID,
 // mutating unrelated media across products.
 func (uc *mediaUc) ensureMediaBelongsToProduct(ctx context.Context, productID, mediaID uuid.UUID) error {
 
-	media, err := uc.productRepo.FindMediaByID(ctx, mediaID)
+	media, err := uc.mediaRepo.FindMediaByID(ctx, mediaID)
 	if err != nil {
 		logger.L(ctx).Error("ensure media belongs to product failed", zap.Error(err), zap.String("media_id", mediaID.String()))
 		return err

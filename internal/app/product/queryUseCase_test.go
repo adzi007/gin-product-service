@@ -404,7 +404,12 @@ func (f *fakeProductRepo) ReorderVariantMedia(ctx context.Context, variantID uui
 	return f.reorderVariantMediaErr
 }
 
-var _ domain.ProductRepository = (*fakeProductRepo)(nil)
+var (
+	_ domain.ProductRepository = (*fakeProductRepo)(nil)
+	_ domain.OptionRepository  = (*fakeProductRepo)(nil)
+	_ domain.VariantRepository = (*fakeProductRepo)(nil)
+	_ domain.MediaRepository   = (*fakeProductRepo)(nil)
+)
 var _ domain.QueryProductUseCase = (*queryProductUc)(nil)
 
 func TestQueryProductUseCase_FindAll_AppliesDefaults(t *testing.T) {

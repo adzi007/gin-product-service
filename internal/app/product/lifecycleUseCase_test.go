@@ -127,7 +127,7 @@ func TestOptionUseCase_Create_GeneratesIDsAndPosition(t *testing.T) {
 			},
 		},
 	}
-	uc := NewOptionUseCase(repo)
+	uc := NewOptionUseCase(repo, repo)
 
 	created, err := uc.Create(context.Background(), productID, domain.CreateOptionInput{
 		Name:   "Color",
@@ -166,7 +166,7 @@ func TestOptionUseCase_Create_GeneratesIDsAndPosition(t *testing.T) {
 
 func TestOptionUseCase_Create_ProductNotFound(t *testing.T) {
 	repo := &fakeProductRepo{findByIDErr: domain.ErrProductNotFound}
-	uc := NewOptionUseCase(repo)
+	uc := NewOptionUseCase(repo, repo)
 
 	_, err := uc.Create(context.Background(), uuid.New(), domain.CreateOptionInput{Name: "Color", Values: []string{"Red"}})
 	if err != domain.ErrProductNotFound {
@@ -176,7 +176,7 @@ func TestOptionUseCase_Create_ProductNotFound(t *testing.T) {
 
 func TestOptionUseCase_Rename(t *testing.T) {
 	repo := &fakeProductRepo{}
-	uc := NewOptionUseCase(repo)
+	uc := NewOptionUseCase(repo, repo)
 
 	productID := uuid.New()
 	optionID := uuid.New()
@@ -200,7 +200,7 @@ func TestOptionUseCase_Rename(t *testing.T) {
 
 func TestOptionUseCase_Delete(t *testing.T) {
 	repo := &fakeProductRepo{}
-	uc := NewOptionUseCase(repo)
+	uc := NewOptionUseCase(repo, repo)
 
 	productID := uuid.New()
 	optionID := uuid.New()
@@ -214,7 +214,7 @@ func TestOptionUseCase_Delete(t *testing.T) {
 
 func TestOptionUseCase_Reorder(t *testing.T) {
 	repo := &fakeProductRepo{}
-	uc := NewOptionUseCase(repo)
+	uc := NewOptionUseCase(repo, repo)
 
 	productID := uuid.New()
 	positions := []domain.PositionUpdate{{ID: uuid.New(), Position: 0}, {ID: uuid.New(), Position: 1}}
@@ -231,7 +231,7 @@ func TestOptionUseCase_Reorder(t *testing.T) {
 
 func TestOptionUseCase_AddValue_GeneratesID(t *testing.T) {
 	repo := &fakeProductRepo{}
-	uc := NewOptionUseCase(repo)
+	uc := NewOptionUseCase(repo, repo)
 
 	optionID := uuid.New()
 	created, err := uc.AddValue(context.Background(), uuid.New(), optionID, domain.CreateOptionValueInput{Value: "Red", Position: 3})
@@ -251,7 +251,7 @@ func TestOptionUseCase_AddValue_GeneratesID(t *testing.T) {
 
 func TestOptionUseCase_UpdateValue(t *testing.T) {
 	repo := &fakeProductRepo{}
-	uc := NewOptionUseCase(repo)
+	uc := NewOptionUseCase(repo, repo)
 
 	valueID := uuid.New()
 	value := "Crimson"
@@ -279,7 +279,7 @@ func TestOptionUseCase_UpdateValue(t *testing.T) {
 
 func TestOptionUseCase_DeleteValue(t *testing.T) {
 	repo := &fakeProductRepo{}
-	uc := NewOptionUseCase(repo)
+	uc := NewOptionUseCase(repo, repo)
 
 	valueID := uuid.New()
 	if err := uc.DeleteValue(context.Background(), uuid.New(), uuid.New(), valueID); err != nil {

@@ -255,7 +255,8 @@ type MediaUseCase interface {
 	ReorderVariantMedia(ctx context.Context, variantID uuid.UUID, positions []PositionUpdate) error
 }
 
-// ProductRepository is the persistence contract for the product module.
+// ProductRepository is the persistence contract for the product header:
+// creating, reading, updating, and deleting the products table row itself.
 type ProductRepository interface {
 	Create(ctx context.Context, params CreateProductParams) (Product, error)
 	FindAll(ctx context.Context, params ListProductParams) ([]ProductListItem, int, error)
@@ -265,7 +266,11 @@ type ProductRepository interface {
 	UpdateHeader(ctx context.Context, id uuid.UUID, input UpdateProductInput) (Product, error)
 	UpdateStatus(ctx context.Context, id uuid.UUID, status ProductStatus) error
 	Delete(ctx context.Context, id uuid.UUID) error
+}
 
+// OptionRepository is the persistence contract for a product's options and
+// their option values.
+type OptionRepository interface {
 	CreateOption(ctx context.Context, option ProductOption) (ProductOption, error)
 	RenameOption(ctx context.Context, productID, optionID uuid.UUID, name string) (ProductOption, error)
 	DeleteOption(ctx context.Context, productID, optionID uuid.UUID) error
@@ -276,21 +281,11 @@ type ProductRepository interface {
 	UpdateOptionValue(ctx context.Context, valueID uuid.UUID, value *string, position *int) (ProductOptionValue, error)
 	DeleteOptionValue(ctx context.Context, valueID uuid.UUID) error
 	FindOptionValueByID(ctx context.Context, valueID uuid.UUID) (ProductOptionValue, error)
+}
 
-	CreateVariant(ctx context.Context, variant Variant) (Variant, error)
-	CreateVariants(ctx context.Context, variants []Variant) ([]Variant, error)
-	CreateVariantsWithStock(ctx context.Context, params CreateVariantsParams) ([]Variant, error)
-	AdjustVariantStock(ctx context.Context, variantID uuid.UUID, targetQty int) (InventoryLevel, error)
-	FindVariantByID(ctx context.Context, variantID uuid.UUID) (Variant, error)
-	UpdateVariant(ctx context.Context, variantID uuid.UUID, input UpdateVariantInput) (Variant, error)
-	DeleteVariant(ctx context.Context, variantID uuid.UUID, hard bool) error
-	BulkDeleteVariants(ctx context.Context, variantIDs []uuid.UUID, hard bool) error
-	RestoreVariant(ctx context.Context, variantID uuid.UUID) (Variant, error)
-	ReorderVariants(ctx context.Context, productID uuid.UUID, positions []PositionUpdate) error
-	// VariantHasHistory reports whether a variant has any stock movement
-	// history, which decides soft vs hard deletion.
-	VariantHasHistory(ctx context.Context, variantID uuid.UUID) (bool, error)
-
+// MediaRepository is the persistence contract for a product's media gallery
+// and its links to variants.
+type MediaRepository interface {
 	CreateProductMedia(ctx context.Context, media []ProductMedia) ([]ProductMedia, error)
 	UpdateProductMedia(ctx context.Context, mediaID uuid.UUID, altText *string) (ProductMedia, error)
 	DeleteProductMedia(ctx context.Context, mediaID uuid.UUID) error

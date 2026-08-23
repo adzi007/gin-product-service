@@ -14,11 +14,15 @@ import (
 
 type variantUc struct {
 	productRepo domain.ProductRepository
+	variantRepo domain.VariantRepository
+	mediaRepo   domain.MediaRepository
 }
 
-func NewVariantUseCase(productRepo domain.ProductRepository) domain.VariantUseCase {
+func NewVariantUseCase(productRepo domain.ProductRepository, variantRepo domain.VariantRepository, mediaRepo domain.MediaRepository) domain.VariantUseCase {
 	return &variantUc{
 		productRepo: productRepo,
+		variantRepo: variantRepo,
+		mediaRepo:   mediaRepo,
 	}
 }
 
@@ -64,7 +68,7 @@ func (uc *variantUc) Create(ctx context.Context, productID uuid.UUID, input doma
 		return domain.Variant{}, err
 	}
 
-	createdVariants, err := uc.productRepo.CreateVariantsWithStock(ctx, domain.CreateVariantsParams{
+	createdVariants, err := uc.variantRepo.CreateVariantsWithStock(ctx, domain.CreateVariantsParams{
 		Variants:        []domain.Variant{variant},
 		InventoryItems:  []domain.InventoryItem{inventoryItem},
 		StockMoves:      []domain.StockMove{stockMove},
@@ -138,7 +142,7 @@ func (uc *variantUc) BulkCreate(ctx context.Context, productID uuid.UUID, input 
 		params.VariantMedia = append(params.VariantMedia, variantMedia...)
 	}
 
-	created, err := uc.productRepo.CreateVariantsWithStock(ctx, params)
+	created, err := uc.variantRepo.CreateVariantsWithStock(ctx, params)
 	if err != nil {
 		logger.L(ctx).Error("bulk create variants failed", zap.Error(err), zap.String("product_id", productID.String()))
 		return nil, err
@@ -158,21 +162,21 @@ func (uc *variantUc) Update(ctx context.Context, variantID uuid.UUID, input doma
 		return domain.Variant{}, err
 	}
 
-	updated, err := uc.productRepo.UpdateVariant(ctx, variantID, input)
+	updated, err := uc.variantRepo.UpdateVariant(ctx, variantID, input)
 	if err != nil {
 		logger.L(ctx).Error("update variant failed", zap.Error(err), zap.String("variant_id", variantID.String()))
 		return domain.Variant{}, err
 	}
 
 	if input.Stock != nil {
-		if _, err := uc.productRepo.AdjustVariantStock(ctx, variantID, *input.Stock); err != nil {
+		if _, err := uc.variantRepo.AdjustVariantStock(ctx, variantID, *input.Stock); err != nil {
 			logger.L(ctx).Error("adjust variant stock failed", zap.Error(err), zap.String("variant_id", variantID.String()))
 			return domain.Variant{}, err
 		}
 	}
 
 	if len(input.Media) > 0 {
-		variant, err := uc.productRepo.FindVariantByID(ctx, variantID)
+		variant, err := uc.variantRepo.FindVariantByID(ctx, variantID)
 		if err != nil {
 			logger.L(ctx).Error("update variant failed", zap.Error(err), zap.String("variant_id", variantID.String()))
 			return domain.Variant{}, err
@@ -182,7 +186,7 @@ func (uc *variantUc) Update(ctx context.Context, variantID uuid.UUID, input doma
 			logger.L(ctx).Error("update variant failed", zap.Error(err), zap.String("variant_id", variantID.String()))
 			return domain.Variant{}, err
 		}
-		if err := uc.productRepo.AttachNewOrExistingVariantMedia(ctx, newMedia, links); err != nil {
+		if err := uc.mediaRepo.AttachNewOrExistingVariantMedia(ctx, newMedia, links); err != nil {
 			logger.L(ctx).Error("update variant failed", zap.Error(err), zap.String("variant_id", variantID.String()))
 			return domain.Variant{}, err
 		}
@@ -204,7 +208,7 @@ func (uc *variantUc) BulkUpdate(ctx context.Context, productID uuid.UUID, input 
 			return nil, err
 		}
 
-		v, err := uc.productRepo.UpdateVariant(ctx, item.ID, item.Fields)
+		v, err := uc.variantRepo.UpdateVariant(ctx, item.ID, item.Fields)
 		if err != nil {
 			logger.L(ctx).Error("bulk update variants failed", zap.Error(err), zap.String("variant_id", item.ID.String()))
 			return nil, err
@@ -212,7 +216,7 @@ func (uc *variantUc) BulkUpdate(ctx context.Context, productID uuid.UUID, input 
 		updated = append(updated, v)
 
 		if item.Fields.Stock != nil {
-			if _, err := uc.productRepo.AdjustVariantStock(ctx, item.ID, *item.Fields.Stock); err != nil {
+			if _, err := uc.variantRepo.AdjustVariantStock(ctx, item.ID, *item.Fields.Stock); err != nil {
 				logger.L(ctx).Error("bulk update variants failed", zap.Error(err), zap.String("variant_id", item.ID.String()))
 				return nil, err
 			}
@@ -224,7 +228,7 @@ func (uc *variantUc) BulkUpdate(ctx context.Context, productID uuid.UUID, input 
 				logger.L(ctx).Error("bulk update variants failed", zap.Error(err), zap.String("variant_id", item.ID.String()))
 				return nil, err
 			}
-			if err := uc.productRepo.AttachNewOrExistingVariantMedia(ctx, newMedia, links); err != nil {
+			if err := uc.mediaRepo.AttachNewOrExistingVariantMedia(ctx, newMedia, links); err != nil {
 				logger.L(ctx).Error("bulk update variants failed", zap.Error(err), zap.String("variant_id", item.ID.String()))
 				return nil, err
 			}
@@ -238,14 +242,14 @@ func (uc *variantUc) BulkUpdate(ctx context.Context, productID uuid.UUID, input 
 
 func (uc *variantUc) Delete(ctx context.Context, variantID uuid.UUID) error {
 
-	hasHistory, err := uc.productRepo.VariantHasHistory(ctx, variantID)
+	hasHistory, err := uc.variantRepo.VariantHasHistory(ctx, variantID)
 	if err != nil {
 		logger.L(ctx).Error("delete variant failed", zap.Error(err), zap.String("variant_id", variantID.String()))
 		return err
 	}
 
 	// Soft-delete when history exists, hard-delete otherwise.
-	err = uc.productRepo.DeleteVariant(ctx, variantID, !hasHistory)
+	err = uc.variantRepo.DeleteVariant(ctx, variantID, !hasHistory)
 	if err != nil {
 		logger.L(ctx).Error("delete variant failed", zap.Error(err), zap.String("variant_id", variantID.String()))
 		return err
@@ -260,7 +264,7 @@ func (uc *variantUc) BulkDelete(ctx context.Context, productID uuid.UUID, input 
 
 	var hardIDs, softIDs []uuid.UUID
 	for _, id := range input.IDs {
-		hasHistory, err := uc.productRepo.VariantHasHistory(ctx, id)
+		hasHistory, err := uc.variantRepo.VariantHasHistory(ctx, id)
 		if err != nil {
 			logger.L(ctx).Error("bulk delete variants failed", zap.Error(err), zap.String("variant_id", id.String()))
 			return err
@@ -273,13 +277,13 @@ func (uc *variantUc) BulkDelete(ctx context.Context, productID uuid.UUID, input 
 	}
 
 	if len(hardIDs) > 0 {
-		if err := uc.productRepo.BulkDeleteVariants(ctx, hardIDs, true); err != nil {
+		if err := uc.variantRepo.BulkDeleteVariants(ctx, hardIDs, true); err != nil {
 			logger.L(ctx).Error("bulk delete variants failed", zap.Error(err), zap.String("product_id", productID.String()))
 			return err
 		}
 	}
 	if len(softIDs) > 0 {
-		if err := uc.productRepo.BulkDeleteVariants(ctx, softIDs, false); err != nil {
+		if err := uc.variantRepo.BulkDeleteVariants(ctx, softIDs, false); err != nil {
 			logger.L(ctx).Error("bulk delete variants failed", zap.Error(err), zap.String("product_id", productID.String()))
 			return err
 		}
@@ -292,7 +296,7 @@ func (uc *variantUc) BulkDelete(ctx context.Context, productID uuid.UUID, input 
 
 func (uc *variantUc) Restore(ctx context.Context, variantID uuid.UUID) (domain.Variant, error) {
 
-	restored, err := uc.productRepo.RestoreVariant(ctx, variantID)
+	restored, err := uc.variantRepo.RestoreVariant(ctx, variantID)
 	if err != nil {
 		logger.L(ctx).Error("restore variant failed", zap.Error(err), zap.String("variant_id", variantID.String()))
 		return domain.Variant{}, err
@@ -305,7 +309,7 @@ func (uc *variantUc) Restore(ctx context.Context, variantID uuid.UUID) (domain.V
 
 func (uc *variantUc) Reorder(ctx context.Context, productID uuid.UUID, positions []domain.PositionUpdate) error {
 
-	err := uc.productRepo.ReorderVariants(ctx, productID, positions)
+	err := uc.variantRepo.ReorderVariants(ctx, productID, positions)
 	if err != nil {
 		logger.L(ctx).Error("reorder variants failed", zap.Error(err), zap.String("product_id", productID.String()))
 		return err
@@ -399,7 +403,7 @@ func (uc *variantUc) resolveVariantMedia(ctx context.Context, productID, variant
 
 	for _, item := range items {
 		if item.ID != nil {
-			media, err := uc.productRepo.FindMediaByID(ctx, *item.ID)
+			media, err := uc.mediaRepo.FindMediaByID(ctx, *item.ID)
 			if err != nil {
 				return nil, nil, err
 			}

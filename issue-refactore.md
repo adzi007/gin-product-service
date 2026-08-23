@@ -1,6 +1,6 @@
-# Task: Separate read models from the write aggregate (Phase 5)
+# Task: Split `ProductRepository` (Phase 6)
 
-Source: `issue.md`, "Phase 5 — Separate read models from the write aggregate".
+Source: `issue.md`, "Phase 6 — Split `ProductRepository`".
 
 > Audience note: this doc is written so a junior developer or another LLM can execute
 > it without re-deriving the plan. Follow the steps in order. Don't skip ahead or
@@ -16,668 +16,499 @@ Source: `issue.md`, "Phase 5 — Separate read models from the write aggregate".
 - Phase 3 (strip persistence tags): no `db:"..."` tags remain in `product.go`,
   `variant.go`, or `inventory.go`. Row-scanning structs live in
   `internal/infrastructure/repository/model`.
-- Phase 4 (aggregate behavior) is done: `Product` has `NewProduct`, `AddVariant`,
-  `Archive`, `Restore`; `ProductStatus.CanTransitionTo`; `InventoryLevel.Reserve`.
-  `internal/app/product/insertUseCase.go` and `updateUseCase.go` already call these.
+- Phase 4 (aggregate behavior): `Product` has `NewProduct`, `AddVariant`, `Archive`,
+  `Restore`; `ProductStatus.CanTransitionTo`; `InventoryLevel.Reserve`.
+- Phase 5 (read models): `ProductRepository.FindAll` returns `[]ProductListItem`,
+  `FindByID`/`FindByHandle` return `ProductDetail`. `Product` itself only carries
+  write-aggregate fields.
 - `internal/domain/category.go` is a separate, already-shipped module — **out of
   scope** for this task. Do not touch `category.go` or `categoryRepo.go`.
 
+Today, `internal/domain/product.go` still defines one 30+ method interface,
+`ProductRepository` (currently around lines 258-308), covering product header CRUD,
+options, option values, variants, variant stock adjustment, variant media, product
+media, and variant-media linking — all implemented by a single
+`internal/infrastructure/repository/productRepo.go`. Every use case that touches
+*any* of this — `optionUc`, `mediaUc`, `variantUc`, plus the header-only
+`updateUc`/`deleteUc`/`queryUc`/`insertUc` — depends on the entire interface, even
+though (for example) `optionUc` only ever calls 8 of the 30+ methods.
+
 ## Goal
 
-Today `internal/domain/product.go` defines `Product` with three fields that only
-exist to serve *read* endpoints, not the create/update aggregate:
+Split `ProductRepository` into four narrower interfaces along the sub-resource lines
+that already exist in the codebase (options, variants, media), so each use case can
+depend only on what it actually calls (ISP):
 
-```go
-type Product struct {
-	...
-	Thumbnail *ProductThumbnail `json:"thumbnail"`
-	...
-	Category  ProductCategory   `json:"category"`
-	Prices    ProductPrices     `json:"prices"`
-	...
-}
-```
-
-- `Category`/`Prices` are only ever populated by `productRepo.FindAll` (list) and
-  `Category` alone by `productRepo.findProductBy` (detail, used by `FindByID`/
-  `FindByHandle`) — see `internal/infrastructure/repository/productRepo.go:319-333`
-  and `:857-866`.
-- `Thumbnail` is only populated by `FindAll`.
-- Nothing sets any of the three when creating or updating a product
-  (`insertUseCase.go`, `updateUseCase.go` never touch them).
-
-This means every write path (`Create`, `Update`, `Archive`, `Restore`, and every
-option/variant/media use case that loads a product via `productRepo.FindByID` just
-to check it exists) carries three read-only fields it never uses. This task moves
-those fields off `Product` and onto two new **read-model** types that wrap it:
-
-```go
-// ProductListItem — the shape returned by GET /products (one row of the list).
-type ProductListItem struct {
-	Product
-	Category  ProductCategory
-	Prices    ProductPrices
-	Thumbnail *ProductThumbnail
-}
-
-// ProductDetail — the shape returned by GET /products/:id and GET /products/:handle.
-type ProductDetail struct {
-	Product
-	Category ProductCategory
-}
-```
+- `ProductRepository` (stays in `product.go`) — product header CRUD only:
+  `Create`, `FindAll`, `FindByID`, `FindByHandle`, `UpdateHeader`, `UpdateStatus`,
+  `Delete`.
+- `OptionRepository` (new, in `product.go`) — the 9 option/option-value methods.
+- `MediaRepository` (new, in `product.go`) — the 9 product-media/variant-media
+  methods.
+- `VariantRepository` (new, in `variant.go`) — the 11 variant CRUD/lifecycle/stock
+  methods.
 
 By the end of this task:
-- `Product` no longer has `Category`, `Prices`, or `Thumbnail` fields.
-- `ProductRepository.FindAll` returns `[]ProductListItem` instead of `[]Product`.
-- `ProductRepository.FindByID`/`FindByHandle` return `ProductDetail` instead of
-  `Product`.
-- `QueryProductUseCase.GetByID`/`GetByHandle` return `domain.ProductDetail`.
-- `PaginatedProducts.Data` is `[]ProductListItem`.
-- The HTTP response JSON shape for `GET /products` and `GET /products/:id` is
-  **byte-for-byte unchanged** — this is a type-level refactor, not a behavior change.
-  `Category`/`Prices`/`Thumbnail` keep the exact same `json:"..."` tags they have
-  today, just moved to the new wrapper types.
+- No single interface has more than ~11 methods.
+- `optionUc` depends on `ProductRepository` + `OptionRepository` only.
+- `mediaUc` depends on `ProductRepository` + `MediaRepository` + `VariantRepository`
+  (it needs `FindVariantByID` for `AttachToVariant`).
+- `variantUc` depends on `ProductRepository` + `VariantRepository` + `MediaRepository`
+  (it needs `FindMediaByID`/`AttachNewOrExistingVariantMedia` for variant media).
+- `insertUc`, `updateUc`, `deleteUc`, `queryUc` are **unchanged** — they only ever
+  called plain product-header methods, so they still take a single
+  `domain.ProductRepository`.
+- `internal/infrastructure/repository/productRepo.go` still has exactly **one**
+  concrete struct (`productRepo`) implementing all four interfaces — this task does
+  not physically split the implementation file or its private helpers
+  (`findProductOptions`, `findProductVariants`, `findProductMedia`, the `Create`/
+  `CreateVariantsWithStock` transactions, etc.).
+
+### What this task deliberately does NOT do (out of scope)
+
+- **No separate `InventoryRepository`.** `issue.md`'s Phase 6 proposal lists one, but
+  every inventory-touching method (`Create`'s inventory-item/stock-move/
+  inventory-level inserts, `CreateVariantsWithStock`, `AdjustVariantStock`) writes to
+  inventory tables **inside the same DB transaction** as the product/variant row it's
+  attached to, and is only ever called through `ProductRepository.Create` or
+  `VariantRepository.CreateVariantsWithStock`/`AdjustVariantStock` — nothing calls
+  inventory persistence independently today. Carving out a standalone
+  `InventoryRepository` would mean passing a shared transaction across repository
+  interfaces, which is a real architectural change, not a mechanical interface split.
+  Leave `AdjustVariantStock` and `VariantHasHistory` on `VariantRepository` (that's
+  where their only caller, `variantUc`, already reaches them from) and revisit a true
+  inventory-transaction boundary as its own follow-up if/when something needs to
+  adjust stock without going through a variant use case.
+- **No splitting of `productRepo.go` into multiple files/structs.** One struct, one
+  DB pool, shared private helpers — only the exported interfaces it satisfies change.
+- **No changes to `Product`, `Variant`, `ProductListItem`, `ProductDetail`, or any
+  other type shape.** This is purely an interface/wiring change.
+- Do not touch `internal/domain/category.go`, `categoryRepo.go`, or anything under
+  `internal/app/category/`.
 
 ### Why this is lower-risk than it sounds
 
-`Product` is embedded (not referenced) in both new types, so every existing call
-site that does `product.ID`, `product.Status`, `product.Archive()`, etc. keeps
-compiling unchanged — Go promotes embedded fields and methods automatically. Go
-also promotes **pointer-receiver methods on a value-embedded field** as long as the
-outer value is addressable, which every `product, err := uc.productRepo.FindByID(...)`
-local variable is. Concretely:
+`internal/infrastructure/repository/productRepo.go` already implements every one of
+these methods as a method on the same `*productRepo` struct, and
+`internal/app/product/queryUseCase_test.go`'s `fakeProductRepo` already implements
+every one of them too. In Go, **one concrete type can satisfy multiple interfaces at
+once** — you don't need separate structs or separate fakes. Concretely:
 
-- `internal/app/product/updateUseCase.go`'s `Archive`/`Restore` call
-  `product.Archive()` / `product.Restore()` on the result of `FindByID`. Once
-  `FindByID` returns `ProductDetail`, `product.Archive()` still works with **zero
-  code changes** in that file, because `ProductDetail` embeds `Product` by value and
-  `Archive`/`Restore` have pointer receivers.
-- `internal/app/product/mediaUseCase.go`, `optionUseCase.go`, `variantUseCase.go` all
-  call `uc.productRepo.FindByID(...)` and only ever read `product.Options` /
-  `product.Variants` afterward — these also need **zero code changes**.
-
-Only three places actually need edits: the domain interfaces/types, the Postgres
-repository implementation, and the HTTP handler's detail-view mapping function
-(`toProductDetailData`) plus its test fakes. This task does NOT include: splitting
-`ProductRepository` (Phase 6), value objects like `Quantity`/`Money` (Phase 7), or
-any change to `ListProductParams`'s fields (it's already a plain filter/pagination
-struct with no domain-object fields — moving it to the same file as the new types is
-a pure organizational move, not a behavioral one). Do not touch
-`internal/domain/category.go`, `categoryRepo.go`, or anything under
-`internal/app/category/`.
+- `repository.NewProductRepo(db)` will return the unexported `*productRepo` type
+  instead of `domain.ProductRepository`. Callers (just `wire/container.go`) don't
+  need to name that type — `productRepo := repository.NewProductRepo(db)` still
+  works via type inference, and that one variable can be passed into every use case
+  constructor that now asks for a narrower interface, because `*productRepo`
+  implements all four.
+- Same story for `fakeProductRepo` in tests: it keeps every method it already has, so
+  the same `repo` variable in each test file can be passed to multiple constructor
+  parameters unchanged in behavior — only the number of arguments at each
+  `New...UseCase(...)` call site changes.
 
 ## Step-by-step
 
-### 1. Create the read-model file
+### 1. Split the interface in `internal/domain/product.go`
 
-Create `internal/domain/product_readmodel.go`:
-
-```go
-package domain
-
-// ProductListItem is the read-model shape for a single row returned by
-// GET /products. It embeds Product for the fields shared with the write
-// aggregate and adds projections that only exist at query time: the joined
-// category reference, the computed min/max variant price range, and the
-// primary gallery image.
-type ProductListItem struct {
-	Product
-	Category  ProductCategory   `json:"category"`
-	Prices    ProductPrices     `json:"prices"`
-	Thumbnail *ProductThumbnail `json:"thumbnail"`
-}
-
-// ProductDetail is the read-model shape for a single product returned by
-// GET /products/:id and GET /products/:handle. It embeds Product and adds
-// the joined category reference consumed by the detail view.
-type ProductDetail struct {
-	Product
-	Category ProductCategory `json:"category"`
-}
-```
-
-Do not move `ProductCategory`, `ProductPrices`, `ProductThumbnail`,
-`ListProductParams`, or `PaginatedProducts` into this file yet — that happens in
-step 2, once you're editing `product.go` anyway, to keep this step a pure addition.
-
-Build after this step: `go build ./...` must still pass (the new types are unused
-so far, which is fine).
-
-### 2. Remove the read-only fields from `Product`, relocate the shape types
-
-Open `internal/domain/product.go`.
-
-**2a.** In the `Product` struct (currently lines 40-56), delete the `Thumbnail`,
-`Category`, and `Prices` fields:
+Find the current `ProductRepository` interface (~lines 258-308). Replace it with the
+trimmed `ProductRepository` plus two new interfaces, `OptionRepository` and
+`MediaRepository`, covering the methods being carved out. Keep every method
+signature byte-for-byte identical — only which interface it belongs to changes.
 
 ```go
 // before
-type Product struct {
-	ID          uuid.UUID         `json:"id"`
-	Handle      string            `json:"handle"`
-	Title       string            `json:"title"`
-	Status      ProductStatus     `json:"status"`
-	Thumbnail   *ProductThumbnail `json:"thumbnail"`
-	Description *string           `json:"description,omitempty"`
-	Vendor      *string           `json:"vendor,omitempty"`
-	CategoryID  int               `json:"-"`
-	Category    ProductCategory   `json:"category"`
-	Prices      ProductPrices     `json:"prices"`
-	Options     []ProductOption   `json:"options,omitempty"`
-	Variants    []Variant         `json:"variants,omitempty"`
-	Media       []ProductMedia    `json:"media,omitempty"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   *time.Time        `json:"updated_at,omitempty"`
-}
+type ProductRepository interface {
+	Create(ctx context.Context, params CreateProductParams) (Product, error)
+	FindAll(ctx context.Context, params ListProductParams) ([]ProductListItem, int, error)
+	FindByID(ctx context.Context, id uuid.UUID) (ProductDetail, error)
+	FindByHandle(ctx context.Context, handle string) (ProductDetail, error)
 
-// after
-type Product struct {
-	ID          uuid.UUID       `json:"id"`
-	Handle      string          `json:"handle"`
-	Title       string          `json:"title"`
-	Status      ProductStatus   `json:"status"`
-	Description *string         `json:"description,omitempty"`
-	Vendor      *string         `json:"vendor,omitempty"`
-	CategoryID  int             `json:"-"`
-	Options     []ProductOption `json:"options,omitempty"`
-	Variants    []Variant       `json:"variants,omitempty"`
-	Media       []ProductMedia  `json:"media,omitempty"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   *time.Time      `json:"updated_at,omitempty"`
+	UpdateHeader(ctx context.Context, id uuid.UUID, input UpdateProductInput) (Product, error)
+	UpdateStatus(ctx context.Context, id uuid.UUID, status ProductStatus) error
+	Delete(ctx context.Context, id uuid.UUID) error
+
+	CreateOption(ctx context.Context, option ProductOption) (ProductOption, error)
+	RenameOption(ctx context.Context, productID, optionID uuid.UUID, name string) (ProductOption, error)
+	DeleteOption(ctx context.Context, productID, optionID uuid.UUID) error
+	ReorderOptions(ctx context.Context, productID uuid.UUID, positions []PositionUpdate) error
+	FindOptionByID(ctx context.Context, optionID uuid.UUID) (ProductOption, error)
+
+	CreateOptionValue(ctx context.Context, value ProductOptionValue) (ProductOptionValue, error)
+	UpdateOptionValue(ctx context.Context, valueID uuid.UUID, value *string, position *int) (ProductOptionValue, error)
+	DeleteOptionValue(ctx context.Context, valueID uuid.UUID) error
+	FindOptionValueByID(ctx context.Context, valueID uuid.UUID) (ProductOptionValue, error)
+
+	CreateVariant(ctx context.Context, variant Variant) (Variant, error)
+	CreateVariants(ctx context.Context, variants []Variant) ([]Variant, error)
+	CreateVariantsWithStock(ctx context.Context, params CreateVariantsParams) ([]Variant, error)
+	AdjustVariantStock(ctx context.Context, variantID uuid.UUID, targetQty int) (InventoryLevel, error)
+	FindVariantByID(ctx context.Context, variantID uuid.UUID) (Variant, error)
+	UpdateVariant(ctx context.Context, variantID uuid.UUID, input UpdateVariantInput) (Variant, error)
+	DeleteVariant(ctx context.Context, variantID uuid.UUID, hard bool) error
+	BulkDeleteVariants(ctx context.Context, variantIDs []uuid.UUID, hard bool) error
+	RestoreVariant(ctx context.Context, variantID uuid.UUID) (Variant, error)
+	ReorderVariants(ctx context.Context, productID uuid.UUID, positions []PositionUpdate) error
+	VariantHasHistory(ctx context.Context, variantID uuid.UUID) (bool, error)
+
+	CreateProductMedia(ctx context.Context, media []ProductMedia) ([]ProductMedia, error)
+	UpdateProductMedia(ctx context.Context, mediaID uuid.UUID, altText *string) (ProductMedia, error)
+	DeleteProductMedia(ctx context.Context, mediaID uuid.UUID) error
+	ReorderProductMedia(ctx context.Context, productID uuid.UUID, positions []PositionUpdate) error
+	FindMediaByID(ctx context.Context, mediaID uuid.UUID) (ProductMedia, error)
+
+	AttachVariantMedia(ctx context.Context, variantID, mediaID uuid.UUID) (VariantMedia, error)
+	DetachVariantMedia(ctx context.Context, variantID, mediaID uuid.UUID) error
+	ReorderVariantMedia(ctx context.Context, variantID uuid.UUID, positions []PositionUpdate) error
+
+	AttachNewOrExistingVariantMedia(ctx context.Context, newMedia []ProductMedia, links []VariantMedia) error
 }
 ```
 
-**2b.** Cut the `ProductCategory`, `ProductPrices`, and `ProductThumbnail` type
-definitions (currently lines 115-138, right after `AddVariant`) out of `product.go`
-and paste them into `internal/domain/product_readmodel.go` from step 1, above the
-`ProductListItem`/`ProductDetail` types you already added there. Keep their doc
-comments as-is — they're still accurate, just describe read-model types now instead
-of `Product` fields.
+```go
+// after
+// ProductRepository is the persistence contract for the product header:
+// creating, reading, updating, and deleting the products table row itself.
+type ProductRepository interface {
+	Create(ctx context.Context, params CreateProductParams) (Product, error)
+	FindAll(ctx context.Context, params ListProductParams) ([]ProductListItem, int, error)
+	FindByID(ctx context.Context, id uuid.UUID) (ProductDetail, error)
+	FindByHandle(ctx context.Context, handle string) (ProductDetail, error)
 
-**2c.** Cut `ListProductParams` and `PaginatedProducts` (currently lines 242-263)
-out of `product.go` and paste them into `product_readmodel.go` too, directly below
-the types from 2b. Update `PaginatedProducts.Data`'s type while you're there:
+	UpdateHeader(ctx context.Context, id uuid.UUID, input UpdateProductInput) (Product, error)
+	UpdateStatus(ctx context.Context, id uuid.UUID, status ProductStatus) error
+	Delete(ctx context.Context, id uuid.UUID) error
+}
+
+// OptionRepository is the persistence contract for a product's options and
+// their option values.
+type OptionRepository interface {
+	CreateOption(ctx context.Context, option ProductOption) (ProductOption, error)
+	RenameOption(ctx context.Context, productID, optionID uuid.UUID, name string) (ProductOption, error)
+	DeleteOption(ctx context.Context, productID, optionID uuid.UUID) error
+	ReorderOptions(ctx context.Context, productID uuid.UUID, positions []PositionUpdate) error
+	FindOptionByID(ctx context.Context, optionID uuid.UUID) (ProductOption, error)
+
+	CreateOptionValue(ctx context.Context, value ProductOptionValue) (ProductOptionValue, error)
+	UpdateOptionValue(ctx context.Context, valueID uuid.UUID, value *string, position *int) (ProductOptionValue, error)
+	DeleteOptionValue(ctx context.Context, valueID uuid.UUID) error
+	FindOptionValueByID(ctx context.Context, valueID uuid.UUID) (ProductOptionValue, error)
+}
+
+// MediaRepository is the persistence contract for a product's media gallery
+// and its links to variants.
+type MediaRepository interface {
+	CreateProductMedia(ctx context.Context, media []ProductMedia) ([]ProductMedia, error)
+	UpdateProductMedia(ctx context.Context, mediaID uuid.UUID, altText *string) (ProductMedia, error)
+	DeleteProductMedia(ctx context.Context, mediaID uuid.UUID) error
+	ReorderProductMedia(ctx context.Context, productID uuid.UUID, positions []PositionUpdate) error
+	FindMediaByID(ctx context.Context, mediaID uuid.UUID) (ProductMedia, error)
+
+	AttachVariantMedia(ctx context.Context, variantID, mediaID uuid.UUID) (VariantMedia, error)
+	DetachVariantMedia(ctx context.Context, variantID, mediaID uuid.UUID) error
+	ReorderVariantMedia(ctx context.Context, variantID uuid.UUID, positions []PositionUpdate) error
+
+	// AttachNewOrExistingVariantMedia appends media links to a variant during
+	// update. It inserts any brand-new media rows (newMedia) into product_media
+	// and then inserts the variant_media links; it never touches existing links.
+	AttachNewOrExistingVariantMedia(ctx context.Context, newMedia []ProductMedia, links []VariantMedia) error
+}
+```
+
+Place `OptionRepository` and `MediaRepository` directly after the trimmed
+`ProductRepository`, in that order. The variant methods are cut entirely here —
+step 2 pastes them into `variant.go`.
+
+Build after this step: `go build ./...` will **fail**. That's expected —
+`internal/infrastructure/repository/productRepo.go` still declares
+`func NewProductRepo(db database.Database) domain.ProductRepository`, and that
+concrete type no longer has `CreateVariant`/etc. required to satisfy the
+now-nonexistent variant methods on `ProductRepository` — wait, actually the build
+error you'll see is simpler: `productRepo.go`'s `NewProductRepo` return type
+assertion will fail to compile because `domain.ProductRepository` no longer declares
+the variant/option/media methods your `*productRepo` still implements just fine —
+Go interfaces are structural, so **extra** methods on `*productRepo` are never an
+error. The real failure is that `NewProductRepo`'s declared return type
+`domain.ProductRepository` is now a *smaller* interface than before, which still
+compiles. The actual failures you'll see are in `internal/app/product/*.go` and
+`*_test.go`, where `optionUc`/`mediaUc`/`variantUc` call methods
+(`uc.productRepo.CreateOption(...)`, etc.) that no longer exist on
+`domain.ProductRepository`. Don't fix those yet — steps 2-5 do that in order.
+
+### 2. Add `VariantRepository` to `internal/domain/variant.go`
+
+Open `variant.go`. Add the new interface below the existing `VariantUseCase`
+interface (don't confuse the two: `VariantUseCase` is the application-layer contract
+already in this file; `VariantRepository` is the new persistence-layer contract):
+
+```go
+// VariantRepository is the persistence contract for a product's variants,
+// including their inventory stock adjustment and lifecycle (soft/hard
+// delete, restore).
+type VariantRepository interface {
+	CreateVariant(ctx context.Context, variant Variant) (Variant, error)
+	CreateVariants(ctx context.Context, variants []Variant) ([]Variant, error)
+	CreateVariantsWithStock(ctx context.Context, params CreateVariantsParams) ([]Variant, error)
+	AdjustVariantStock(ctx context.Context, variantID uuid.UUID, targetQty int) (InventoryLevel, error)
+	FindVariantByID(ctx context.Context, variantID uuid.UUID) (Variant, error)
+	UpdateVariant(ctx context.Context, variantID uuid.UUID, input UpdateVariantInput) (Variant, error)
+	DeleteVariant(ctx context.Context, variantID uuid.UUID, hard bool) error
+	BulkDeleteVariants(ctx context.Context, variantIDs []uuid.UUID, hard bool) error
+	RestoreVariant(ctx context.Context, variantID uuid.UUID) (Variant, error)
+	ReorderVariants(ctx context.Context, productID uuid.UUID, positions []PositionUpdate) error
+	// VariantHasHistory reports whether a variant has any stock movement
+	// history, which decides soft vs hard deletion.
+	VariantHasHistory(ctx context.Context, variantID uuid.UUID) (bool, error)
+}
+```
+
+`CreateVariantsParams` (defined in `product.go`) and `InventoryLevel` (defined in
+`inventory.go`) are both still in package `domain`, so no import changes are needed.
+
+Build after this step: still expected to fail in `internal/app/product/*.go` and
+test files — that's what steps 3-5 fix.
+
+### 3. Point `productRepo.go` at the new interfaces
+
+Open `internal/infrastructure/repository/productRepo.go`. The only change is the
+constructor's return type — every method on `*productRepo` already has the exact
+signatures the new interfaces require, so nothing else in this file changes.
 
 ```go
 // before
-type PaginatedProducts struct {
-	Data       []Product `json:"data"`
-	Total      int       `json:"total"`
-	Page       int       `json:"page"`
-	PerPage    int       `json:"per_page"`
-	TotalPages int       `json:"total_pages"`
+func NewProductRepo(db database.Database) domain.ProductRepository {
+	return &productRepo{db: db}
 }
 
 // after
-type PaginatedProducts struct {
-	Data       []ProductListItem `json:"data"`
-	Total      int               `json:"total"`
-	Page       int               `json:"page"`
-	PerPage    int               `json:"per_page"`
-	TotalPages int               `json:"total_pages"`
+func NewProductRepo(db database.Database) *productRepo {
+	return &productRepo{db: db}
 }
 ```
 
-Build after this step: `go build ./...` will **fail** — that's expected. You should
-see errors in `internal/infrastructure/repository/productRepo.go` (setting
-`.Category`/`.Prices`/`.Thumbnail` on a `domain.Product` that no longer has those
-fields) and possibly in test files. Do not fix those yet; steps 3-6 do that in order
-so you can tell which change fixed which error.
+Immediately below the `productRepo` struct/`NewProductRepo` block, add compile-time
+assertions that `*productRepo` satisfies all four interfaces. These aren't required
+for the build to pass, but they turn "I forgot a method" into an error right here
+instead of a confusing failure somewhere in `wire/container.go`:
 
-### 3. Update the two interfaces in `product.go`
+```go
+var (
+	_ domain.ProductRepository = (*productRepo)(nil)
+	_ domain.OptionRepository  = (*productRepo)(nil)
+	_ domain.VariantRepository = (*productRepo)(nil)
+	_ domain.MediaRepository   = (*productRepo)(nil)
+)
+```
 
-**3a.** `ProductRepository` (currently lines 311-360): change `FindAll`,
-`FindByID`, `FindByHandle`:
+Build after this step: `go build ./internal/infrastructure/...` should pass.
+`go build ./...` as a whole will still fail in `internal/app/product/*.go` (they
+call `NewProductRepo`-independent methods on interfaces that no longer have them) and
+`internal/wire/container.go` (it declares `productRepo` implicitly via `:=`, so it's
+actually fine — the failures are all in `internal/app/product`).
+
+### 4. Update the three use cases that need a narrower dependency plus the split-off ones
+
+**4a. `internal/app/product/optionUseCase.go`.** Add a second field/parameter for
+`OptionRepository`, then repoint every call except the one `FindByID` (which stays on
+`productRepo` — it's used in `Create` to confirm the product exists before deriving
+the next option position):
 
 ```go
 // before
-FindAll(ctx context.Context, params ListProductParams) ([]Product, int, error)
-FindByID(ctx context.Context, id uuid.UUID) (Product, error)
-FindByHandle(ctx context.Context, handle string) (Product, error)
+type optionUc struct {
+	productRepo domain.ProductRepository
+}
+
+func NewOptionUseCase(productRepo domain.ProductRepository) domain.OptionUseCase {
+	return &optionUc{
+		productRepo: productRepo,
+	}
+}
 
 // after
-FindAll(ctx context.Context, params ListProductParams) ([]ProductListItem, int, error)
-FindByID(ctx context.Context, id uuid.UUID) (ProductDetail, error)
-FindByHandle(ctx context.Context, handle string) (ProductDetail, error)
+type optionUc struct {
+	productRepo domain.ProductRepository
+	optionRepo  domain.OptionRepository
+}
+
+func NewOptionUseCase(productRepo domain.ProductRepository, optionRepo domain.OptionRepository) domain.OptionUseCase {
+	return &optionUc{
+		productRepo: productRepo,
+		optionRepo:  optionRepo,
+	}
+}
 ```
 
-**3b.** `QueryProductUseCase` (currently lines 265-270): change `GetByID`/
-`GetByHandle`:
+Then, in the method bodies, change every `uc.productRepo.CreateOption(...)`,
+`.RenameOption(...)`, `.DeleteOption(...)`, `.ReorderOptions(...)`,
+`.CreateOptionValue(...)`, `.UpdateOptionValue(...)`, `.DeleteOptionValue(...)` call
+to `uc.optionRepo.<Method>(...)` instead. Leave `uc.productRepo.FindByID(...)` (in
+`Create`) untouched. `FindOptionByID`/`FindOptionValueByID` aren't currently called
+from this file at all — nothing to change for those two.
+
+**4b. `internal/app/product/mediaUseCase.go`.** Add `MediaRepository` and
+`VariantRepository` fields/parameters:
 
 ```go
 // before
-type QueryProductUseCase interface {
-	FindAll(ctx context.Context, params ListProductParams) (PaginatedProducts, error)
-	GetByID(ctx context.Context, id uuid.UUID) (Product, error)
-	GetByHandle(ctx context.Context, handle string) (Product, error)
+type mediaUc struct {
+	productRepo domain.ProductRepository
+}
+
+func NewMediaUseCase(productRepo domain.ProductRepository) domain.MediaUseCase {
+	return &mediaUc{
+		productRepo: productRepo,
+	}
 }
 
 // after
-type QueryProductUseCase interface {
-	FindAll(ctx context.Context, params ListProductParams) (PaginatedProducts, error)
-	GetByID(ctx context.Context, id uuid.UUID) (ProductDetail, error)
-	GetByHandle(ctx context.Context, handle string) (ProductDetail, error)
+type mediaUc struct {
+	productRepo domain.ProductRepository
+	mediaRepo   domain.MediaRepository
+	variantRepo domain.VariantRepository
+}
+
+func NewMediaUseCase(productRepo domain.ProductRepository, mediaRepo domain.MediaRepository, variantRepo domain.VariantRepository) domain.MediaUseCase {
+	return &mediaUc{
+		productRepo: productRepo,
+		mediaRepo:   mediaRepo,
+		variantRepo: variantRepo,
+	}
 }
 ```
 
-Leave every other method on both interfaces untouched — this task does not split
-`ProductRepository` (that's Phase 6).
+In the method bodies: `uc.productRepo.FindByID(...)` stays as-is (used in `Create` to
+confirm the product exists). `uc.productRepo.FindVariantByID(...)` (in
+`AttachToVariant`) becomes `uc.variantRepo.FindVariantByID(...)`. Every other call —
+`CreateProductMedia`, `UpdateProductMedia`, `DeleteProductMedia`,
+`ReorderProductMedia`, `FindMediaByID` (both call sites), `AttachVariantMedia`,
+`DetachVariantMedia`, `ReorderVariantMedia` — becomes `uc.mediaRepo.<Method>(...)`.
 
-### 4. Update `internal/app/product/queryUseCase.go`
-
-Open the file. `GetByID`/`GetByHandle`'s declared return type must match the
-interface change from step 3b:
+**4c. `internal/app/product/variantUseCase.go`.** Add `VariantRepository` and
+`MediaRepository` fields/parameters:
 
 ```go
 // before
-func (uc *queryProductUc) GetByID(ctx context.Context, id uuid.UUID) (domain.Product, error) {
-	data, err := uc.productRepo.FindByID(ctx, id)
-	if err != nil {
-		if err != domain.ErrProductNotFound {
-			logger.L(ctx).Error("find product by id failed", zap.Error(err), zap.String("id", id.String()))
-		}
-		return domain.Product{}, err
+type variantUc struct {
+	productRepo domain.ProductRepository
+}
+
+func NewVariantUseCase(productRepo domain.ProductRepository) domain.VariantUseCase {
+	return &variantUc{
+		productRepo: productRepo,
 	}
-	...
 }
 
 // after
-func (uc *queryProductUc) GetByID(ctx context.Context, id uuid.UUID) (domain.ProductDetail, error) {
-	data, err := uc.productRepo.FindByID(ctx, id)
-	if err != nil {
-		if err != domain.ErrProductNotFound {
-			logger.L(ctx).Error("find product by id failed", zap.Error(err), zap.String("id", id.String()))
-		}
-		return domain.ProductDetail{}, err
+type variantUc struct {
+	productRepo domain.ProductRepository
+	variantRepo domain.VariantRepository
+	mediaRepo   domain.MediaRepository
+}
+
+func NewVariantUseCase(productRepo domain.ProductRepository, variantRepo domain.VariantRepository, mediaRepo domain.MediaRepository) domain.VariantUseCase {
+	return &variantUc{
+		productRepo: productRepo,
+		variantRepo: variantRepo,
+		mediaRepo:   mediaRepo,
 	}
-	...
 }
 ```
 
-Do the same for `GetByHandle` (change both `domain.Product` occurrences to
-`domain.ProductDetail`). `FindAll` needs **no changes** — it already just forwards
-whatever `uc.productRepo.FindAll` returns into `PaginatedProducts.Data`, and both
-sides of that assignment are now `[]domain.ProductListItem`.
+In the method bodies: both `uc.productRepo.FindByID(...)` calls (in `Create` and
+`BulkCreate`) stay as-is. `CreateVariantsWithStock` (both call sites),
+`UpdateVariant` (both call sites), `AdjustVariantStock` (both call sites),
+`FindVariantByID`, `VariantHasHistory` (both call sites), `DeleteVariant`,
+`BulkDeleteVariants` (both call sites), `RestoreVariant`, `ReorderVariants` all
+become `uc.variantRepo.<Method>(...)`. `AttachNewOrExistingVariantMedia` (both call
+sites) and the `FindMediaByID` call near the end of the file (in the media-resolution
+helper) become `uc.mediaRepo.<Method>(...)`.
 
-Build after this step: still expected to fail in `productRepo.go` and possibly
-handler/test files — keep going.
+**4d. Leave these four files alone** — they already only ever called plain
+product-header methods, so their field type, constructor signature, and bodies don't
+change at all: `internal/app/product/insertUseCase.go`,
+`internal/app/product/deleteUseCase.go`, `internal/app/product/queryUseCase.go`,
+`internal/app/product/updateUseCase.go`.
 
-### 5. Update `internal/infrastructure/repository/productRepo.go`
+Build after this step: `go build ./internal/app/...` should now pass.
+`go build ./...` will still fail in `internal/wire/container.go` and in
+`internal/app/product`'s test files — steps 5-6 fix those.
 
-This is the step with real logic changes. Go slowly.
+### 5. Update `internal/wire/container.go`
 
-**5a. `FindAll`** (currently lines 208-338). Change the signature and the loop body
-that builds the result slice:
+Only the three call sites for `optionUC`, `variantUC`, and `mediaUC` change — pass
+the same `productRepo` value as every argument each constructor now takes, since
+`*productRepo` (from step 3) satisfies all four interfaces at once:
 
 ```go
 // before
-func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductParams) ([]domain.Product, int, error) {
-	...
-	products := make([]domain.Product, 0, len(listRows))
-	for _, row := range listRows {
-		p := row.Product.ToDomain()
-		if row.CategorySlug != nil {
-			p.Category.Slug = *row.CategorySlug
-		}
-		if row.CategoryName != nil {
-			p.Category.Name = *row.CategoryName
-		}
-		p.Prices.StartPrice = row.StartPrice
-		p.Prices.MaxPrice = row.MaxPrice
-		if row.ThumbnailURL != nil {
-			p.Thumbnail = &domain.ProductThumbnail{
-				Type:    *row.ThumbnailType,
-				URL:     *row.ThumbnailURL,
-				AltText: row.ThumbnailAltText,
-			}
-		}
-		products = append(products, p)
-	}
-
-	return products, total, nil
-}
+productRepo := repository.NewProductRepo(db)
+productInsertUC := product.NewProductInsertUseCase(productRepo)
+productQueryUC := product.NewProductQueryUseCase(productRepo)
+productUpdateUC := product.NewProductUpdateUseCase(productRepo)
+productDeleteUC := product.NewProductDeleteUseCase(productRepo)
+optionUC := product.NewOptionUseCase(productRepo)
+variantUC := product.NewVariantUseCase(productRepo)
+mediaUC := product.NewMediaUseCase(productRepo)
 
 // after
-func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductParams) ([]domain.ProductListItem, int, error) {
-	...
-	products := make([]domain.ProductListItem, 0, len(listRows))
-	for _, row := range listRows {
-		item := domain.ProductListItem{Product: row.Product.ToDomain()}
-		if row.CategorySlug != nil {
-			item.Category.Slug = *row.CategorySlug
-		}
-		if row.CategoryName != nil {
-			item.Category.Name = *row.CategoryName
-		}
-		item.Prices.StartPrice = row.StartPrice
-		item.Prices.MaxPrice = row.MaxPrice
-		if row.ThumbnailURL != nil {
-			item.Thumbnail = &domain.ProductThumbnail{
-				Type:    *row.ThumbnailType,
-				URL:     *row.ThumbnailURL,
-				AltText: row.ThumbnailAltText,
-			}
-		}
-		products = append(products, item)
-	}
-
-	return products, total, nil
-}
+productRepo := repository.NewProductRepo(db)
+productInsertUC := product.NewProductInsertUseCase(productRepo)
+productQueryUC := product.NewProductQueryUseCase(productRepo)
+productUpdateUC := product.NewProductUpdateUseCase(productRepo)
+productDeleteUC := product.NewProductDeleteUseCase(productRepo)
+optionUC := product.NewOptionUseCase(productRepo, productRepo)
+variantUC := product.NewVariantUseCase(productRepo, productRepo, productRepo)
+mediaUC := product.NewMediaUseCase(productRepo, productRepo, productRepo)
 ```
 
-Everything above the loop (query building, `pgx.CollectRows`) is unchanged — only
-the loop body and the two `[]domain.Product` occurrences in the signature/`make`
-call change.
-
-**5b. `FindByID` / `FindByHandle`** (currently lines 341-352). Only the return type
-in the signature changes — the bodies just forward to `findProductBy`:
-
-```go
-// before
-func (r *productRepo) FindByID(ctx context.Context, id uuid.UUID) (domain.Product, error) {
-	defer metrics.ObserveDB("product", "find_by_id")(time.Now())
-	return r.findProductBy(ctx, "products.id = $1", pgUUID(id))
-}
-
-func (r *productRepo) FindByHandle(ctx context.Context, handle string) (domain.Product, error) {
-	...
-}
-
-// after
-func (r *productRepo) FindByID(ctx context.Context, id uuid.UUID) (domain.ProductDetail, error) {
-	defer metrics.ObserveDB("product", "find_by_id")(time.Now())
-	return r.findProductBy(ctx, "products.id = $1", pgUUID(id))
-}
-
-func (r *productRepo) FindByHandle(ctx context.Context, handle string) (domain.ProductDetail, error) {
-	...
-}
-```
-
-**5c. `findProductBy`** (currently lines 825-887) — the private helper both of the
-above call. Change its return type and the local variable it builds:
-
-```go
-// before
-func (r *productRepo) findProductBy(ctx context.Context, predicate string, arg interface{}) (domain.Product, error) {
-	...
-	row, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[productDetailRow])
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Product{}, domain.ErrProductNotFound
-		}
-		return domain.Product{}, err
-	}
-
-	product := row.Product.ToDomain()
-	if row.CategorySlug != nil {
-		product.Category.Slug = *row.CategorySlug
-	}
-	if row.CategoryName != nil {
-		product.Category.Name = *row.CategoryName
-	}
-	if row.CategoryId != nil {
-		product.Category.Id = *row.CategoryId
-	}
-
-	options, err := r.findProductOptions(ctx, product.ID)
-	if err != nil {
-		return domain.Product{}, err
-	}
-	product.Options = options
-
-	variants, err := r.findProductVariants(ctx, product.ID)
-	if err != nil {
-		return domain.Product{}, err
-	}
-	product.Variants = variants
-
-	media, err := r.findProductMedia(ctx, product.ID)
-	if err != nil {
-		return domain.Product{}, err
-	}
-	product.Media = media
-
-	return product, nil
-}
-
-// after
-func (r *productRepo) findProductBy(ctx context.Context, predicate string, arg interface{}) (domain.ProductDetail, error) {
-	...
-	row, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[productDetailRow])
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.ProductDetail{}, domain.ErrProductNotFound
-		}
-		return domain.ProductDetail{}, err
-	}
-
-	detail := domain.ProductDetail{Product: row.Product.ToDomain()}
-	if row.CategorySlug != nil {
-		detail.Category.Slug = *row.CategorySlug
-	}
-	if row.CategoryName != nil {
-		detail.Category.Name = *row.CategoryName
-	}
-	if row.CategoryId != nil {
-		detail.Category.Id = *row.CategoryId
-	}
-
-	options, err := r.findProductOptions(ctx, detail.ID)
-	if err != nil {
-		return domain.ProductDetail{}, err
-	}
-	detail.Options = options
-
-	variants, err := r.findProductVariants(ctx, detail.ID)
-	if err != nil {
-		return domain.ProductDetail{}, err
-	}
-	detail.Variants = variants
-
-	media, err := r.findProductMedia(ctx, detail.ID)
-	if err != nil {
-		return domain.ProductDetail{}, err
-	}
-	detail.Media = media
-
-	return detail, nil
-}
-```
-
-Note `detail.ID`, `detail.Options`, `detail.Variants`, `detail.Media` all resolve to
-the embedded `Product`'s fields via promotion — you're not adding new fields to
-`ProductDetail`, just renaming the local variable from `product` to `detail` and
-changing its type. `findProductOptions`/`findProductVariants`/`findProductMedia`
-themselves are untouched — they take a `uuid.UUID` and don't know about `Product` or
-`ProductDetail` at all.
-
-**5d.** Everything else in `productRepo.go` (`Create`, `UpdateHeader`,
-`AdjustVariantStock`, all the option/variant/media methods, `productListRow`,
-`productDetailRow`) is untouched. In particular, do **not** touch `Create` — it
-still builds and returns a plain `domain.Product`, which is correct: creating a
-product doesn't need category/price/thumbnail data.
-
-Build after this step: `go build ./...` should now fail only in
-`internal/delivery/http/handler/product_handler.go` and possibly test files.
-
-### 6. Update the handler
-
-Open `internal/delivery/http/handler/product_handler.go`. Only `toProductDetailData`
-needs a signature change — it's the only place that reads `p.Category` for a value
-now sourced from `ProductDetail` instead of `Product`:
-
-```go
-// before
-func toProductDetailData(p domain.Product) productDetailData {
-
-// after
-func toProductDetailData(p domain.ProductDetail) productDetailData {
-```
-
-The function body (currently lines 1590-1620+) does not need any other change: `p.ID`,
-`p.Handle`, `p.Category.Id`, `p.Category.Slug`, `p.Category.Name`, `p.Options`,
-`p.Variants` all still resolve correctly via embedding/promotion.
-
-Do **not** change `toProductData` (used for the create/update response) — it takes
-`domain.Product` and never reads `Category`/`Prices`/`Thumbnail`, so it's unaffected.
-Its two call sites (`toProductData(created)` from `insertUseCase.Create`,
-`toProductData(updated)` from `updateUseCase.Update`) still receive plain
-`domain.Product` values, since those use cases' return types didn't change.
+`productInsertUC`/`productQueryUC`/`productUpdateUC`/`productDeleteUC`'s lines are
+unchanged — shown only for context. Nothing else in this file changes.
 
 Build after this step: `go build ./...` should now pass for non-test code. Run
 `go vet ./...` too.
 
-### 7. Fix the test fakes
+### 6. Fix the test call sites
 
-**7a.** Open `internal/app/product/queryUseCase_test.go`. Update `fakeProductRepo`'s
-field types and the three methods this task touched:
+No fake needs new methods — `fakeProductRepo` in
+`internal/app/product/queryUseCase_test.go` already implements every method on all
+four new interfaces (it implemented the single old `ProductRepository`, which was a
+superset). Only the number of arguments at each constructor call changes.
 
-```go
-// field declarations — before
-findAllData   []domain.Product
-...
-findByIDData    domain.Product
+**6a. `internal/app/product/lifecycleUseCase_test.go`.** Every `NewOptionUseCase(repo)`
+call (there are 8) becomes `NewOptionUseCase(repo, repo)`. Leave every
+`NewProductUpdateUseCase(repo)` and `NewProductDeleteUseCase(repo)` call unchanged.
 
-// after
-findAllData   []domain.ProductListItem
-...
-findByIDData    domain.ProductDetail
-```
+**6b. `internal/app/product/mediaUseCase_test.go`.** Every `NewMediaUseCase(repo)`
+call (there are 10) becomes `NewMediaUseCase(repo, repo, repo)`.
 
-```go
-// before
-func (f *fakeProductRepo) FindAll(ctx context.Context, params domain.ListProductParams) ([]domain.Product, int, error) {
-	f.findAllParams = params
-	return f.findAllData, f.findAllTotal, f.findAllErr
-}
+**6c. `internal/app/product/variantUseCase_test.go`.** Every `NewVariantUseCase(repo)`
+call (there are 9) becomes `NewVariantUseCase(repo, repo, repo)`.
 
-func (f *fakeProductRepo) FindByID(ctx context.Context, id uuid.UUID) (domain.Product, error) {
-	if f.findByIDErr != nil {
-		return domain.Product{}, f.findByIDErr
-	}
-	if f.findByIDData.ID != uuid.Nil {
-		return f.findByIDData, nil
-	}
-	return domain.Product{ID: id}, nil
-}
-
-func (f *fakeProductRepo) FindByHandle(ctx context.Context, handle string) (domain.Product, error) {
-	if f.findByHandleErr != nil {
-		return domain.Product{}, f.findByHandleErr
-	}
-	return domain.Product{Handle: handle}, nil
-}
-
-// after
-func (f *fakeProductRepo) FindAll(ctx context.Context, params domain.ListProductParams) ([]domain.ProductListItem, int, error) {
-	f.findAllParams = params
-	return f.findAllData, f.findAllTotal, f.findAllErr
-}
-
-func (f *fakeProductRepo) FindByID(ctx context.Context, id uuid.UUID) (domain.ProductDetail, error) {
-	if f.findByIDErr != nil {
-		return domain.ProductDetail{}, f.findByIDErr
-	}
-	if f.findByIDData.ID != uuid.Nil {
-		return f.findByIDData, nil
-	}
-	return domain.ProductDetail{Product: domain.Product{ID: id}}, nil
-}
-
-func (f *fakeProductRepo) FindByHandle(ctx context.Context, handle string) (domain.ProductDetail, error) {
-	if f.findByHandleErr != nil {
-		return domain.ProductDetail{}, f.findByHandleErr
-	}
-	return domain.ProductDetail{Product: domain.Product{Handle: handle}}, nil
-}
-```
-
-**7b.** Fix the three test functions that construct `findAllData` with the old
-element type — `TestQueryProductUseCase_FindAll_AppliesDefaults`,
-`TestQueryProductUseCase_FindAll_ComputesTotalPages`, and
-`TestQueryProductUseCase_FindAll_PassesFiltersThrough` each have a line like:
+**6d. `internal/app/product/queryUseCase_test.go`.** `NewProductQueryUseCase(repo)`
+and `NewProductInsertUseCase(repo)` calls are unchanged. Optionally, strengthen the
+existing compile-time assertion so a future accidental method removal is caught here
+too:
 
 ```go
 // before
-findAllData:  []domain.Product{{}},   // or []domain.Product{{}, {}}
+var _ domain.ProductRepository = (*fakeProductRepo)(nil)
 
 // after
-findAllData:  []domain.ProductListItem{{}},   // or []domain.ProductListItem{{}, {}}
+var (
+	_ domain.ProductRepository = (*fakeProductRepo)(nil)
+	_ domain.OptionRepository  = (*fakeProductRepo)(nil)
+	_ domain.VariantRepository = (*fakeProductRepo)(nil)
+	_ domain.MediaRepository   = (*fakeProductRepo)(nil)
+)
 ```
 
-Everything else in this test file (`got.ID`, `got.Handle` assertions in
-`TestQueryProductUseCase_GetByID_ReturnsProduct` /
-`TestQueryProductUseCase_GetByHandle_ReturnsProduct`) needs **no changes** — those
-fields resolve the same way through the embedded `Product`.
+If your editor supports multi-file find/replace, steps 6a-6c are each a single
+regex-style replace within one file (`NewXUseCase(repo)` → `NewXUseCase(repo, ...)`)
+— just double-check you didn't also touch an unrelated `New...(repo)` call for a
+constructor that didn't change (e.g. don't touch
+`NewProductUpdateUseCase(repo)`/`NewProductDeleteUseCase(repo)`/
+`NewProductQueryUseCase(repo)`/`NewProductInsertUseCase(repo)`).
 
-**7c.** Open `internal/delivery/http/handler/product_handler_test.go`. Two tests
-construct a `domain.Product{...}` literal with a `Category` field directly —
-that field no longer exists on `Product`, so these need to wrap in `ProductDetail`/
-`ProductListItem`:
-
-```go
-// TestToProductDetailData_CategoryAndStock — before
-p := domain.Product{
-	ID:       uuid.New(),
-	Handle:   "ergonomic-cotton-hoodie",
-	Title:    "Ergonomic Cotton Hoodie",
-	Status:   domain.ProductStatusActive,
-	Category: domain.ProductCategory{Slug: "apparel", Name: "Apparel"},
-	Variants: []domain.Variant{ ... },
-}
-
-// after
-p := domain.ProductDetail{
-	Product: domain.Product{
-		ID:       uuid.New(),
-		Handle:   "ergonomic-cotton-hoodie",
-		Title:    "Ergonomic Cotton Hoodie",
-		Status:   domain.ProductStatusActive,
-		Variants: []domain.Variant{ ... },
-	},
-	Category: domain.ProductCategory{Slug: "apparel", Name: "Apparel"},
-}
-```
-
-Apply the same wrap-in-`ProductDetail` change to
-`TestToProductDetailData_JSONOmitsCategoryID`'s literal.
-
-`TestProductListJSON_CategoryAndPrices` marshals a `domain.Product` directly (not
-through `toProductDetailData`) to assert on the list JSON shape — since list items
-are no longer plain `Product`, change what it builds and marshals:
-
-```go
-// before
-p := domain.Product{
-	ID:       uuid.New(),
-	Handle:   "ergonomic-cotton-hoodie",
-	Title:    "Ergonomic Cotton Hoodie",
-	Category: domain.ProductCategory{Slug: "apparel", Name: "Apparel"},
-	Prices:   domain.ProductPrices{StartPrice: decimal.NewFromFloat(29.99), MaxPrice: decimal.NewFromFloat(59.99)},
-}
-raw, err := json.Marshal(p)
-
-// after
-item := domain.ProductListItem{
-	Product: domain.Product{
-		ID:     uuid.New(),
-		Handle: "ergonomic-cotton-hoodie",
-		Title:  "Ergonomic Cotton Hoodie",
-	},
-	Category: domain.ProductCategory{Slug: "apparel", Name: "Apparel"},
-	Prices:   domain.ProductPrices{StartPrice: decimal.NewFromFloat(29.99), MaxPrice: decimal.NewFromFloat(59.99)},
-}
-raw, err := json.Marshal(item)
-```
-
-The rest of that test (the `strings.Contains` assertions) needs no changes — the
-expected JSON substrings (`"category"`, `"slug":"apparel"`, `"prices"`,
-`"startPrice"`, etc.) are unchanged, since the field tags didn't change, only which
-struct they live on.
-
-### 8. Build and verify
+### 7. Build and verify
 
 ```bash
 go build ./...
@@ -691,57 +522,61 @@ line:
 ```bash
 go test ./internal/domain/... -v
 go test ./internal/app/product/... -v
-go test ./internal/delivery/http/handler/... -v
+go test ./internal/infrastructure/repository/... -v
 ```
 
 If anything else fails to compile that isn't covered above, it's almost certainly
-another spot constructing a `domain.Product{...}` literal with `Category`/`Prices`/
-`Thumbnail` set — grep for those three field names across `internal/` to be sure you
-caught every occurrence:
+another call site reaching a now-relocated method through the wrong field — grep for
+the split-off method names to confirm every call site was moved to the right
+sub-repo field:
 
 ```bash
-grep -rn "Category:\|Prices:\|Thumbnail:" internal/ --include=*.go
+grep -rn "productRepo\.\(CreateOption\|RenameOption\|DeleteOption\|ReorderOptions\|CreateOptionValue\|UpdateOptionValue\|DeleteOptionValue\|FindOptionByID\|FindOptionValueByID\)" internal/app/product/
+grep -rn "productRepo\.\(CreateVariant\|CreateVariants\|CreateVariantsWithStock\|AdjustVariantStock\|FindVariantByID\|UpdateVariant\|DeleteVariant\|BulkDeleteVariants\|RestoreVariant\|ReorderVariants\|VariantHasHistory\)" internal/app/product/
+grep -rn "productRepo\.\(CreateProductMedia\|UpdateProductMedia\|DeleteProductMedia\|ReorderProductMedia\|FindMediaByID\|AttachVariantMedia\|DetachVariantMedia\|ReorderVariantMedia\|AttachNewOrExistingVariantMedia\)" internal/app/product/
 ```
 
-### 9. Manual sanity check
+All three should return **no matches** once step 4 is complete — any hit means a
+call site still reaches a split-off method via the `productRepo` field instead of
+the new `optionRepo`/`variantRepo`/`mediaRepo` field.
 
-Start the server (`air` or `go run cmd/main.go`) and exercise:
-- `GET /api/v1/products` — response `data[]` items must still contain `category`,
-  `prices` (with `startPrice`/`maxPrice`), and `thumbnail`, and must still omit
-  `category_id`. Compare against the response shape before this change (or against
-  `TestProductListJSON_CategoryAndPrices`'s assertions) — it must be identical.
-- `GET /api/v1/products/:id` and `GET /api/v1/products/:handle` — response `data`
-  must still contain `category` (with `id`/`slug`/`name`... check
-  `productCategoryData` in the handler for the exact exposed shape) and must still
-  omit `category_id`.
-- `POST /api/v1/products` (create) and `PATCH /api/v1/products/:id` (update) —
-  responses are built via `toProductData`, untouched by this task; confirm they
-  still look the same as before.
-- Archive → Restore a product (exercises `updateUseCase.go`, which calls
-  `productRepo.FindByID` and then `product.Archive()`/`product.Restore()` on the
-  result) — must behave exactly as before Phase 5, since that code path needed zero
-  edits.
+### 8. Manual sanity check
+
+Start the server (`air` or `go run cmd/main.go`) and exercise one endpoint per
+use case that changed, confirming behavior is identical to before this task (this is
+a wiring change, not a behavior change):
+
+- `POST /api/v1/products/:id/options` and its rename/delete/reorder/value endpoints
+  (`optionUc`).
+- `POST /api/v1/products/:id/media`, its update/delete/reorder endpoints, and
+  `POST /api/v1/variants/:id/media` / detach / reorder (`mediaUc`).
+- `POST /api/v1/products/:id/variants`, bulk create, update (including a stock
+  change), bulk update, delete, bulk delete, restore, reorder (`variantUc`).
+- `GET /api/v1/products`, `GET /api/v1/products/:id`, `POST /api/v1/products`,
+  `PATCH /api/v1/products/:id`, archive/restore — these use the untouched
+  `insertUc`/`queryUc`/`updateUc`/`deleteUc`, so confirm they still work simply as a
+  regression check that `wire/container.go` wiring didn't break anything.
 
 ## Notes for whoever picks this up
 
-- Resist the temptation to also give `ProductListItem`/`ProductDetail` their own
-  constructors or validation — they're pure read-model wrappers assembled by the
-  repository from query results, not aggregates with invariants. Nothing about them
-  needs to be "valid" independent of what the SQL query returned.
-- Don't try to unify `ProductListItem` and `ProductDetail` into one type "since
-  they're similar." They intentionally diverge (list has `Prices`/`Thumbnail`,
-  detail doesn't) because they're populated by two different queries with two
-  different costs — `FindAll`'s query joins a price-aggregation subquery per row,
-  which `findProductBy` doesn't need for a single-product fetch. Collapsing them
-  would force one query to do unnecessary work for the other's caller.
-- Don't move `InsertProductUseCase`, `UpdateProductUseCase`, or their input types —
-  they're already correctly scoped to the write side and don't reference the three
-  fields this task removes.
-- If you find another place outside what steps 5-7 covered that reads
-  `product.Category`/`.Prices`/`.Thumbnail` off a `domain.Product` (as opposed to a
-  `ProductDetail`/`ProductListItem`), it means there's an undiscovered call site —
-  re-run the grep in step 8 rather than guessing; do not silently add the fields
-  back onto `Product` to make it compile.
-- This task does not change `internal/wire/container.go` — `NewProductQueryUseCase`,
-  `NewProductRepository`, etc. are constructed the same way; only the types flowing
-  through the interfaces they already return changed.
+- Resist the temptation to also rename `productRepo` (the field name used in
+  `optionUc`/`mediaUc`/`variantUc`) to something like `headerRepo` "for clarity" —
+  it's out of scope and creates unnecessary diff noise. The field holds a
+  `domain.ProductRepository` and is named `productRepo`; that's consistent with the
+  four untouched use cases and with `internal/wire/container.go`'s local variable.
+- Don't try to also give `MediaRepository`/`OptionRepository`/`VariantRepository`
+  their own `New...Repo(db)` constructors in the `repository` package. There is
+  intentionally only one constructor, `repository.NewProductRepo(db)`, returning the
+  single concrete type that satisfies all four interfaces — introducing separate
+  constructors would imply separate structs/state, which this task explicitly avoids.
+- If a future task *does* need to physically separate the implementation (e.g. to
+  move variant persistence into its own file, or eventually its own package), that's
+  a bigger, separate change — it would need to decide how the shared private helpers
+  (`findProductOptions`, `findProductVariants`, `findProductMedia`) and the
+  multi-table transactions in `Create`/`CreateVariantsWithStock` get divided or
+  shared across structs. Nothing in this task blocks that from happening later; it
+  also doesn't attempt it.
+- This task does not touch `internal/domain/inventory.go` at all, and does not
+  introduce an `InventoryRepository` — see "What this task deliberately does NOT do"
+  above for why.
+- This task does not touch value objects (`Quantity`, `Money`) — that's Phase 7.

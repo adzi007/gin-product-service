@@ -32,7 +32,7 @@ func TestVariantUseCase_Create_GeneratesIDAndPosition(t *testing.T) {
 			},
 		},
 	}
-	uc := NewVariantUseCase(repo)
+	uc := NewVariantUseCase(repo, repo, repo)
 
 	created, err := uc.Create(context.Background(), productID, domain.CreateVariantInput{
 		SKU:     strPtr("SKU-1"),
@@ -66,7 +66,7 @@ func TestVariantUseCase_Create_GeneratesIDAndPosition(t *testing.T) {
 
 func TestVariantUseCase_Create_ProductNotFound(t *testing.T) {
 	repo := &fakeProductRepo{findByIDErr: domain.ErrProductNotFound}
-	uc := NewVariantUseCase(repo)
+	uc := NewVariantUseCase(repo, repo, repo)
 
 	_, err := uc.Create(context.Background(), uuid.New(), domain.CreateVariantInput{
 		Price:  decPtr(10),
@@ -89,7 +89,7 @@ func TestVariantUseCase_Create_InvalidOption(t *testing.T) {
 			},
 		},
 	}
-	uc := NewVariantUseCase(repo)
+	uc := NewVariantUseCase(repo, repo, repo)
 
 	_, err := uc.Create(context.Background(), productID, domain.CreateVariantInput{
 		Price:   decPtr(10),
@@ -111,7 +111,7 @@ func TestVariantUseCase_BulkCreate_PositionsSequential(t *testing.T) {
 			},
 		},
 	}
-	uc := NewVariantUseCase(repo)
+	uc := NewVariantUseCase(repo, repo, repo)
 
 	created, err := uc.BulkCreate(context.Background(), productID, domain.BulkCreateVariantsInput{
 		Variants: []domain.CreateVariantInput{
@@ -138,7 +138,7 @@ func TestVariantUseCase_BulkCreate_PositionsSequential(t *testing.T) {
 
 func TestVariantUseCase_Update_DelegatesToRepo(t *testing.T) {
 	repo := &fakeProductRepo{}
-	uc := NewVariantUseCase(repo)
+	uc := NewVariantUseCase(repo, repo, repo)
 
 	id := uuid.New()
 	price := decPtr(29.99)
@@ -159,7 +159,7 @@ func TestVariantUseCase_Update_DelegatesToRepo(t *testing.T) {
 
 func TestVariantUseCase_Delete_SoftWhenHasHistory(t *testing.T) {
 	repo := &fakeProductRepo{variantHasHistoryResult: true}
-	uc := NewVariantUseCase(repo)
+	uc := NewVariantUseCase(repo, repo, repo)
 
 	id := uuid.New()
 	if err := uc.Delete(context.Background(), id); err != nil {
@@ -178,7 +178,7 @@ func TestVariantUseCase_Delete_SoftWhenHasHistory(t *testing.T) {
 
 func TestVariantUseCase_Delete_HardWhenNoHistory(t *testing.T) {
 	repo := &fakeProductRepo{variantHasHistoryResult: false}
-	uc := NewVariantUseCase(repo)
+	uc := NewVariantUseCase(repo, repo, repo)
 
 	id := uuid.New()
 	if err := uc.Delete(context.Background(), id); err != nil {
@@ -191,7 +191,7 @@ func TestVariantUseCase_Delete_HardWhenNoHistory(t *testing.T) {
 
 func TestVariantUseCase_Restore(t *testing.T) {
 	repo := &fakeProductRepo{}
-	uc := NewVariantUseCase(repo)
+	uc := NewVariantUseCase(repo, repo, repo)
 
 	id := uuid.New()
 	got, err := uc.Restore(context.Background(), id)
@@ -208,7 +208,7 @@ func TestVariantUseCase_Restore(t *testing.T) {
 
 func TestVariantUseCase_Reorder(t *testing.T) {
 	repo := &fakeProductRepo{}
-	uc := NewVariantUseCase(repo)
+	uc := NewVariantUseCase(repo, repo, repo)
 
 	productID := uuid.New()
 	positions := []domain.PositionUpdate{{ID: uuid.New(), Position: 0}, {ID: uuid.New(), Position: 1}}

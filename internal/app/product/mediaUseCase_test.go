@@ -19,7 +19,7 @@ func TestMediaUseCase_Create_GeneratesIDsAndPositions(t *testing.T) {
 			},
 		},
 	}
-	uc := NewMediaUseCase(repo)
+	uc := NewMediaUseCase(repo, repo, repo)
 
 	created, err := uc.Create(context.Background(), productID, domain.BulkCreateMediaInput{
 		Media: []domain.CreateMediaInput{
@@ -51,7 +51,7 @@ func TestMediaUseCase_Create_GeneratesIDsAndPositions(t *testing.T) {
 
 func TestMediaUseCase_Create_ProductNotFound(t *testing.T) {
 	repo := &fakeProductRepo{findByIDErr: domain.ErrProductNotFound}
-	uc := NewMediaUseCase(repo)
+	uc := NewMediaUseCase(repo, repo, repo)
 
 	_, err := uc.Create(context.Background(), uuid.New(), domain.BulkCreateMediaInput{
 		Media: []domain.CreateMediaInput{{Type: "image", URL: "https://cdn.example.com/a.jpg"}},
@@ -67,7 +67,7 @@ func TestMediaUseCase_Update_Success(t *testing.T) {
 	repo := &fakeProductRepo{
 		findMediaByIDData: domain.ProductMedia{ID: mediaID, ProductID: productID},
 	}
-	uc := NewMediaUseCase(repo)
+	uc := NewMediaUseCase(repo, repo, repo)
 
 	alt := "front view"
 	got, err := uc.Update(context.Background(), productID, mediaID, domain.UpdateMediaInput{AltText: &alt})
@@ -92,7 +92,7 @@ func TestMediaUseCase_Update_OwnershipMismatch(t *testing.T) {
 	repo := &fakeProductRepo{
 		findMediaByIDData: domain.ProductMedia{ID: mediaID, ProductID: otherProduct},
 	}
-	uc := NewMediaUseCase(repo)
+	uc := NewMediaUseCase(repo, repo, repo)
 
 	_, err := uc.Update(context.Background(), productID, mediaID, domain.UpdateMediaInput{})
 	if err != domain.ErrMediaNotFound {
@@ -106,7 +106,7 @@ func TestMediaUseCase_Delete_Success(t *testing.T) {
 	repo := &fakeProductRepo{
 		findMediaByIDData: domain.ProductMedia{ID: mediaID, ProductID: productID},
 	}
-	uc := NewMediaUseCase(repo)
+	uc := NewMediaUseCase(repo, repo, repo)
 
 	if err := uc.Delete(context.Background(), productID, mediaID); err != nil {
 		t.Fatalf("expected no error, got %v", err)
@@ -124,7 +124,7 @@ func TestMediaUseCase_AttachToVariant_Success(t *testing.T) {
 		findVariantByIDData: domain.Variant{ID: variantID, ProductID: productID},
 		findMediaByIDData:   domain.ProductMedia{ID: mediaID, ProductID: productID},
 	}
-	uc := NewMediaUseCase(repo)
+	uc := NewMediaUseCase(repo, repo, repo)
 
 	link, err := uc.AttachToVariant(context.Background(), variantID, domain.AttachVariantMediaInput{MediaID: mediaID})
 	if err != nil {
@@ -147,7 +147,7 @@ func TestMediaUseCase_AttachToVariant_OwnershipMismatch(t *testing.T) {
 		findVariantByIDData: domain.Variant{ID: variantID, ProductID: productID},
 		findMediaByIDData:   domain.ProductMedia{ID: mediaID, ProductID: otherProduct},
 	}
-	uc := NewMediaUseCase(repo)
+	uc := NewMediaUseCase(repo, repo, repo)
 
 	_, err := uc.AttachToVariant(context.Background(), variantID, domain.AttachVariantMediaInput{MediaID: mediaID})
 	if err != domain.ErrMediaNotFound {
@@ -157,7 +157,7 @@ func TestMediaUseCase_AttachToVariant_OwnershipMismatch(t *testing.T) {
 
 func TestMediaUseCase_AttachToVariant_VariantNotFound(t *testing.T) {
 	repo := &fakeProductRepo{findVariantByIDErr: domain.ErrVariantNotFound}
-	uc := NewMediaUseCase(repo)
+	uc := NewMediaUseCase(repo, repo, repo)
 
 	_, err := uc.AttachToVariant(context.Background(), uuid.New(), domain.AttachVariantMediaInput{MediaID: uuid.New()})
 	if err != domain.ErrVariantNotFound {
@@ -167,7 +167,7 @@ func TestMediaUseCase_AttachToVariant_VariantNotFound(t *testing.T) {
 
 func TestMediaUseCase_DetachFromVariant(t *testing.T) {
 	repo := &fakeProductRepo{}
-	uc := NewMediaUseCase(repo)
+	uc := NewMediaUseCase(repo, repo, repo)
 
 	variantID := uuid.New()
 	mediaID := uuid.New()
@@ -181,7 +181,7 @@ func TestMediaUseCase_DetachFromVariant(t *testing.T) {
 
 func TestMediaUseCase_ReorderVariantMedia(t *testing.T) {
 	repo := &fakeProductRepo{}
-	uc := NewMediaUseCase(repo)
+	uc := NewMediaUseCase(repo, repo, repo)
 
 	variantID := uuid.New()
 	positions := []domain.PositionUpdate{{ID: uuid.New(), Position: 0}, {ID: uuid.New(), Position: 1}}

@@ -57,6 +57,25 @@ type VariantUseCase interface {
 	Reorder(ctx context.Context, productID uuid.UUID, positions []PositionUpdate) error
 }
 
+// VariantRepository is the persistence contract for a product's variants,
+// including their inventory stock adjustment and lifecycle (soft/hard
+// delete, restore).
+type VariantRepository interface {
+	CreateVariant(ctx context.Context, variant Variant) (Variant, error)
+	CreateVariants(ctx context.Context, variants []Variant) ([]Variant, error)
+	CreateVariantsWithStock(ctx context.Context, params CreateVariantsParams) ([]Variant, error)
+	AdjustVariantStock(ctx context.Context, variantID uuid.UUID, targetQty int) (InventoryLevel, error)
+	FindVariantByID(ctx context.Context, variantID uuid.UUID) (Variant, error)
+	UpdateVariant(ctx context.Context, variantID uuid.UUID, input UpdateVariantInput) (Variant, error)
+	DeleteVariant(ctx context.Context, variantID uuid.UUID, hard bool) error
+	BulkDeleteVariants(ctx context.Context, variantIDs []uuid.UUID, hard bool) error
+	RestoreVariant(ctx context.Context, variantID uuid.UUID) (Variant, error)
+	ReorderVariants(ctx context.Context, productID uuid.UUID, positions []PositionUpdate) error
+	// VariantHasHistory reports whether a variant has any stock movement
+	// history, which decides soft vs hard deletion.
+	VariantHasHistory(ctx context.Context, variantID uuid.UUID) (bool, error)
+}
+
 type VariantInput struct {
 	Title          *string             `json:"title"`
 	SKU            *string             `json:"sku"`
