@@ -16,33 +16,32 @@ type VariantOption struct {
 }
 
 type Variant struct {
-	ID        uuid.UUID       `json:"id" db:"id"`
-	ProductID uuid.UUID       `json:"product_id" db:"product_id"`
-	SKU       *string         `json:"sku,omitempty" db:"sku"`
-	Barcode   *string         `json:"barcode,omitempty" db:"barcode"`
-	Title     *string         `json:"title,omitempty" db:"title"`
-	Price     decimal.Decimal `json:"price" db:"price"`
-	Weight    decimal.Decimal `json:"weight" db:"weight"`
+	ID        uuid.UUID       `json:"id"`
+	ProductID uuid.UUID       `json:"product_id"`
+	SKU       *string         `json:"sku,omitempty"`
+	Barcode   *string         `json:"barcode,omitempty"`
+	Title     *string         `json:"title,omitempty"`
+	Price     decimal.Decimal `json:"price"`
+	Weight    decimal.Decimal `json:"weight"`
 	// Position is the display order of this variant within its product.
-	Position int `json:"position" db:"position"`
+	Position int `json:"position"`
 	// Stock is the total available quantity across all inventory levels for
 	// this variant. It is computed (not stored) and only populated on the
 	// single-product detail path.
-	// Stock decimal.Decimal `json:"stock" db:"stock"`
-	Stock int `json:"stock" db:"stock"`
+	Stock int `json:"stock"`
 	// Options stores the raw JSONB: [{"option":"Color","value":"Black"}].
-	Options   []byte         `json:"-" db:"options"`
-	IsDeleted bool           `json:"is_deleted" db:"is_deleted"`
-	Media     []VariantMedia `json:"media,omitempty" db:"-"`
-	CreatedAt time.Time      `json:"created_at" db:"created_at"`
-	UpdatedAt *time.Time     `json:"updated_at,omitempty" db:"updated_at"`
+	Options   []byte         `json:"-"`
+	IsDeleted bool           `json:"is_deleted"`
+	Media     []VariantMedia `json:"media,omitempty"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt *time.Time     `json:"updated_at,omitempty"`
 }
 
 // VariantMedia links a variant to a product_media row.
 type VariantMedia struct {
-	VariantID uuid.UUID `json:"-" db:"variant_id"`
-	MediaID   uuid.UUID `json:"id" db:"media_id"`
-	Position  int       `json:"position" db:"position"`
+	VariantID uuid.UUID `json:"-"`
+	MediaID   uuid.UUID `json:"id"`
+	Position  int       `json:"position"`
 }
 
 // VariantUseCase is the application-layer contract for managing a product's

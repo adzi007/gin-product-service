@@ -10,6 +10,7 @@ import (
 	"gin-product-service/internal/domain"
 	"gin-product-service/internal/infrastructure/database"
 	"gin-product-service/internal/infrastructure/metrics"
+	"gin-product-service/internal/infrastructure/repository/model"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -314,7 +315,7 @@ func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductPara
 
 	products := make([]domain.Product, 0, len(listRows))
 	for _, row := range listRows {
-		p := row.Product
+		p := row.Product.ToDomain()
 		if row.CategorySlug != nil {
 			p.Category.Slug = *row.CategorySlug
 		}
@@ -406,14 +407,14 @@ func (r *productRepo) UpdateHeader(ctx context.Context, id uuid.UUID, input doma
 		if err != nil {
 			return domain.Product{}, err
 		}
-		product, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.Product])
+		row, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[model.Product])
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return domain.Product{}, domain.ErrProductNotFound
 			}
 			return domain.Product{}, err
 		}
-		return product, nil
+		return row.ToDomain(), nil
 	}
 
 	// Always refresh updated_at on a real update.
@@ -432,7 +433,7 @@ func (r *productRepo) UpdateHeader(ctx context.Context, id uuid.UUID, input doma
 		return domain.Product{}, translateUpdateError(err)
 	}
 
-	product, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.Product])
+	row, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[model.Product])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.Product{}, domain.ErrProductNotFound
@@ -440,7 +441,7 @@ func (r *productRepo) UpdateHeader(ctx context.Context, id uuid.UUID, input doma
 		return domain.Product{}, err
 	}
 
-	return product, nil
+	return row.ToDomain(), nil
 }
 
 // UpdateStatus writes a product's lifecycle status.
@@ -580,7 +581,7 @@ func (r *productRepo) RenameOption(ctx context.Context, productID, optionID uuid
 		return domain.ProductOption{}, translateOptionCreateError(err)
 	}
 
-	option, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.ProductOption])
+	option, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[model.ProductOption])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ProductOption{}, domain.ErrOptionNotFound
@@ -588,7 +589,7 @@ func (r *productRepo) RenameOption(ctx context.Context, productID, optionID uuid
 		return domain.ProductOption{}, err
 	}
 
-	return option, nil
+	return option.ToDomain(), nil
 }
 
 // DeleteOption removes an option and all of its values in one transaction.
@@ -680,7 +681,7 @@ func (r *productRepo) FindOptionByID(ctx context.Context, optionID uuid.UUID) (d
 		return domain.ProductOption{}, err
 	}
 
-	option, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.ProductOption])
+	option, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[model.ProductOption])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ProductOption{}, domain.ErrOptionNotFound
@@ -688,7 +689,7 @@ func (r *productRepo) FindOptionByID(ctx context.Context, optionID uuid.UUID) (d
 		return domain.ProductOption{}, err
 	}
 
-	return option, nil
+	return option.ToDomain(), nil
 }
 
 // CreateOptionValue inserts a single option value row.
@@ -706,12 +707,12 @@ func (r *productRepo) CreateOptionValue(ctx context.Context, value domain.Produc
 		return domain.ProductOptionValue{}, translateOptionValueCreateError(err)
 	}
 
-	created, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.ProductOptionValue])
+	created, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[model.ProductOptionValue])
 	if err != nil {
 		return domain.ProductOptionValue{}, err
 	}
 
-	return created, nil
+	return created.ToDomain(), nil
 }
 
 // UpdateOptionValue partially updates an option value, touching only the
@@ -744,14 +745,14 @@ func (r *productRepo) UpdateOptionValue(ctx context.Context, valueID uuid.UUID, 
 		if err != nil {
 			return domain.ProductOptionValue{}, err
 		}
-		got, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.ProductOptionValue])
+		got, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[model.ProductOptionValue])
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return domain.ProductOptionValue{}, domain.ErrOptionValueNotFound
 			}
 			return domain.ProductOptionValue{}, err
 		}
-		return got, nil
+		return got.ToDomain(), nil
 	}
 
 	argIdx++
@@ -767,7 +768,7 @@ func (r *productRepo) UpdateOptionValue(ctx context.Context, valueID uuid.UUID, 
 		return domain.ProductOptionValue{}, err
 	}
 
-	got, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.ProductOptionValue])
+	got, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[model.ProductOptionValue])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ProductOptionValue{}, domain.ErrOptionValueNotFound
@@ -775,7 +776,7 @@ func (r *productRepo) UpdateOptionValue(ctx context.Context, valueID uuid.UUID, 
 		return domain.ProductOptionValue{}, err
 	}
 
-	return got, nil
+	return got.ToDomain(), nil
 }
 
 // DeleteOptionValue removes a single option value row.
@@ -807,7 +808,7 @@ func (r *productRepo) FindOptionValueByID(ctx context.Context, valueID uuid.UUID
 		return domain.ProductOptionValue{}, err
 	}
 
-	got, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.ProductOptionValue])
+	got, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[model.ProductOptionValue])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ProductOptionValue{}, domain.ErrOptionValueNotFound
@@ -815,7 +816,7 @@ func (r *productRepo) FindOptionValueByID(ctx context.Context, valueID uuid.UUID
 		return domain.ProductOptionValue{}, err
 	}
 
-	return got, nil
+	return got.ToDomain(), nil
 }
 
 // findProductBy loads a single products row (with its nested category
@@ -853,7 +854,7 @@ func (r *productRepo) findProductBy(ctx context.Context, predicate string, arg i
 		return domain.Product{}, err
 	}
 
-	product := row.Product
+	product := row.Product.ToDomain()
 	if row.CategorySlug != nil {
 		product.Category.Slug = *row.CategorySlug
 	}
@@ -898,9 +899,13 @@ func (r *productRepo) findProductOptions(ctx context.Context, productID uuid.UUI
 	}
 	defer optionRows.Close()
 
-	options, err := pgx.CollectRows(optionRows, pgx.RowToStructByName[domain.ProductOption])
+	optionModels, err := pgx.CollectRows(optionRows, pgx.RowToStructByName[model.ProductOption])
 	if err != nil {
 		return nil, err
+	}
+	options := make([]domain.ProductOption, 0, len(optionModels))
+	for _, m := range optionModels {
+		options = append(options, m.ToDomain())
 	}
 	if len(options) == 0 {
 		return options, nil
@@ -917,9 +922,13 @@ func (r *productRepo) findProductOptions(ctx context.Context, productID uuid.UUI
 	}
 	defer valueRows.Close()
 
-	values, err := pgx.CollectRows(valueRows, pgx.RowToStructByName[domain.ProductOptionValue])
+	valueModels, err := pgx.CollectRows(valueRows, pgx.RowToStructByName[model.ProductOptionValue])
 	if err != nil {
 		return nil, err
+	}
+	values := make([]domain.ProductOptionValue, 0, len(valueModels))
+	for _, m := range valueModels {
+		values = append(values, m.ToDomain())
 	}
 
 	valuesByOption := make(map[uuid.UUID][]domain.ProductOptionValue, len(options))
@@ -969,9 +978,13 @@ func (r *productRepo) findProductVariants(ctx context.Context, productID uuid.UU
 	}
 	defer variantRows.Close()
 
-	variants, err := pgx.CollectRows(variantRows, pgx.RowToStructByName[domain.Variant])
+	variantModels, err := pgx.CollectRows(variantRows, pgx.RowToStructByName[model.Variant])
 	if err != nil {
 		return nil, err
+	}
+	variants := make([]domain.Variant, 0, len(variantModels))
+	for _, m := range variantModels {
+		variants = append(variants, m.ToDomain())
 	}
 	if len(variants) == 0 {
 		return variants, nil
@@ -988,9 +1001,13 @@ func (r *productRepo) findProductVariants(ctx context.Context, productID uuid.UU
 	}
 	defer mediaRows.Close()
 
-	mediaLinks, err := pgx.CollectRows(mediaRows, pgx.RowToStructByName[domain.VariantMedia])
+	mediaLinkModels, err := pgx.CollectRows(mediaRows, pgx.RowToStructByName[model.VariantMedia])
 	if err != nil {
 		return nil, err
+	}
+	mediaLinks := make([]domain.VariantMedia, 0, len(mediaLinkModels))
+	for _, m := range mediaLinkModels {
+		mediaLinks = append(mediaLinks, m.ToDomain())
 	}
 
 	mediaByVariant := make(map[uuid.UUID][]domain.VariantMedia, len(variants))
@@ -1021,20 +1038,24 @@ func (r *productRepo) findProductMedia(ctx context.Context, productID uuid.UUID)
 	}
 	defer rows.Close()
 
-	media, err := pgx.CollectRows(rows, pgx.RowToStructByName[domain.ProductMedia])
+	mediaModels, err := pgx.CollectRows(rows, pgx.RowToStructByName[model.ProductMedia])
 	if err != nil {
 		return nil, err
+	}
+	media := make([]domain.ProductMedia, 0, len(mediaModels))
+	for _, m := range mediaModels {
+		media = append(media, m.ToDomain())
 	}
 
 	return media, nil
 }
 
 // productListRow is the row shape scanned by FindAll: base product columns
-// (via the embedded domain.Product) plus the joined category slug/name and the
+// (via the embedded model.Product) plus the joined category slug/name and the
 // computed min/max variant prices. Nested domain fields (Category/Prices) are
 // populated manually after scanning.
 type productListRow struct {
-	domain.Product
+	model.Product
 	CategorySlug     *string         `db:"category_slug"`
 	CategoryName     *string         `db:"category_name"`
 	StartPrice       decimal.Decimal `db:"start_price"`
@@ -1047,7 +1068,7 @@ type productListRow struct {
 // productDetailRow is the row shape scanned by findProductBy: base product
 // columns plus the joined category slug/name.
 type productDetailRow struct {
-	domain.Product
+	model.Product
 	CategoryId   *int    `db:"category_id"`
 	CategorySlug *string `db:"category_slug"`
 	CategoryName *string `db:"category_name"`
@@ -1139,12 +1160,12 @@ func (r *productRepo) CreateVariant(ctx context.Context, variant domain.Variant)
 		return domain.Variant{}, translateCreateError(err)
 	}
 
-	created, err := pgx.CollectOneRow(rows, pgx.RowToStructByNameLax[domain.Variant])
+	created, err := pgx.CollectOneRow(rows, pgx.RowToStructByNameLax[model.Variant])
 	if err != nil {
 		return domain.Variant{}, err
 	}
 
-	return created, nil
+	return created.ToDomain(), nil
 }
 
 // CreateVariants bulk-inserts variants using a single multi-row INSERT.
@@ -1187,9 +1208,13 @@ func (r *productRepo) CreateVariants(ctx context.Context, variants []domain.Vari
 		return nil, translateCreateError(err)
 	}
 
-	created, err := pgx.CollectRows(rows, pgx.RowToStructByNameLax[domain.Variant])
+	createdModels, err := pgx.CollectRows(rows, pgx.RowToStructByNameLax[model.Variant])
 	if err != nil {
 		return nil, err
+	}
+	created := make([]domain.Variant, 0, len(createdModels))
+	for _, m := range createdModels {
+		created = append(created, m.ToDomain())
 	}
 
 	// RETURNING order is not guaranteed for multi-row inserts, so reorder the
@@ -1281,10 +1306,14 @@ func (r *productRepo) CreateVariantsWithStock(ctx context.Context, params domain
 			return nil, translateCreateError(err)
 		}
 
-		created, err := pgx.CollectRows(rows, pgx.RowToStructByNameLax[domain.Variant])
+		createdModels, err := pgx.CollectRows(rows, pgx.RowToStructByNameLax[model.Variant])
 		if err != nil {
 			fmt.Println("DEBUG Repo CreateVariantsWithStock 6", err.Error())
 			return nil, err
+		}
+		created := make([]domain.Variant, 0, len(createdModels))
+		for _, m := range createdModels {
+			created = append(created, m.ToDomain())
 		}
 
 		// RETURNING order is not guaranteed for multi-row inserts, so reorder
@@ -1460,7 +1489,7 @@ func (r *productRepo) AdjustVariantStock(ctx context.Context, variantID uuid.UUI
 		return domain.InventoryLevel{}, err
 	}
 
-	level, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.InventoryLevel])
+	level, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[model.InventoryLevel])
 	if err != nil {
 		return domain.InventoryLevel{}, err
 	}
@@ -1469,7 +1498,7 @@ func (r *productRepo) AdjustVariantStock(ctx context.Context, variantID uuid.UUI
 		return domain.InventoryLevel{}, err
 	}
 
-	return level, nil
+	return level.ToDomain(), nil
 }
 
 // FindVariantByID loads a single variant (including its computed stock) by id.
@@ -1503,7 +1532,7 @@ func (r *productRepo) FindVariantByID(ctx context.Context, variantID uuid.UUID) 
 		return domain.Variant{}, err
 	}
 
-	variant, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.Variant])
+	variant, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[model.Variant])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.Variant{}, domain.ErrVariantNotFound
@@ -1511,7 +1540,7 @@ func (r *productRepo) FindVariantByID(ctx context.Context, variantID uuid.UUID) 
 		return domain.Variant{}, err
 	}
 
-	return variant, nil
+	return variant.ToDomain(), nil
 }
 
 // UpdateVariant partially updates a variant, touching only the non-nil fields.
@@ -1556,14 +1585,14 @@ func (r *productRepo) UpdateVariant(ctx context.Context, variantID uuid.UUID, in
 		if err != nil {
 			return domain.Variant{}, err
 		}
-		variant, err := pgx.CollectOneRow(rows, pgx.RowToStructByNameLax[domain.Variant])
+		variant, err := pgx.CollectOneRow(rows, pgx.RowToStructByNameLax[model.Variant])
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return domain.Variant{}, domain.ErrVariantNotFound
 			}
 			return domain.Variant{}, err
 		}
-		return variant, nil
+		return variant.ToDomain(), nil
 	}
 
 	fields = append(fields, "updated_at = now()")
@@ -1581,7 +1610,7 @@ func (r *productRepo) UpdateVariant(ctx context.Context, variantID uuid.UUID, in
 		return domain.Variant{}, translateCreateError(err)
 	}
 
-	variant, err := pgx.CollectOneRow(rows, pgx.RowToStructByNameLax[domain.Variant])
+	variant, err := pgx.CollectOneRow(rows, pgx.RowToStructByNameLax[model.Variant])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.Variant{}, domain.ErrVariantNotFound
@@ -1589,7 +1618,7 @@ func (r *productRepo) UpdateVariant(ctx context.Context, variantID uuid.UUID, in
 		return domain.Variant{}, err
 	}
 
-	return variant, nil
+	return variant.ToDomain(), nil
 }
 
 // DeleteVariant soft-deletes (is_deleted = true) or hard-deletes a variant,
@@ -1707,7 +1736,7 @@ func (r *productRepo) RestoreVariant(ctx context.Context, variantID uuid.UUID) (
 		return domain.Variant{}, err
 	}
 
-	variant, err := pgx.CollectOneRow(rows, pgx.RowToStructByNameLax[domain.Variant])
+	variant, err := pgx.CollectOneRow(rows, pgx.RowToStructByNameLax[model.Variant])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.Variant{}, domain.ErrVariantNotFound
@@ -1715,7 +1744,7 @@ func (r *productRepo) RestoreVariant(ctx context.Context, variantID uuid.UUID) (
 		return domain.Variant{}, err
 	}
 
-	return variant, nil
+	return variant.ToDomain(), nil
 }
 
 // ReorderVariants bulk-updates variant positions in one transaction, guarded by
@@ -1813,9 +1842,13 @@ func (r *productRepo) CreateProductMedia(ctx context.Context, media []domain.Pro
 		return nil, err
 	}
 
-	created, err := pgx.CollectRows(rows, pgx.RowToStructByName[domain.ProductMedia])
+	createdModels, err := pgx.CollectRows(rows, pgx.RowToStructByName[model.ProductMedia])
 	if err != nil {
 		return nil, err
+	}
+	created := make([]domain.ProductMedia, 0, len(createdModels))
+	for _, m := range createdModels {
+		created = append(created, m.ToDomain())
 	}
 
 	// Reorder results to match input order (RETURNING order is not guaranteed).
@@ -1842,14 +1875,14 @@ func (r *productRepo) UpdateProductMedia(ctx context.Context, mediaID uuid.UUID,
 		if err != nil {
 			return domain.ProductMedia{}, err
 		}
-		media, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.ProductMedia])
+		media, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[model.ProductMedia])
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return domain.ProductMedia{}, domain.ErrMediaNotFound
 			}
 			return domain.ProductMedia{}, err
 		}
-		return media, nil
+		return media.ToDomain(), nil
 	}
 
 	rows, err := r.db.GetDb().Query(ctx, `
@@ -1860,7 +1893,7 @@ func (r *productRepo) UpdateProductMedia(ctx context.Context, mediaID uuid.UUID,
 		return domain.ProductMedia{}, err
 	}
 
-	media, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.ProductMedia])
+	media, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[model.ProductMedia])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ProductMedia{}, domain.ErrMediaNotFound
@@ -1868,7 +1901,7 @@ func (r *productRepo) UpdateProductMedia(ctx context.Context, mediaID uuid.UUID,
 		return domain.ProductMedia{}, err
 	}
 
-	return media, nil
+	return media.ToDomain(), nil
 }
 
 // DeleteProductMedia hard-deletes a media row and cascades its variant_media
@@ -1948,7 +1981,7 @@ func (r *productRepo) FindMediaByID(ctx context.Context, mediaID uuid.UUID) (dom
 		return domain.ProductMedia{}, err
 	}
 
-	media, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.ProductMedia])
+	media, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[model.ProductMedia])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ProductMedia{}, domain.ErrMediaNotFound
@@ -1956,7 +1989,7 @@ func (r *productRepo) FindMediaByID(ctx context.Context, mediaID uuid.UUID) (dom
 		return domain.ProductMedia{}, err
 	}
 
-	return media, nil
+	return media.ToDomain(), nil
 }
 
 // AttachVariantMedia links an existing product media row to a variant, assigning
@@ -1974,12 +2007,12 @@ func (r *productRepo) AttachVariantMedia(ctx context.Context, variantID, mediaID
 		return domain.VariantMedia{}, err
 	}
 
-	link, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.VariantMedia])
+	link, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[model.VariantMedia])
 	if err != nil {
 		return domain.VariantMedia{}, err
 	}
 
-	return link, nil
+	return link.ToDomain(), nil
 }
 
 // AttachNewOrExistingVariantMedia appends media to a variant in a single

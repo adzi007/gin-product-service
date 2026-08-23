@@ -20,21 +20,21 @@ const (
 
 // Product is the catalog master record.
 type Product struct {
-	ID          uuid.UUID         `json:"id" db:"id"`
-	Handle      string            `json:"handle" db:"handle"`
-	Title       string            `json:"title" db:"title"`
-	Status      ProductStatus     `json:"status" db:"status"`
-	Thumbnail   *ProductThumbnail `json:"thumbnail" db:"-"`
-	Description *string           `json:"description,omitempty" db:"description"`
-	Vendor      *string           `json:"vendor,omitempty" db:"vendor"`
-	CategoryID  int               `json:"-" db:"category_id"`
-	Category    ProductCategory   `json:"category" db:"-"`
-	Prices      ProductPrices     `json:"prices" db:"-"`
-	Options     []ProductOption   `json:"options,omitempty" db:"-"`
-	Variants    []Variant         `json:"variants,omitempty" db:"-"`
-	Media       []ProductMedia    `json:"media,omitempty" db:"-"`
-	CreatedAt   time.Time         `json:"created_at" db:"created_at"`
-	UpdatedAt   *time.Time        `json:"updated_at,omitempty" db:"updated_at"`
+	ID          uuid.UUID         `json:"id"`
+	Handle      string            `json:"handle"`
+	Title       string            `json:"title"`
+	Status      ProductStatus     `json:"status"`
+	Thumbnail   *ProductThumbnail `json:"thumbnail"`
+	Description *string           `json:"description,omitempty"`
+	Vendor      *string           `json:"vendor,omitempty"`
+	CategoryID  int               `json:"-"`
+	Category    ProductCategory   `json:"category"`
+	Prices      ProductPrices     `json:"prices"`
+	Options     []ProductOption   `json:"options,omitempty"`
+	Variants    []Variant         `json:"variants,omitempty"`
+	Media       []ProductMedia    `json:"media,omitempty"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   *time.Time        `json:"updated_at,omitempty"`
 }
 
 // ProductCategory is the nested category shape exposed on product responses.
@@ -63,29 +63,29 @@ type ProductThumbnail struct {
 }
 
 type ProductOption struct {
-	ID        uuid.UUID            `json:"id" db:"id"`
-	ProductID uuid.UUID            `json:"product_id" db:"product_id"`
-	Name      string               `json:"name" db:"name"`
-	Position  int                  `json:"position" db:"position"`
-	Values    []ProductOptionValue `json:"values,omitempty" db:"-"`
+	ID        uuid.UUID            `json:"id"`
+	ProductID uuid.UUID            `json:"product_id"`
+	Name      string               `json:"name"`
+	Position  int                  `json:"position"`
+	Values    []ProductOptionValue `json:"values,omitempty"`
 }
 
 type ProductOptionValue struct {
-	ID       uuid.UUID `json:"id" db:"id"`
-	OptionID uuid.UUID `json:"option_id" db:"option_id"`
-	Value    string    `json:"value" db:"value"`
-	Position int       `json:"position" db:"position"`
+	ID       uuid.UUID `json:"id"`
+	OptionID uuid.UUID `json:"option_id"`
+	Value    string    `json:"value"`
+	Position int       `json:"position"`
 }
 
 type ProductMedia struct {
-	ID        uuid.UUID  `json:"id" db:"id"`
-	ProductID uuid.UUID  `json:"product_id" db:"product_id"`
-	Type      string     `json:"type" db:"type"` // "image", "video"
-	URL       string     `json:"url" db:"url"`
-	AltText   *string    `json:"alt_text,omitempty" db:"alt_text"`
-	Position  int        `json:"position" db:"position"`
-	CreatedAt time.Time  `json:"created_at" db:"created_at"`
-	UpdatedAt *time.Time `json:"updated_at,omitempty" db:"updated_at"`
+	ID        uuid.UUID  `json:"id"`
+	ProductID uuid.UUID  `json:"product_id"`
+	Type      string     `json:"type"` // "image", "video"
+	URL       string     `json:"url"`
+	AltText   *string    `json:"alt_text,omitempty"`
+	Position  int        `json:"position"`
+	CreatedAt time.Time  `json:"created_at"`
+	UpdatedAt *time.Time `json:"updated_at,omitempty"`
 }
 
 // Domain errors surfaced by the product module.
