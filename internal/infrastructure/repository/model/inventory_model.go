@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"gin-product-service/internal/domain"
+
 	"github.com/google/uuid"
 )
 
@@ -21,8 +22,8 @@ func (m InventoryLevel) ToDomain() domain.InventoryLevel {
 		ID:              m.ID,
 		InventoryItemID: m.InventoryItemID,
 		LocationID:      m.LocationID,
-		AvailableQty:    m.AvailableQty,
-		ReservedQty:     m.ReservedQty,
+		AvailableQty:    domain.Quantity(m.AvailableQty),
+		ReservedQty:     domain.Quantity(m.ReservedQty),
 		UpdatedAt:       m.UpdatedAt,
 	}
 }

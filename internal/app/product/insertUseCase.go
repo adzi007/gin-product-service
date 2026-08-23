@@ -9,7 +9,6 @@ import (
 	"gin-product-service/internal/infrastructure/logger"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 )
 
@@ -114,7 +113,6 @@ func (uc *insertProductUc) Create(ctx context.Context, input domain.CreateProduc
 		if v.TrackInventory != nil {
 			trackInventory = *v.TrackInventory
 		}
-		// targetQty := decimal.NewFromInt(int64(v.Stock))
 
 		if err := product.AddVariant(domain.Variant{
 			ID:        variantID,
@@ -137,25 +135,26 @@ func (uc *insertProductUc) Create(ctx context.Context, input domain.CreateProduc
 			TrackInventory: trackInventory,
 		})
 
+		stockQty, err := domain.NewQuantity(v.Stock)
+		if err != nil {
+			return domain.Product{}, err
+		}
+
 		// ADJUST sets available_qty to an absolute target. There is no
 		// pre-existing inventory_levels row for a brand-new variant, so the
 		// "current" available_qty is 0 and the delta equals +stock.
-		// delta := computeAdjustDelta(decimal.Zero, targetQty)
 		stockMoves = append(stockMoves, domain.StockMove{
 			ID:              uuid.Must(uuid.NewV7()),
 			InventoryItemID: inventoryItemID,
 			MoveType:        domain.StockMoveAdjust,
-			// Quantity:        delta,
-			Quantity: v.Stock,
+			Quantity:        stockQty,
 		})
 
 		inventoryLevels = append(inventoryLevels, domain.InventoryLevel{
 			ID:              uuid.Must(uuid.NewV7()),
 			InventoryItemID: inventoryItemID,
-			// AvailableQty:    targetQty,
-			AvailableQty: v.Stock,
-			// ReservedQty:     decimal.Zero,
-			ReservedQty: 0,
+			AvailableQty:    stockQty,
+			ReservedQty:     0,
 		})
 	}
 
@@ -256,12 +255,4 @@ func buildVariantOptionsJSON(
 	}
 
 	return json.Marshal(opts)
-}
-
-// computeAdjustDelta calculates the quantity to record for an ADJUST move:
-// the difference between the current available quantity and the requested
-// absolute target. This is kept generic so it can be reused by the standalone
-// stock-move use case.
-func computeAdjustDelta(current, target decimal.Decimal) decimal.Decimal {
-	return target.Sub(current)
 }

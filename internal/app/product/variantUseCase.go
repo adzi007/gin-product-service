@@ -60,7 +60,11 @@ func (uc *variantUc) Create(ctx context.Context, productID uuid.UUID, input doma
 		IsDeleted: false,
 	}
 
-	inventoryItem, stockMove, inventoryLevel := buildVariantStockRows(variantID, input.TrackInventory, input.Stock)
+	inventoryItem, stockMove, inventoryLevel, err := buildVariantStockRows(variantID, input.TrackInventory, input.Stock)
+	if err != nil {
+		logger.L(ctx).Error("create variant failed", zap.Error(err), zap.String("product_id", productID.String()))
+		return domain.Variant{}, err
+	}
 
 	newMedia, variantMedia, err := uc.resolveVariantMedia(ctx, productID, variantID, input.Media)
 	if err != nil {
@@ -128,7 +132,11 @@ func (uc *variantUc) BulkCreate(ctx context.Context, productID uuid.UUID, input 
 		}
 		params.Variants = append(params.Variants, variant)
 
-		inventoryItem, stockMove, inventoryLevel := buildVariantStockRows(variantID, v.TrackInventory, v.Stock)
+		inventoryItem, stockMove, inventoryLevel, err := buildVariantStockRows(variantID, v.TrackInventory, v.Stock)
+		if err != nil {
+			logger.L(ctx).Error("bulk create variants failed", zap.Error(err), zap.String("product_id", productID.String()))
+			return nil, err
+		}
 		params.InventoryItems = append(params.InventoryItems, inventoryItem)
 		params.StockMoves = append(params.StockMoves, stockMove)
 		params.InventoryLevels = append(params.InventoryLevels, inventoryLevel)
@@ -169,7 +177,7 @@ func (uc *variantUc) Update(ctx context.Context, variantID uuid.UUID, input doma
 	}
 
 	if input.Stock != nil {
-		if _, err := uc.variantRepo.AdjustVariantStock(ctx, variantID, *input.Stock); err != nil {
+		if _, err := uc.variantRepo.AdjustVariantStock(ctx, variantID, domain.Quantity(*input.Stock)); err != nil {
 			logger.L(ctx).Error("adjust variant stock failed", zap.Error(err), zap.String("variant_id", variantID.String()))
 			return domain.Variant{}, err
 		}
@@ -216,7 +224,7 @@ func (uc *variantUc) BulkUpdate(ctx context.Context, productID uuid.UUID, input 
 		updated = append(updated, v)
 
 		if item.Fields.Stock != nil {
-			if _, err := uc.variantRepo.AdjustVariantStock(ctx, item.ID, *item.Fields.Stock); err != nil {
+			if _, err := uc.variantRepo.AdjustVariantStock(ctx, item.ID, domain.Quantity(*item.Fields.Stock)); err != nil {
 				logger.L(ctx).Error("bulk update variants failed", zap.Error(err), zap.String("variant_id", item.ID.String()))
 				return nil, err
 			}
@@ -361,7 +369,7 @@ func buildVariantOptionsJSONFromOptions(declared []domain.ProductOption, selecte
 // buildVariantStockRows builds the InventoryItem, ADJUST StockMove and initial
 // InventoryLevel rows for a single new variant, mirroring the product-create
 // workflow in insertUseCase.go.
-func buildVariantStockRows(variantID uuid.UUID, trackInventory *bool, stock int) (domain.InventoryItem, domain.StockMove, domain.InventoryLevel) {
+func buildVariantStockRows(variantID uuid.UUID, trackInventory *bool, stock int) (domain.InventoryItem, domain.StockMove, domain.InventoryLevel, error) {
 	inventoryItemID := uuid.Must(uuid.NewV7())
 
 	track := true
@@ -375,21 +383,26 @@ func buildVariantStockRows(variantID uuid.UUID, trackInventory *bool, stock int)
 		TrackInventory: track,
 	}
 
+	stockQty, err := domain.NewQuantity(stock)
+	if err != nil {
+		return domain.InventoryItem{}, domain.StockMove{}, domain.InventoryLevel{}, err
+	}
+
 	move := domain.StockMove{
 		ID:              uuid.Must(uuid.NewV7()),
 		InventoryItemID: inventoryItemID,
 		MoveType:        domain.StockMoveAdjust,
-		Quantity:        stock,
+		Quantity:        stockQty,
 	}
 
 	level := domain.InventoryLevel{
 		ID:              uuid.Must(uuid.NewV7()),
 		InventoryItemID: inventoryItemID,
-		AvailableQty:    stock,
+		AvailableQty:    stockQty,
 		ReservedQty:     0,
 	}
 
-	return item, move, level
+	return item, move, level, nil
 }
 
 // resolveVariantMedia resolves a variant's media items into the rows to persist:

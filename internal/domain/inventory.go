@@ -28,6 +28,26 @@ var (
 	ErrInsufficientStock = errors.New("insufficient available stock")
 )
 
+// Quantity is a non-negative count of stock units. Constructing one via
+// NewQuantity is the compile-time-adjacent guarantee that "stock can't go
+// negative" — callers that already validated non-negative input (e.g. rows
+// read back from this app's own database) may convert directly via
+// Quantity(n) instead of re-validating trusted data.
+type Quantity int
+
+// NewQuantity constructs a Quantity, rejecting negative input.
+func NewQuantity(n int) (Quantity, error) {
+	if n < 0 {
+		return 0, ErrInvalidQuantity
+	}
+	return Quantity(n), nil
+}
+
+// Int returns the underlying int, for arithmetic and passing to SQL query args.
+func (q Quantity) Int() int {
+	return int(q)
+}
+
 type InventoryItem struct {
 	ID             uuid.UUID  `json:"id"`
 	VariantID      *uuid.UUID `json:"variant_id,omitempty"`
@@ -40,15 +60,15 @@ type InventoryLevel struct {
 	ID              uuid.UUID `json:"id"`
 	InventoryItemID uuid.UUID `json:"inventory_item_id"`
 	LocationID      uuid.UUID `json:"location_id"`
-	AvailableQty    int       `json:"available_qty"`
-	ReservedQty     int       `json:"reserved_qty"`
+	AvailableQty    Quantity  `json:"available_qty"`
+	ReservedQty     Quantity  `json:"reserved_qty"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // Reserve moves qty units from AvailableQty to ReservedQty. It returns
 // ErrInvalidQuantity if qty is negative, or ErrInsufficientStock if qty
 // exceeds the currently available quantity. On success it mutates l in place.
-func (l *InventoryLevel) Reserve(qty int) error {
+func (l *InventoryLevel) Reserve(qty Quantity) error {
 	if qty < 0 {
 		return ErrInvalidQuantity
 	}
@@ -66,7 +86,7 @@ type StockMove struct {
 	FromLocationID  *uuid.UUID    `json:"from_location_id,omitempty"`
 	ToLocationID    *uuid.UUID    `json:"to_location_id,omitempty"`
 	MoveType        StockMoveType `json:"move_type"`
-	Quantity        int           `json:"quantity"`
+	Quantity        Quantity      `json:"quantity"`
 	CreatedBy       *uuid.UUID    `json:"created_by,omitempty"`
 	Reason          *string       `json:"reason,omitempty"`
 	CreatedAt       time.Time     `json:"created_at"`

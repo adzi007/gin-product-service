@@ -64,7 +64,7 @@ type VariantRepository interface {
 	CreateVariant(ctx context.Context, variant Variant) (Variant, error)
 	CreateVariants(ctx context.Context, variants []Variant) ([]Variant, error)
 	CreateVariantsWithStock(ctx context.Context, params CreateVariantsParams) ([]Variant, error)
-	AdjustVariantStock(ctx context.Context, variantID uuid.UUID, targetQty int) (InventoryLevel, error)
+	AdjustVariantStock(ctx context.Context, variantID uuid.UUID, targetQty Quantity) (InventoryLevel, error)
 	FindVariantByID(ctx context.Context, variantID uuid.UUID) (Variant, error)
 	UpdateVariant(ctx context.Context, variantID uuid.UUID, input UpdateVariantInput) (Variant, error)
 	DeleteVariant(ctx context.Context, variantID uuid.UUID, hard bool) error

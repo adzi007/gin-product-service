@@ -1,6 +1,7 @@
-# Task: Split `ProductRepository` (Phase 6)
+# Task: Introduce a `Quantity` value object (Phase 7, first slice)
 
-Source: `issue.md`, "Phase 6 — Split `ProductRepository`".
+Source: `issue.md`, "Phase 7 — Introduce value objects (lower priority, do
+incrementally)".
 
 > Audience note: this doc is written so a junior developer or another LLM can execute
 > it without re-deriving the plan. Follow the steps in order. Don't skip ahead or
@@ -10,505 +11,766 @@ Source: `issue.md`, "Phase 6 — Split `ProductRepository`".
 ## Context — what already happened
 
 - Phase 1 (bounded-context split): `internal/domain/product.go`, `variant.go`, and
-  `inventory.go` exist as separate files.
-- Phase 2 (move HTTP DTOs out of `domain`): no `binding:`/`validate:` tags remain in
-  `product.go`/`variant.go`.
-- Phase 3 (strip persistence tags): no `db:"..."` tags remain in `product.go`,
-  `variant.go`, or `inventory.go`. Row-scanning structs live in
-  `internal/infrastructure/repository/model`.
-- Phase 4 (aggregate behavior): `Product` has `NewProduct`, `AddVariant`, `Archive`,
-  `Restore`; `ProductStatus.CanTransitionTo`; `InventoryLevel.Reserve`.
-- Phase 5 (read models): `ProductRepository.FindAll` returns `[]ProductListItem`,
-  `FindByID`/`FindByHandle` return `ProductDetail`. `Product` itself only carries
-  write-aggregate fields.
+  `inventory.go` exist as separate files. `inventory.go` owns `InventoryItem`,
+  `InventoryLevel`, `StockMove`, `StockMoveType`, and the sentinel errors
+  `ErrInvalidQuantity` / `ErrInsufficientStock`.
+- Phase 4 (aggregate behavior): `InventoryLevel` already has a `Reserve(qty int) error`
+  method that rejects negative `qty` (`ErrInvalidQuantity`) and over-reservation
+  (`ErrInsufficientStock`). This task changes `Reserve`'s signature, not its rules.
+- Phase 6 (split `ProductRepository`): `domain.VariantRepository` (in `variant.go`)
+  owns `AdjustVariantStock(ctx, variantID uuid.UUID, targetQty int) (InventoryLevel, error)`.
 - `internal/domain/category.go` is a separate, already-shipped module — **out of
   scope** for this task. Do not touch `category.go` or `categoryRepo.go`.
 
-Today, `internal/domain/product.go` still defines one 30+ method interface,
-`ProductRepository` (currently around lines 258-308), covering product header CRUD,
-options, option values, variants, variant stock adjustment, variant media, product
-media, and variant-media linking — all implemented by a single
-`internal/infrastructure/repository/productRepo.go`. Every use case that touches
-*any* of this — `optionUc`, `mediaUc`, `variantUc`, plus the header-only
-`updateUc`/`deleteUc`/`queryUc`/`insertUc` — depends on the entire interface, even
-though (for example) `optionUc` only ever calls 8 of the 30+ methods.
+Today, `InventoryLevel.AvailableQty`, `InventoryLevel.ReservedQty`, and
+`StockMove.Quantity` are all plain `int`. Nothing in the type system stops a caller
+from constructing `InventoryLevel{AvailableQty: -5}` or calling
+`AdjustVariantStock(ctx, id, -5)` — the only guard today is `Reserve`'s own
+`qty < 0` check, which doesn't help the many other places these fields are set
+directly.
+
+`issue.md`'s Phase 7 also lists a `Money` value object for `Price`/`Weight`, and
+"resolve the dead commented-out `decimal.Decimal` lines". This task does the second
+of those (the dead code turned out to still exist, just relocated by earlier phases —
+see step 5) but **not** `Money` — see "What this task deliberately does NOT do" below
+for why.
 
 ## Goal
 
-Split `ProductRepository` into four narrower interfaces along the sub-resource lines
-that already exist in the codebase (options, variants, media), so each use case can
-depend only on what it actually calls (ISP):
+Add a `Quantity` value object to `internal/domain/inventory.go`:
 
-- `ProductRepository` (stays in `product.go`) — product header CRUD only:
-  `Create`, `FindAll`, `FindByID`, `FindByHandle`, `UpdateHeader`, `UpdateStatus`,
-  `Delete`.
-- `OptionRepository` (new, in `product.go`) — the 9 option/option-value methods.
-- `MediaRepository` (new, in `product.go`) — the 9 product-media/variant-media
-  methods.
-- `VariantRepository` (new, in `variant.go`) — the 11 variant CRUD/lifecycle/stock
-  methods.
+```go
+type Quantity int
+func NewQuantity(n int) (Quantity, error) // rejects n < 0
+```
 
-By the end of this task:
-- No single interface has more than ~11 methods.
-- `optionUc` depends on `ProductRepository` + `OptionRepository` only.
-- `mediaUc` depends on `ProductRepository` + `MediaRepository` + `VariantRepository`
-  (it needs `FindVariantByID` for `AttachToVariant`).
-- `variantUc` depends on `ProductRepository` + `VariantRepository` + `MediaRepository`
-  (it needs `FindMediaByID`/`AttachNewOrExistingVariantMedia` for variant media).
-- `insertUc`, `updateUc`, `deleteUc`, `queryUc` are **unchanged** — they only ever
-  called plain product-header methods, so they still take a single
-  `domain.ProductRepository`.
-- `internal/infrastructure/repository/productRepo.go` still has exactly **one**
-  concrete struct (`productRepo`) implementing all four interfaces — this task does
-  not physically split the implementation file or its private helpers
-  (`findProductOptions`, `findProductVariants`, `findProductMedia`, the `Create`/
-  `CreateVariantsWithStock` transactions, etc.).
+Use it everywhere a stock count is created, so "stock can't go negative" is enforced
+at construction instead of re-checked ad hoc:
+
+- `InventoryLevel.AvailableQty`, `InventoryLevel.ReservedQty` → `Quantity`
+- `StockMove.Quantity` → `Quantity`
+- `InventoryLevel.Reserve(qty int)` → `Reserve(qty Quantity)`
+- `VariantRepository.AdjustVariantStock(ctx, variantID, targetQty int)` →
+  `AdjustVariantStock(ctx, variantID, targetQty Quantity)`
+
+And delete the dead code found along the way (step 5): an unused
+`computeAdjustDelta` function and several commented-out `decimal.Decimal` lines in
+`internal/app/product/insertUseCase.go`.
 
 ### What this task deliberately does NOT do (out of scope)
 
-- **No separate `InventoryRepository`.** `issue.md`'s Phase 6 proposal lists one, but
-  every inventory-touching method (`Create`'s inventory-item/stock-move/
-  inventory-level inserts, `CreateVariantsWithStock`, `AdjustVariantStock`) writes to
-  inventory tables **inside the same DB transaction** as the product/variant row it's
-  attached to, and is only ever called through `ProductRepository.Create` or
-  `VariantRepository.CreateVariantsWithStock`/`AdjustVariantStock` — nothing calls
-  inventory persistence independently today. Carving out a standalone
-  `InventoryRepository` would mean passing a shared transaction across repository
-  interfaces, which is a real architectural change, not a mechanical interface split.
-  Leave `AdjustVariantStock` and `VariantHasHistory` on `VariantRepository` (that's
-  where their only caller, `variantUc`, already reaches them from) and revisit a true
-  inventory-transaction boundary as its own follow-up if/when something needs to
-  adjust stock without going through a variant use case.
-- **No splitting of `productRepo.go` into multiple files/structs.** One struct, one
-  DB pool, shared private helpers — only the exported interfaces it satisfies change.
-- **No changes to `Product`, `Variant`, `ProductListItem`, `ProductDetail`, or any
-  other type shape.** This is purely an interface/wiring change.
+- **No `Money` value object.** `Price`/`Weight` (`decimal.Decimal`) are referenced far
+  more widely than stock counts: `internal/domain/variant.go`'s `VariantInput`,
+  `CreateVariantInput`, `UpdateVariantInput`; `internal/domain/product_readmodel.go`'s
+  `ProductPrices`; three DTOs in `internal/delivery/http/dto/variant_dto.go` with
+  `binding`/`validate` tags; and multiple response structs in
+  `internal/delivery/http/handler/product_handler.go` that currently serialize
+  `Price`/`Weight` as bare JSON numbers. Introducing `Money` (amount + currency) would
+  either change the wire format (a breaking API change) or require a custom
+  `MarshalJSON`/`UnmarshalJSON` pair plus DTO conversion at every one of those call
+  sites — a materially bigger, riskier change than the mechanical `Quantity` swap
+  here. Do it as its own follow-up task once someone is ready to also decide the
+  wire-format question (keep `{"price": 19.99}` via custom JSON marshaling, or change
+  it to `{"price": {"amount": "19.99", "currency": "USD"}}`).
+- **No change to `Variant.Stock int`.** This is a separate, already-documented issue
+  (`issue.md` §2: "computed (not stored)... a read-model value smuggled onto the
+  write aggregate") about CQRS leakage, not about missing validation. It's a read-only
+  computed projection, never constructed from user input, so a non-negative
+  constructor wouldn't add any safety here. Leave it alone.
+- **No change to `Price`/`Weight`/`decimal.Decimal` anywhere.**
 - Do not touch `internal/domain/category.go`, `categoryRepo.go`, or anything under
   `internal/app/category/`.
 
 ### Why this is lower-risk than it sounds
 
-`internal/infrastructure/repository/productRepo.go` already implements every one of
-these methods as a method on the same `*productRepo` struct, and
-`internal/app/product/queryUseCase_test.go`'s `fakeProductRepo` already implements
-every one of them too. In Go, **one concrete type can satisfy multiple interfaces at
-once** — you don't need separate structs or separate fakes. Concretely:
-
-- `repository.NewProductRepo(db)` will return the unexported `*productRepo` type
-  instead of `domain.ProductRepository`. Callers (just `wire/container.go`) don't
-  need to name that type — `productRepo := repository.NewProductRepo(db)` still
-  works via type inference, and that one variable can be passed into every use case
-  constructor that now asks for a narrower interface, because `*productRepo`
-  implements all four.
-- Same story for `fakeProductRepo` in tests: it keeps every method it already has, so
-  the same `repo` variable in each test file can be passed to multiple constructor
-  parameters unchanged in behavior — only the number of arguments at each
-  `New...UseCase(...)` call site changes.
+- `InventoryLevel` and `StockMove` are **never serialized in an HTTP response** —
+  confirmed by grepping `internal/delivery/` for both type names (no hits). So
+  changing their field types can't change the API's wire format.
+- `Quantity` is `type Quantity int` — a defined type with underlying kind `int`. Code
+  that compares it to an untyped integer literal (`qty < 0`, `l.AvailableQty != 6`) or
+  prints it with `%d` keeps compiling unchanged. Concretely, this means
+  `internal/domain/inventory_test.go` (which does exactly that) **needs no edits at
+  all** — read it after step 2 to confirm before moving on.
+- Every negative-stock check this task adds either duplicates a check that already
+  exists one call up the stack, or replaces a manual `< 0` check with an equivalent
+  constructor call — no behavior changes, only where the guarantee lives.
 
 ## Step-by-step
 
-### 1. Split the interface in `internal/domain/product.go`
+### 1. Add the `Quantity` type to `internal/domain/inventory.go`
 
-Find the current `ProductRepository` interface (~lines 258-308). Replace it with the
-trimmed `ProductRepository` plus two new interfaces, `OptionRepository` and
-`MediaRepository`, covering the methods being carved out. Keep every method
-signature byte-for-byte identical — only which interface it belongs to changes.
+Add this directly below the existing `var (...)` error block (after
+`ErrInsufficientStock`, before `type InventoryItem struct`):
+
+```go
+// Quantity is a non-negative count of stock units. Constructing one via
+// NewQuantity is the compile-time-adjacent guarantee that "stock can't go
+// negative" — callers that already validated non-negative input (e.g. rows
+// read back from this app's own database) may convert directly via
+// Quantity(n) instead of re-validating trusted data.
+type Quantity int
+
+// NewQuantity constructs a Quantity, rejecting negative input.
+func NewQuantity(n int) (Quantity, error) {
+	if n < 0 {
+		return 0, ErrInvalidQuantity
+	}
+	return Quantity(n), nil
+}
+
+// Int returns the underlying int, for arithmetic and passing to SQL query args.
+func (q Quantity) Int() int {
+	return int(q)
+}
+```
+
+Build after this step: `go build ./...` should still pass — nothing uses `Quantity`
+yet.
+
+### 2. Change `InventoryLevel`, `StockMove`, and `Reserve` to use `Quantity`
+
+Still in `inventory.go`:
 
 ```go
 // before
-type ProductRepository interface {
-	Create(ctx context.Context, params CreateProductParams) (Product, error)
-	FindAll(ctx context.Context, params ListProductParams) ([]ProductListItem, int, error)
-	FindByID(ctx context.Context, id uuid.UUID) (ProductDetail, error)
-	FindByHandle(ctx context.Context, handle string) (ProductDetail, error)
+type InventoryLevel struct {
+	ID              uuid.UUID `json:"id"`
+	InventoryItemID uuid.UUID `json:"inventory_item_id"`
+	LocationID      uuid.UUID `json:"location_id"`
+	AvailableQty    int       `json:"available_qty"`
+	ReservedQty     int       `json:"reserved_qty"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
 
-	UpdateHeader(ctx context.Context, id uuid.UUID, input UpdateProductInput) (Product, error)
-	UpdateStatus(ctx context.Context, id uuid.UUID, status ProductStatus) error
-	Delete(ctx context.Context, id uuid.UUID) error
+func (l *InventoryLevel) Reserve(qty int) error {
+	if qty < 0 {
+		return ErrInvalidQuantity
+	}
+	if qty > l.AvailableQty {
+		return ErrInsufficientStock
+	}
+	l.AvailableQty -= qty
+	l.ReservedQty += qty
+	return nil
+}
 
-	CreateOption(ctx context.Context, option ProductOption) (ProductOption, error)
-	RenameOption(ctx context.Context, productID, optionID uuid.UUID, name string) (ProductOption, error)
-	DeleteOption(ctx context.Context, productID, optionID uuid.UUID) error
-	ReorderOptions(ctx context.Context, productID uuid.UUID, positions []PositionUpdate) error
-	FindOptionByID(ctx context.Context, optionID uuid.UUID) (ProductOption, error)
-
-	CreateOptionValue(ctx context.Context, value ProductOptionValue) (ProductOptionValue, error)
-	UpdateOptionValue(ctx context.Context, valueID uuid.UUID, value *string, position *int) (ProductOptionValue, error)
-	DeleteOptionValue(ctx context.Context, valueID uuid.UUID) error
-	FindOptionValueByID(ctx context.Context, valueID uuid.UUID) (ProductOptionValue, error)
-
-	CreateVariant(ctx context.Context, variant Variant) (Variant, error)
-	CreateVariants(ctx context.Context, variants []Variant) ([]Variant, error)
-	CreateVariantsWithStock(ctx context.Context, params CreateVariantsParams) ([]Variant, error)
-	AdjustVariantStock(ctx context.Context, variantID uuid.UUID, targetQty int) (InventoryLevel, error)
-	FindVariantByID(ctx context.Context, variantID uuid.UUID) (Variant, error)
-	UpdateVariant(ctx context.Context, variantID uuid.UUID, input UpdateVariantInput) (Variant, error)
-	DeleteVariant(ctx context.Context, variantID uuid.UUID, hard bool) error
-	BulkDeleteVariants(ctx context.Context, variantIDs []uuid.UUID, hard bool) error
-	RestoreVariant(ctx context.Context, variantID uuid.UUID) (Variant, error)
-	ReorderVariants(ctx context.Context, productID uuid.UUID, positions []PositionUpdate) error
-	VariantHasHistory(ctx context.Context, variantID uuid.UUID) (bool, error)
-
-	CreateProductMedia(ctx context.Context, media []ProductMedia) ([]ProductMedia, error)
-	UpdateProductMedia(ctx context.Context, mediaID uuid.UUID, altText *string) (ProductMedia, error)
-	DeleteProductMedia(ctx context.Context, mediaID uuid.UUID) error
-	ReorderProductMedia(ctx context.Context, productID uuid.UUID, positions []PositionUpdate) error
-	FindMediaByID(ctx context.Context, mediaID uuid.UUID) (ProductMedia, error)
-
-	AttachVariantMedia(ctx context.Context, variantID, mediaID uuid.UUID) (VariantMedia, error)
-	DetachVariantMedia(ctx context.Context, variantID, mediaID uuid.UUID) error
-	ReorderVariantMedia(ctx context.Context, variantID uuid.UUID, positions []PositionUpdate) error
-
-	AttachNewOrExistingVariantMedia(ctx context.Context, newMedia []ProductMedia, links []VariantMedia) error
+type StockMove struct {
+	ID              uuid.UUID     `json:"id"`
+	InventoryItemID uuid.UUID     `json:"inventory_item_id"`
+	FromLocationID  *uuid.UUID    `json:"from_location_id,omitempty"`
+	ToLocationID    *uuid.UUID    `json:"to_location_id,omitempty"`
+	MoveType        StockMoveType `json:"move_type"`
+	Quantity        int           `json:"quantity"`
+	CreatedBy       *uuid.UUID    `json:"created_by,omitempty"`
+	Reason          *string       `json:"reason,omitempty"`
+	CreatedAt       time.Time     `json:"created_at"`
 }
 ```
 
 ```go
 // after
-// ProductRepository is the persistence contract for the product header:
-// creating, reading, updating, and deleting the products table row itself.
-type ProductRepository interface {
-	Create(ctx context.Context, params CreateProductParams) (Product, error)
-	FindAll(ctx context.Context, params ListProductParams) ([]ProductListItem, int, error)
-	FindByID(ctx context.Context, id uuid.UUID) (ProductDetail, error)
-	FindByHandle(ctx context.Context, handle string) (ProductDetail, error)
-
-	UpdateHeader(ctx context.Context, id uuid.UUID, input UpdateProductInput) (Product, error)
-	UpdateStatus(ctx context.Context, id uuid.UUID, status ProductStatus) error
-	Delete(ctx context.Context, id uuid.UUID) error
+type InventoryLevel struct {
+	ID              uuid.UUID `json:"id"`
+	InventoryItemID uuid.UUID `json:"inventory_item_id"`
+	LocationID      uuid.UUID `json:"location_id"`
+	AvailableQty    Quantity  `json:"available_qty"`
+	ReservedQty     Quantity  `json:"reserved_qty"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
-// OptionRepository is the persistence contract for a product's options and
-// their option values.
-type OptionRepository interface {
-	CreateOption(ctx context.Context, option ProductOption) (ProductOption, error)
-	RenameOption(ctx context.Context, productID, optionID uuid.UUID, name string) (ProductOption, error)
-	DeleteOption(ctx context.Context, productID, optionID uuid.UUID) error
-	ReorderOptions(ctx context.Context, productID uuid.UUID, positions []PositionUpdate) error
-	FindOptionByID(ctx context.Context, optionID uuid.UUID) (ProductOption, error)
-
-	CreateOptionValue(ctx context.Context, value ProductOptionValue) (ProductOptionValue, error)
-	UpdateOptionValue(ctx context.Context, valueID uuid.UUID, value *string, position *int) (ProductOptionValue, error)
-	DeleteOptionValue(ctx context.Context, valueID uuid.UUID) error
-	FindOptionValueByID(ctx context.Context, valueID uuid.UUID) (ProductOptionValue, error)
+func (l *InventoryLevel) Reserve(qty Quantity) error {
+	if qty < 0 {
+		return ErrInvalidQuantity
+	}
+	if qty > l.AvailableQty {
+		return ErrInsufficientStock
+	}
+	l.AvailableQty -= qty
+	l.ReservedQty += qty
+	return nil
 }
 
-// MediaRepository is the persistence contract for a product's media gallery
-// and its links to variants.
-type MediaRepository interface {
-	CreateProductMedia(ctx context.Context, media []ProductMedia) ([]ProductMedia, error)
-	UpdateProductMedia(ctx context.Context, mediaID uuid.UUID, altText *string) (ProductMedia, error)
-	DeleteProductMedia(ctx context.Context, mediaID uuid.UUID) error
-	ReorderProductMedia(ctx context.Context, productID uuid.UUID, positions []PositionUpdate) error
-	FindMediaByID(ctx context.Context, mediaID uuid.UUID) (ProductMedia, error)
-
-	AttachVariantMedia(ctx context.Context, variantID, mediaID uuid.UUID) (VariantMedia, error)
-	DetachVariantMedia(ctx context.Context, variantID, mediaID uuid.UUID) error
-	ReorderVariantMedia(ctx context.Context, variantID uuid.UUID, positions []PositionUpdate) error
-
-	// AttachNewOrExistingVariantMedia appends media links to a variant during
-	// update. It inserts any brand-new media rows (newMedia) into product_media
-	// and then inserts the variant_media links; it never touches existing links.
-	AttachNewOrExistingVariantMedia(ctx context.Context, newMedia []ProductMedia, links []VariantMedia) error
+type StockMove struct {
+	ID              uuid.UUID     `json:"id"`
+	InventoryItemID uuid.UUID     `json:"inventory_item_id"`
+	FromLocationID  *uuid.UUID    `json:"from_location_id,omitempty"`
+	ToLocationID    *uuid.UUID    `json:"to_location_id,omitempty"`
+	MoveType        StockMoveType `json:"move_type"`
+	Quantity        Quantity      `json:"quantity"`
+	CreatedBy       *uuid.UUID    `json:"created_by,omitempty"`
+	Reason          *string       `json:"reason,omitempty"`
+	CreatedAt       time.Time     `json:"created_at"`
 }
 ```
 
-Place `OptionRepository` and `MediaRepository` directly after the trimmed
-`ProductRepository`, in that order. The variant methods are cut entirely here —
-step 2 pastes them into `variant.go`.
+The `Reserve` body is untouched byte-for-byte except the parameter type — `qty < 0`
+and `qty > l.AvailableQty` still compile because `Quantity`'s underlying kind is
+`int`.
 
-Build after this step: `go build ./...` will **fail**. That's expected —
-`internal/infrastructure/repository/productRepo.go` still declares
-`func NewProductRepo(db database.Database) domain.ProductRepository`, and that
-concrete type no longer has `CreateVariant`/etc. required to satisfy the
-now-nonexistent variant methods on `ProductRepository` — wait, actually the build
-error you'll see is simpler: `productRepo.go`'s `NewProductRepo` return type
-assertion will fail to compile because `domain.ProductRepository` no longer declares
-the variant/option/media methods your `*productRepo` still implements just fine —
-Go interfaces are structural, so **extra** methods on `*productRepo` are never an
-error. The real failure is that `NewProductRepo`'s declared return type
-`domain.ProductRepository` is now a *smaller* interface than before, which still
-compiles. The actual failures you'll see are in `internal/app/product/*.go` and
-`*_test.go`, where `optionUc`/`mediaUc`/`variantUc` call methods
-(`uc.productRepo.CreateOption(...)`, etc.) that no longer exist on
-`domain.ProductRepository`. Don't fix those yet — steps 2-5 do that in order.
+Now open `internal/domain/inventory_test.go` and confirm it still compiles as-is
+(it should — do not edit it): `InventoryLevel{AvailableQty: 10, ReservedQty: 0}` and
+`l.Reserve(-1)` both work because untyped constants convert to `Quantity`
+automatically.
 
-### 2. Add `VariantRepository` to `internal/domain/variant.go`
+Build after this step: `go build ./internal/domain/...` should pass;
+`go vet ./internal/domain/...` should pass; `go test ./internal/domain/...` should
+pass unchanged. `go build ./...` as a whole will **fail** — every place elsewhere in
+the repo that sets `AvailableQty`/`ReservedQty`/`Quantity` with a plain `int`, or
+calls `Reserve`/`AdjustVariantStock` with one, now has a type mismatch. Steps 3-7 fix
+those in order.
 
-Open `variant.go`. Add the new interface below the existing `VariantUseCase`
-interface (don't confuse the two: `VariantUseCase` is the application-layer contract
-already in this file; `VariantRepository` is the new persistence-layer contract):
+### 3. Update `VariantRepository.AdjustVariantStock`'s signature
 
-```go
-// VariantRepository is the persistence contract for a product's variants,
-// including their inventory stock adjustment and lifecycle (soft/hard
-// delete, restore).
-type VariantRepository interface {
-	CreateVariant(ctx context.Context, variant Variant) (Variant, error)
-	CreateVariants(ctx context.Context, variants []Variant) ([]Variant, error)
-	CreateVariantsWithStock(ctx context.Context, params CreateVariantsParams) ([]Variant, error)
-	AdjustVariantStock(ctx context.Context, variantID uuid.UUID, targetQty int) (InventoryLevel, error)
-	FindVariantByID(ctx context.Context, variantID uuid.UUID) (Variant, error)
-	UpdateVariant(ctx context.Context, variantID uuid.UUID, input UpdateVariantInput) (Variant, error)
-	DeleteVariant(ctx context.Context, variantID uuid.UUID, hard bool) error
-	BulkDeleteVariants(ctx context.Context, variantIDs []uuid.UUID, hard bool) error
-	RestoreVariant(ctx context.Context, variantID uuid.UUID) (Variant, error)
-	ReorderVariants(ctx context.Context, productID uuid.UUID, positions []PositionUpdate) error
-	// VariantHasHistory reports whether a variant has any stock movement
-	// history, which decides soft vs hard deletion.
-	VariantHasHistory(ctx context.Context, variantID uuid.UUID) (bool, error)
-}
-```
-
-`CreateVariantsParams` (defined in `product.go`) and `InventoryLevel` (defined in
-`inventory.go`) are both still in package `domain`, so no import changes are needed.
-
-Build after this step: still expected to fail in `internal/app/product/*.go` and
-test files — that's what steps 3-5 fix.
-
-### 3. Point `productRepo.go` at the new interfaces
-
-Open `internal/infrastructure/repository/productRepo.go`. The only change is the
-constructor's return type — every method on `*productRepo` already has the exact
-signatures the new interfaces require, so nothing else in this file changes.
+Open `internal/domain/variant.go`. Change only the parameter type — the method's
+position in the interface and every other method are untouched:
 
 ```go
 // before
-func NewProductRepo(db database.Database) domain.ProductRepository {
-	return &productRepo{db: db}
+AdjustVariantStock(ctx context.Context, variantID uuid.UUID, targetQty int) (InventoryLevel, error)
+
+// after
+AdjustVariantStock(ctx context.Context, variantID uuid.UUID, targetQty Quantity) (InventoryLevel, error)
+```
+
+Build after this step: still expected to fail elsewhere — that's expected.
+
+### 4. Update `internal/infrastructure/repository/productRepo.go`
+
+This file has four places touching the changed fields: two build `InventoryLevel`/
+`StockMove` query args (in `Create` and `CreateVariantsWithStock`), and one is
+`AdjustVariantStock`'s implementation. The repository layer's row-scanning model
+(`internal/infrastructure/repository/model/inventory_model.go`) keeps its fields as
+plain `int` — only its `ToDomain()` conversion changes. This mirrors Phase 3's rule:
+persistence-shaped types stay in `model`, domain types don't carry storage concerns.
+
+**4a. `model/inventory_model.go`** — convert in `ToDomain()`, not in the struct:
+
+```go
+// before
+func (m InventoryLevel) ToDomain() domain.InventoryLevel {
+	return domain.InventoryLevel{
+		ID:              m.ID,
+		InventoryItemID: m.InventoryItemID,
+		LocationID:      m.LocationID,
+		AvailableQty:    m.AvailableQty,
+		ReservedQty:     m.ReservedQty,
+		UpdatedAt:       m.UpdatedAt,
+	}
 }
 
 // after
-func NewProductRepo(db database.Database) *productRepo {
-	return &productRepo{db: db}
+func (m InventoryLevel) ToDomain() domain.InventoryLevel {
+	return domain.InventoryLevel{
+		ID:              m.ID,
+		InventoryItemID: m.InventoryItemID,
+		LocationID:      m.LocationID,
+		AvailableQty:    domain.Quantity(m.AvailableQty),
+		ReservedQty:     domain.Quantity(m.ReservedQty),
+		UpdatedAt:       m.UpdatedAt,
+	}
 }
 ```
 
-Immediately below the `productRepo` struct/`NewProductRepo` block, add compile-time
-assertions that `*productRepo` satisfies all four interfaces. These aren't required
-for the build to pass, but they turn "I forgot a method" into an error right here
-instead of a confusing failure somewhere in `wire/container.go`:
+This is a direct cast, not `domain.NewQuantity(...)` — these values were already
+validated (or defaulted to 0) before being written to the `inventory_levels` table by
+this same app, so re-validating trusted reads adds nothing.
+
+**4b. `productRepo.go`, query-arg call sites.** There are two near-identical blocks
+(inside `Create`'s transaction and inside `CreateVariantsWithStock`'s transaction),
+each building `stock_moves` and `inventory_levels` insert args from
+`domain.StockMove`/`domain.InventoryLevel` values. In both blocks, wrap the three
+changed fields with `.Int()` where they're passed as query args:
 
 ```go
-var (
-	_ domain.ProductRepository = (*productRepo)(nil)
-	_ domain.OptionRepository  = (*productRepo)(nil)
-	_ domain.VariantRepository = (*productRepo)(nil)
-	_ domain.MediaRepository   = (*productRepo)(nil)
+// before (appears twice, once per transaction)
+_, err = tx.Exec(ctx, `
+	INSERT INTO stock_moves (id, inventory_item_id, from_location_id, to_location_id, move_type, quantity)
+	VALUES ($1, $2, $3, $4, $5, $6)`,
+	pgUUID(move.ID),
+	pgUUID(move.InventoryItemID),
+	pgUUID(locationID),
+	pgtype.UUID{}, // NULL
+	string(move.MoveType),
+	move.Quantity,
 )
 ```
+
+```go
+// after
+_, err = tx.Exec(ctx, `
+	INSERT INTO stock_moves (id, inventory_item_id, from_location_id, to_location_id, move_type, quantity)
+	VALUES ($1, $2, $3, $4, $5, $6)`,
+	pgUUID(move.ID),
+	pgUUID(move.InventoryItemID),
+	pgUUID(locationID),
+	pgtype.UUID{}, // NULL
+	string(move.MoveType),
+	move.Quantity.Int(),
+)
+```
+
+And similarly for the `inventory_levels` insert (also appears twice):
+
+```go
+// before
+_, err = tx.Exec(ctx, `
+	INSERT INTO inventory_levels (id, inventory_item_id, location_id, available_qty, reserved_qty)
+	VALUES ($1, $2, $3, $4, $5)`,
+	pgUUID(level.ID),
+	pgUUID(level.InventoryItemID),
+	pgUUID(locationID),
+	level.AvailableQty,
+	level.ReservedQty,
+)
+
+// after
+_, err = tx.Exec(ctx, `
+	INSERT INTO inventory_levels (id, inventory_item_id, location_id, available_qty, reserved_qty)
+	VALUES ($1, $2, $3, $4, $5)`,
+	pgUUID(level.ID),
+	pgUUID(level.InventoryItemID),
+	pgUUID(locationID),
+	level.AvailableQty.Int(),
+	level.ReservedQty.Int(),
+)
+```
+
+**4c. `productRepo.go`, `AdjustVariantStock`.** Only the signature and the one line
+that mixes `targetQty` with the plain-`int` `currentQty` change:
+
+```go
+// before
+func (r *productRepo) AdjustVariantStock(ctx context.Context, variantID uuid.UUID, targetQty int) (domain.InventoryLevel, error) {
+```
+
+```go
+// after
+func (r *productRepo) AdjustVariantStock(ctx context.Context, variantID uuid.UUID, targetQty domain.Quantity) (domain.InventoryLevel, error) {
+```
+
+Further down, `currentQty` (scanned straight from a SQL `int` column) stays a plain
+`int` — leave its declaration and the `SELECT available_qty ...`/`Scan(&currentQty)`
+block untouched. Only the delta computation changes, because `targetQty` is now a
+different type than `currentQty`:
+
+```go
+// before
+delta := targetQty - currentQty
+```
+
+```go
+// after
+delta := targetQty.Int() - currentQty
+```
+
+`delta` itself **stays a plain `int`, not `Quantity`** — an ADJUST delta can be
+negative (stock going down), which is exactly what `Quantity` forbids. Do not wrap
+it. The two lines below that use `delta` and `targetQty` as query args need `.Int()`
+on `targetQty` only (`delta` is already `int`):
+
+```go
+// before
+_, err = tx.Exec(ctx, `
+	INSERT INTO stock_moves (id, inventory_item_id, from_location_id, to_location_id, move_type, quantity)
+	VALUES ($1, $2, $3, $4, $5, $6)`,
+	pgUUID(uuid.Must(uuid.NewV7())),
+	pgUUID(itemID),
+	pgUUID(locationID),
+	pgtype.UUID{}, // NULL
+	string(domain.StockMoveAdjust),
+	delta,
+)
+...
+rows, err := tx.Query(ctx, `
+	INSERT INTO inventory_levels (id, inventory_item_id, location_id, available_qty, reserved_qty)
+	VALUES ($1, $2, $3, $4, $5)
+	ON CONFLICT (inventory_item_id, location_id) DO UPDATE
+	SET available_qty = EXCLUDED.available_qty, updated_at = now()
+	RETURNING id, inventory_item_id, location_id, available_qty, reserved_qty, COALESCE(updated_at, now()) AS updated_at`,
+	pgUUID(uuid.Must(uuid.NewV7())),
+	pgUUID(itemID),
+	pgUUID(locationID),
+	targetQty,
+	0,
+)
+```
+
+```go
+// after
+_, err = tx.Exec(ctx, `
+	INSERT INTO stock_moves (id, inventory_item_id, from_location_id, to_location_id, move_type, quantity)
+	VALUES ($1, $2, $3, $4, $5, $6)`,
+	pgUUID(uuid.Must(uuid.NewV7())),
+	pgUUID(itemID),
+	pgUUID(locationID),
+	pgtype.UUID{}, // NULL
+	string(domain.StockMoveAdjust),
+	delta,
+)
+...
+rows, err := tx.Query(ctx, `
+	INSERT INTO inventory_levels (id, inventory_item_id, location_id, available_qty, reserved_qty)
+	VALUES ($1, $2, $3, $4, $5)
+	ON CONFLICT (inventory_item_id, location_id) DO UPDATE
+	SET available_qty = EXCLUDED.available_qty, updated_at = now()
+	RETURNING id, inventory_item_id, location_id, available_qty, reserved_qty, COALESCE(updated_at, now()) AS updated_at`,
+	pgUUID(uuid.Must(uuid.NewV7())),
+	pgUUID(itemID),
+	pgUUID(locationID),
+	targetQty.Int(),
+	0,
+)
+```
+
+The final `return level.ToDomain(), nil` at the end of the function needs no change —
+`ToDomain()` already handles the conversion (step 4a).
 
 Build after this step: `go build ./internal/infrastructure/...` should pass.
-`go build ./...` as a whole will still fail in `internal/app/product/*.go` (they
-call `NewProductRepo`-independent methods on interfaces that no longer have them) and
-`internal/wire/container.go` (it declares `productRepo` implicitly via `:=`, so it's
-actually fine — the failures are all in `internal/app/product`).
+`go build ./...` will still fail in `internal/app/product/*.go` and its test files —
+steps 5-6 fix those.
 
-### 4. Update the three use cases that need a narrower dependency plus the split-off ones
+### 5. Fix `internal/app/product/insertUseCase.go` — and delete the dead code
 
-**4a. `internal/app/product/optionUseCase.go`.** Add a second field/parameter for
-`OptionRepository`, then repoint every call except the one `FindByID` (which stays on
-`productRepo` — it's used in `Create` to confirm the product exists before deriving
-the next option position):
+This file has the dead code `issue.md` originally flagged in `product.go`; it moved
+here during earlier phases. Fix both the `Quantity` type change and the dead code in
+the same pass since they're in the same few lines.
+
+Current state (for reference — do not leave any of the commented-out lines):
 
 ```go
-// before
-type optionUc struct {
-	productRepo domain.ProductRepository
+trackInventory := true
+if v.TrackInventory != nil {
+	trackInventory = *v.TrackInventory
+}
+// targetQty := decimal.NewFromInt(int64(v.Stock))
+
+if err := product.AddVariant(domain.Variant{
+	...
+}); err != nil {
+	return domain.Product{}, err
 }
 
-func NewOptionUseCase(productRepo domain.ProductRepository) domain.OptionUseCase {
-	return &optionUc{
-		productRepo: productRepo,
-	}
+inventoryItems = append(inventoryItems, domain.InventoryItem{
+	ID:             inventoryItemID,
+	VariantID:      &variantID,
+	TrackInventory: trackInventory,
+})
+
+// ADJUST sets available_qty to an absolute target. There is no
+// pre-existing inventory_levels row for a brand-new variant, so the
+// "current" available_qty is 0 and the delta equals +stock.
+// delta := computeAdjustDelta(decimal.Zero, targetQty)
+stockMoves = append(stockMoves, domain.StockMove{
+	ID:              uuid.Must(uuid.NewV7()),
+	InventoryItemID: inventoryItemID,
+	MoveType:        domain.StockMoveAdjust,
+	// Quantity:        delta,
+	Quantity: v.Stock,
+})
+
+inventoryLevels = append(inventoryLevels, domain.InventoryLevel{
+	ID:              uuid.Must(uuid.NewV7()),
+	InventoryItemID: inventoryItemID,
+	// AvailableQty:    targetQty,
+	AvailableQty: v.Stock,
+	// ReservedQty:     decimal.Zero,
+	ReservedQty: 0,
+})
+```
+
+Replace with:
+
+```go
+trackInventory := true
+if v.TrackInventory != nil {
+	trackInventory = *v.TrackInventory
 }
 
-// after
-type optionUc struct {
-	productRepo domain.ProductRepository
-	optionRepo  domain.OptionRepository
+if err := product.AddVariant(domain.Variant{
+	...
+}); err != nil {
+	return domain.Product{}, err
 }
 
-func NewOptionUseCase(productRepo domain.ProductRepository, optionRepo domain.OptionRepository) domain.OptionUseCase {
-	return &optionUc{
-		productRepo: productRepo,
-		optionRepo:  optionRepo,
-	}
+inventoryItems = append(inventoryItems, domain.InventoryItem{
+	ID:             inventoryItemID,
+	VariantID:      &variantID,
+	TrackInventory: trackInventory,
+})
+
+stockQty, err := domain.NewQuantity(v.Stock)
+if err != nil {
+	return domain.Product{}, err
+}
+
+// ADJUST sets available_qty to an absolute target. There is no
+// pre-existing inventory_levels row for a brand-new variant, so the
+// "current" available_qty is 0 and the delta equals +stock.
+stockMoves = append(stockMoves, domain.StockMove{
+	ID:              uuid.Must(uuid.NewV7()),
+	InventoryItemID: inventoryItemID,
+	MoveType:        domain.StockMoveAdjust,
+	Quantity:        stockQty,
+})
+
+inventoryLevels = append(inventoryLevels, domain.InventoryLevel{
+	ID:              uuid.Must(uuid.NewV7()),
+	InventoryItemID: inventoryItemID,
+	AvailableQty:    stockQty,
+	ReservedQty:     0,
+})
+```
+
+(Don't touch the `product.AddVariant(...)` block itself — it's shown above only to
+anchor where in the loop this sits. Its `Price`/`Weight` fields are out of scope.)
+
+`AddVariant`'s own body is not part of this edit; leave it alone. `v.Stock` is
+`domain.CreateVariantInput.Stock`, a plain `int` — this is exactly the case
+`NewQuantity` exists for: DTO-side validation (`validate:"gte=0"` in
+`internal/delivery/http/dto/variant_dto.go`) already rejects negative stock before
+this code runs, but nothing at the domain layer enforced it until now.
+
+Now delete the now-fully-unused `computeAdjustDelta` function near the bottom of the
+file:
+
+```go
+// delete this entire function
+// computeAdjustDelta calculates the quantity to record for an ADJUST move:
+// the difference between the current available quantity and the requested
+// absolute target. This is kept generic so it can be reused by the standalone
+// stock-move use case.
+func computeAdjustDelta(current, target decimal.Decimal) decimal.Decimal {
+	return target.Sub(current)
 }
 ```
 
-Then, in the method bodies, change every `uc.productRepo.CreateOption(...)`,
-`.RenameOption(...)`, `.DeleteOption(...)`, `.ReorderOptions(...)`,
-`.CreateOptionValue(...)`, `.UpdateOptionValue(...)`, `.DeleteOptionValue(...)` call
-to `uc.optionRepo.<Method>(...)` instead. Leave `uc.productRepo.FindByID(...)` (in
-`Create`) untouched. `FindOptionByID`/`FindOptionValueByID` aren't currently called
-from this file at all — nothing to change for those two.
+It has no callers anywhere in the repo (confirm with
+`grep -rn computeAdjustDelta` — the only other hit should be the comment you just
+deleted in the previous edit).
 
-**4b. `internal/app/product/mediaUseCase.go`.** Add `MediaRepository` and
-`VariantRepository` fields/parameters:
+Finally, remove the now-unused `"github.com/shopspring/decimal"` import from this
+file's import block — it was only referenced by the dead code above.
 
-```go
-// before
-type mediaUc struct {
-	productRepo domain.ProductRepository
-}
+Build after this step: `go build ./internal/app/product/...` will still fail (the
+loop's caller signature elsewhere and `variantUseCase.go` haven't been updated yet) —
+that's step 6.
 
-func NewMediaUseCase(productRepo domain.ProductRepository) domain.MediaUseCase {
-	return &mediaUc{
-		productRepo: productRepo,
-	}
-}
+### 6. Fix `internal/app/product/variantUseCase.go`
 
-// after
-type mediaUc struct {
-	productRepo domain.ProductRepository
-	mediaRepo   domain.MediaRepository
-	variantRepo domain.VariantRepository
-}
-
-func NewMediaUseCase(productRepo domain.ProductRepository, mediaRepo domain.MediaRepository, variantRepo domain.VariantRepository) domain.MediaUseCase {
-	return &mediaUc{
-		productRepo: productRepo,
-		mediaRepo:   mediaRepo,
-		variantRepo: variantRepo,
-	}
-}
-```
-
-In the method bodies: `uc.productRepo.FindByID(...)` stays as-is (used in `Create` to
-confirm the product exists). `uc.productRepo.FindVariantByID(...)` (in
-`AttachToVariant`) becomes `uc.variantRepo.FindVariantByID(...)`. Every other call —
-`CreateProductMedia`, `UpdateProductMedia`, `DeleteProductMedia`,
-`ReorderProductMedia`, `FindMediaByID` (both call sites), `AttachVariantMedia`,
-`DetachVariantMedia`, `ReorderVariantMedia` — becomes `uc.mediaRepo.<Method>(...)`.
-
-**4c. `internal/app/product/variantUseCase.go`.** Add `VariantRepository` and
-`MediaRepository` fields/parameters:
+**6a. `buildVariantStockRows`.** Give it an error return and construct the `Quantity`
+once via `NewQuantity`, reusing the result for both `StockMove.Quantity` and
+`InventoryLevel.AvailableQty`:
 
 ```go
 // before
-type variantUc struct {
-	productRepo domain.ProductRepository
-}
+func buildVariantStockRows(variantID uuid.UUID, trackInventory *bool, stock int) (domain.InventoryItem, domain.StockMove, domain.InventoryLevel) {
+	inventoryItemID := uuid.Must(uuid.NewV7())
 
-func NewVariantUseCase(productRepo domain.ProductRepository) domain.VariantUseCase {
-	return &variantUc{
-		productRepo: productRepo,
+	track := true
+	if trackInventory != nil {
+		track = *trackInventory
 	}
-}
 
-// after
-type variantUc struct {
-	productRepo domain.ProductRepository
-	variantRepo domain.VariantRepository
-	mediaRepo   domain.MediaRepository
-}
-
-func NewVariantUseCase(productRepo domain.ProductRepository, variantRepo domain.VariantRepository, mediaRepo domain.MediaRepository) domain.VariantUseCase {
-	return &variantUc{
-		productRepo: productRepo,
-		variantRepo: variantRepo,
-		mediaRepo:   mediaRepo,
+	item := domain.InventoryItem{
+		ID:             inventoryItemID,
+		VariantID:      &variantID,
+		TrackInventory: track,
 	}
+
+	move := domain.StockMove{
+		ID:              uuid.Must(uuid.NewV7()),
+		InventoryItemID: inventoryItemID,
+		MoveType:        domain.StockMoveAdjust,
+		Quantity:        stock,
+	}
+
+	level := domain.InventoryLevel{
+		ID:              uuid.Must(uuid.NewV7()),
+		InventoryItemID: inventoryItemID,
+		AvailableQty:    stock,
+		ReservedQty:     0,
+	}
+
+	return item, move, level
 }
 ```
 
-In the method bodies: both `uc.productRepo.FindByID(...)` calls (in `Create` and
-`BulkCreate`) stay as-is. `CreateVariantsWithStock` (both call sites),
-`UpdateVariant` (both call sites), `AdjustVariantStock` (both call sites),
-`FindVariantByID`, `VariantHasHistory` (both call sites), `DeleteVariant`,
-`BulkDeleteVariants` (both call sites), `RestoreVariant`, `ReorderVariants` all
-become `uc.variantRepo.<Method>(...)`. `AttachNewOrExistingVariantMedia` (both call
-sites) and the `FindMediaByID` call near the end of the file (in the media-resolution
-helper) become `uc.mediaRepo.<Method>(...)`.
+```go
+// after
+func buildVariantStockRows(variantID uuid.UUID, trackInventory *bool, stock int) (domain.InventoryItem, domain.StockMove, domain.InventoryLevel, error) {
+	inventoryItemID := uuid.Must(uuid.NewV7())
 
-**4d. Leave these four files alone** — they already only ever called plain
-product-header methods, so their field type, constructor signature, and bodies don't
-change at all: `internal/app/product/insertUseCase.go`,
-`internal/app/product/deleteUseCase.go`, `internal/app/product/queryUseCase.go`,
-`internal/app/product/updateUseCase.go`.
+	track := true
+	if trackInventory != nil {
+		track = *trackInventory
+	}
 
-Build after this step: `go build ./internal/app/...` should now pass.
-`go build ./...` will still fail in `internal/wire/container.go` and in
-`internal/app/product`'s test files — steps 5-6 fix those.
+	item := domain.InventoryItem{
+		ID:             inventoryItemID,
+		VariantID:      &variantID,
+		TrackInventory: track,
+	}
 
-### 5. Update `internal/wire/container.go`
+	stockQty, err := domain.NewQuantity(stock)
+	if err != nil {
+		return domain.InventoryItem{}, domain.StockMove{}, domain.InventoryLevel{}, err
+	}
 
-Only the three call sites for `optionUC`, `variantUC`, and `mediaUC` change — pass
-the same `productRepo` value as every argument each constructor now takes, since
-`*productRepo` (from step 3) satisfies all four interfaces at once:
+	move := domain.StockMove{
+		ID:              uuid.Must(uuid.NewV7()),
+		InventoryItemID: inventoryItemID,
+		MoveType:        domain.StockMoveAdjust,
+		Quantity:        stockQty,
+	}
+
+	level := domain.InventoryLevel{
+		ID:              uuid.Must(uuid.NewV7()),
+		InventoryItemID: inventoryItemID,
+		AvailableQty:    stockQty,
+		ReservedQty:     0,
+	}
+
+	return item, move, level, nil
+}
+```
+
+**6b. `Create`** (the single-variant use case). Update the one call site:
 
 ```go
 // before
-productRepo := repository.NewProductRepo(db)
-productInsertUC := product.NewProductInsertUseCase(productRepo)
-productQueryUC := product.NewProductQueryUseCase(productRepo)
-productUpdateUC := product.NewProductUpdateUseCase(productRepo)
-productDeleteUC := product.NewProductDeleteUseCase(productRepo)
-optionUC := product.NewOptionUseCase(productRepo)
-variantUC := product.NewVariantUseCase(productRepo)
-mediaUC := product.NewMediaUseCase(productRepo)
-
-// after
-productRepo := repository.NewProductRepo(db)
-productInsertUC := product.NewProductInsertUseCase(productRepo)
-productQueryUC := product.NewProductQueryUseCase(productRepo)
-productUpdateUC := product.NewProductUpdateUseCase(productRepo)
-productDeleteUC := product.NewProductDeleteUseCase(productRepo)
-optionUC := product.NewOptionUseCase(productRepo, productRepo)
-variantUC := product.NewVariantUseCase(productRepo, productRepo, productRepo)
-mediaUC := product.NewMediaUseCase(productRepo, productRepo, productRepo)
+inventoryItem, stockMove, inventoryLevel := buildVariantStockRows(variantID, input.TrackInventory, input.Stock)
 ```
 
-`productInsertUC`/`productQueryUC`/`productUpdateUC`/`productDeleteUC`'s lines are
-unchanged — shown only for context. Nothing else in this file changes.
+```go
+// after
+inventoryItem, stockMove, inventoryLevel, err := buildVariantStockRows(variantID, input.TrackInventory, input.Stock)
+if err != nil {
+	logger.L(ctx).Error("create variant failed", zap.Error(err), zap.String("product_id", productID.String()))
+	return domain.Variant{}, err
+}
+```
 
-Build after this step: `go build ./...` should now pass for non-test code. Run
-`go vet ./...` too.
+Note `err` is being declared here with `:=` — check the surrounding function; if `err`
+is already declared earlier in scope (it is, from `product, err := uc.productRepo.FindByID(...)`
+a few lines up), Go still allows `:=` here because `inventoryItem`, `stockMove`, and
+`inventoryLevel` are new on the left-hand side. No special handling needed.
 
-### 6. Fix the test call sites
-
-No fake needs new methods — `fakeProductRepo` in
-`internal/app/product/queryUseCase_test.go` already implements every method on all
-four new interfaces (it implemented the single old `ProductRepository`, which was a
-superset). Only the number of arguments at each constructor call changes.
-
-**6a. `internal/app/product/lifecycleUseCase_test.go`.** Every `NewOptionUseCase(repo)`
-call (there are 8) becomes `NewOptionUseCase(repo, repo)`. Leave every
-`NewProductUpdateUseCase(repo)` and `NewProductDeleteUseCase(repo)` call unchanged.
-
-**6b. `internal/app/product/mediaUseCase_test.go`.** Every `NewMediaUseCase(repo)`
-call (there are 10) becomes `NewMediaUseCase(repo, repo, repo)`.
-
-**6c. `internal/app/product/variantUseCase_test.go`.** Every `NewVariantUseCase(repo)`
-call (there are 9) becomes `NewVariantUseCase(repo, repo, repo)`.
-
-**6d. `internal/app/product/queryUseCase_test.go`.** `NewProductQueryUseCase(repo)`
-and `NewProductInsertUseCase(repo)` calls are unchanged. Optionally, strengthen the
-existing compile-time assertion so a future accidental method removal is caught here
-too:
+**6c. `BulkCreate`.** Same change, inside the `for _, v := range input.Variants` loop:
 
 ```go
 // before
-var _ domain.ProductRepository = (*fakeProductRepo)(nil)
-
-// after
-var (
-	_ domain.ProductRepository = (*fakeProductRepo)(nil)
-	_ domain.OptionRepository  = (*fakeProductRepo)(nil)
-	_ domain.VariantRepository = (*fakeProductRepo)(nil)
-	_ domain.MediaRepository   = (*fakeProductRepo)(nil)
-)
+inventoryItem, stockMove, inventoryLevel := buildVariantStockRows(variantID, v.TrackInventory, v.Stock)
+params.InventoryItems = append(params.InventoryItems, inventoryItem)
+params.StockMoves = append(params.StockMoves, stockMove)
+params.InventoryLevels = append(params.InventoryLevels, inventoryLevel)
 ```
 
-If your editor supports multi-file find/replace, steps 6a-6c are each a single
-regex-style replace within one file (`NewXUseCase(repo)` → `NewXUseCase(repo, ...)`)
-— just double-check you didn't also touch an unrelated `New...(repo)` call for a
-constructor that didn't change (e.g. don't touch
-`NewProductUpdateUseCase(repo)`/`NewProductDeleteUseCase(repo)`/
-`NewProductQueryUseCase(repo)`/`NewProductInsertUseCase(repo)`).
+```go
+// after
+inventoryItem, stockMove, inventoryLevel, err := buildVariantStockRows(variantID, v.TrackInventory, v.Stock)
+if err != nil {
+	logger.L(ctx).Error("bulk create variants failed", zap.Error(err), zap.String("product_id", productID.String()))
+	return nil, err
+}
+params.InventoryItems = append(params.InventoryItems, inventoryItem)
+params.StockMoves = append(params.StockMoves, stockMove)
+params.InventoryLevels = append(params.InventoryLevels, inventoryLevel)
+```
 
-### 7. Build and verify
+Same `:=`-in-existing-scope note as 6b applies (`err` already exists in this loop
+from the `optsJSON, err := ...` call a few lines up; `inventoryItem`/`stockMove`/
+`inventoryLevel` are new, so `:=` is valid).
+
+**6d. `Update` and `BulkUpdate`.** These two already guard against negative stock
+manually *before* reaching `AdjustVariantStock` — leave that check as-is and just
+convert the already-validated `int` at the call site with a direct cast (not
+`NewQuantity` — there's no new validation to add, `Quantity` just needs a value of
+the right type):
+
+```go
+// Update — before
+if input.Stock != nil {
+	if _, err := uc.variantRepo.AdjustVariantStock(ctx, variantID, *input.Stock); err != nil {
+
+// Update — after
+if input.Stock != nil {
+	if _, err := uc.variantRepo.AdjustVariantStock(ctx, variantID, domain.Quantity(*input.Stock)); err != nil {
+```
+
+```go
+// BulkUpdate — before
+if item.Fields.Stock != nil {
+	if _, err := uc.variantRepo.AdjustVariantStock(ctx, item.ID, *item.Fields.Stock); err != nil {
+
+// BulkUpdate — after
+if item.Fields.Stock != nil {
+	if _, err := uc.variantRepo.AdjustVariantStock(ctx, item.ID, domain.Quantity(*item.Fields.Stock)); err != nil {
+```
+
+Do not touch the existing `if input.Stock != nil && *input.Stock < 0 { return ...,
+domain.ErrProductInvalidInput }` / `if item.Fields.Stock != nil && *item.Fields.Stock
+< 0 { return nil, domain.ErrProductInvalidInput }` checks a few lines above each of
+these — they already run first and already guarantee non-negative input by the time
+the cast above executes. Changing their error type or duplicating the check with
+`NewQuantity` would only add risk of changing which error callers see, for no benefit.
+
+Build after this step: `go build ./internal/app/product/...` will still fail in test
+files — step 7 fixes that.
+
+### 7. Fix the one test call site
+
+Open `internal/app/product/queryUseCase_test.go`. `fakeProductRepo` has a field and a
+method implementing `AdjustVariantStock` — both need their `int` changed to
+`domain.Quantity`:
+
+```go
+// before
+adjustVariantStockTargetQty int
+```
+
+```go
+// after
+adjustVariantStockTargetQty domain.Quantity
+```
+
+```go
+// before
+func (f *fakeProductRepo) AdjustVariantStock(ctx context.Context, variantID uuid.UUID, targetQty int) (domain.InventoryLevel, error) {
+	f.adjustVariantStockVariantID = variantID
+	f.adjustVariantStockTargetQty = targetQty
+	if f.adjustVariantStockErr != nil {
+		return domain.InventoryLevel{}, f.adjustVariantStockErr
+	}
+	if f.adjustVariantStockResult != (domain.InventoryLevel{}) {
+		return f.adjustVariantStockResult, nil
+	}
+	return domain.InventoryLevel{InventoryItemID: uuid.New(), AvailableQty: targetQty}, nil
+}
+```
+
+```go
+// after
+func (f *fakeProductRepo) AdjustVariantStock(ctx context.Context, variantID uuid.UUID, targetQty domain.Quantity) (domain.InventoryLevel, error) {
+	f.adjustVariantStockVariantID = variantID
+	f.adjustVariantStockTargetQty = targetQty
+	if f.adjustVariantStockErr != nil {
+		return domain.InventoryLevel{}, f.adjustVariantStockErr
+	}
+	if f.adjustVariantStockResult != (domain.InventoryLevel{}) {
+		return f.adjustVariantStockResult, nil
+	}
+	return domain.InventoryLevel{InventoryItemID: uuid.New(), AvailableQty: targetQty}, nil
+}
+```
+
+No other test file references `AdjustVariantStock`, `AvailableQty`, `ReservedQty`, or
+constructs a `domain.StockMove{}` literal (confirmed by grepping `*_test.go` across
+the repo) — `internal/domain/inventory_test.go` was already confirmed unaffected in
+step 2.
+
+Build after this step: `go build ./...` should now pass. Run `go vet ./...` too.
+
+### 8. Build and verify
 
 ```bash
 go build ./...
@@ -525,58 +787,61 @@ go test ./internal/app/product/... -v
 go test ./internal/infrastructure/repository/... -v
 ```
 
-If anything else fails to compile that isn't covered above, it's almost certainly
-another call site reaching a now-relocated method through the wrong field — grep for
-the split-off method names to confirm every call site was moved to the right
-sub-repo field:
+If anything else fails to compile that isn't covered above, grep for the changed
+field/method names to find the missed call site:
 
 ```bash
-grep -rn "productRepo\.\(CreateOption\|RenameOption\|DeleteOption\|ReorderOptions\|CreateOptionValue\|UpdateOptionValue\|DeleteOptionValue\|FindOptionByID\|FindOptionValueByID\)" internal/app/product/
-grep -rn "productRepo\.\(CreateVariant\|CreateVariants\|CreateVariantsWithStock\|AdjustVariantStock\|FindVariantByID\|UpdateVariant\|DeleteVariant\|BulkDeleteVariants\|RestoreVariant\|ReorderVariants\|VariantHasHistory\)" internal/app/product/
-grep -rn "productRepo\.\(CreateProductMedia\|UpdateProductMedia\|DeleteProductMedia\|ReorderProductMedia\|FindMediaByID\|AttachVariantMedia\|DetachVariantMedia\|ReorderVariantMedia\|AttachNewOrExistingVariantMedia\)" internal/app/product/
+grep -rn "AvailableQty\|ReservedQty" --include=*.go internal/
+grep -rn "\.Quantity\b" --include=*.go internal/domain internal/app internal/infrastructure
+grep -rn "AdjustVariantStock" --include=*.go internal/
 ```
 
-All three should return **no matches** once step 4 is complete — any hit means a
-call site still reaches a split-off method via the `productRepo` field instead of
-the new `optionRepo`/`variantRepo`/`mediaRepo` field.
+Every remaining `int`-typed use of these should be one of the two intentionally
+unchanged spots: `productRepo.go`'s local `currentQty`/`delta` in `AdjustVariantStock`
+(step 4c), and `model.InventoryLevel`'s own fields (step 4a) — everything else should
+now read `Quantity` or `.Int()`.
 
-### 8. Manual sanity check
+### 9. Manual sanity check
 
-Start the server (`air` or `go run cmd/main.go`) and exercise one endpoint per
-use case that changed, confirming behavior is identical to before this task (this is
-a wiring change, not a behavior change):
+Start the server (`air` or `go run cmd/main.go`) and exercise the stock-touching
+paths, confirming behavior is identical to before this task (this is a type-safety
+change, not a behavior change):
 
-- `POST /api/v1/products/:id/options` and its rename/delete/reorder/value endpoints
-  (`optionUc`).
-- `POST /api/v1/products/:id/media`, its update/delete/reorder endpoints, and
-  `POST /api/v1/variants/:id/media` / detach / reorder (`mediaUc`).
-- `POST /api/v1/products/:id/variants`, bulk create, update (including a stock
-  change), bulk update, delete, bulk delete, restore, reorder (`variantUc`).
-- `GET /api/v1/products`, `GET /api/v1/products/:id`, `POST /api/v1/products`,
-  `PATCH /api/v1/products/:id`, archive/restore — these use the untouched
-  `insertUc`/`queryUc`/`updateUc`/`deleteUc`, so confirm they still work simply as a
-  regression check that `wire/container.go` wiring didn't break anything.
+- `POST /api/v1/products` with at least one variant carrying `stock > 0` — confirms
+  `insertUseCase.go`'s new `NewQuantity` call doesn't reject valid input.
+- `POST /api/v1/products/:id/variants` and the bulk-create endpoint, each with
+  `stock > 0`.
+- `PATCH /api/v1/variants/:id` with a `stock` field set — exercises
+  `AdjustVariantStock` end to end (confirm the target quantity persists correctly;
+  this is the path through step 4c's `delta`/`targetQty.Int()` change).
+- The bulk-update variants endpoint with a `stock` field on at least one item.
+- Confirm none of the above four now reject valid non-negative stock values, and that
+  the existing "stock must be >= 0" validation still rejects negative ones (it does so
+  at the DTO layer before reaching any of this task's code — this task adds a second,
+  domain-layer guarantee behind it, not a replacement).
 
 ## Notes for whoever picks this up
 
-- Resist the temptation to also rename `productRepo` (the field name used in
-  `optionUc`/`mediaUc`/`variantUc`) to something like `headerRepo` "for clarity" —
-  it's out of scope and creates unnecessary diff noise. The field holds a
-  `domain.ProductRepository` and is named `productRepo`; that's consistent with the
-  four untouched use cases and with `internal/wire/container.go`'s local variable.
-- Don't try to also give `MediaRepository`/`OptionRepository`/`VariantRepository`
-  their own `New...Repo(db)` constructors in the `repository` package. There is
-  intentionally only one constructor, `repository.NewProductRepo(db)`, returning the
-  single concrete type that satisfies all four interfaces — introducing separate
-  constructors would imply separate structs/state, which this task explicitly avoids.
-- If a future task *does* need to physically separate the implementation (e.g. to
-  move variant persistence into its own file, or eventually its own package), that's
-  a bigger, separate change — it would need to decide how the shared private helpers
-  (`findProductOptions`, `findProductVariants`, `findProductMedia`) and the
-  multi-table transactions in `Create`/`CreateVariantsWithStock` get divided or
-  shared across structs. Nothing in this task blocks that from happening later; it
-  also doesn't attempt it.
-- This task does not touch `internal/domain/inventory.go` at all, and does not
-  introduce an `InventoryRepository` — see "What this task deliberately does NOT do"
-  above for why.
-- This task does not touch value objects (`Quantity`, `Money`) — that's Phase 7.
+- `NewQuantity` vs. a direct `Quantity(n)` cast: use `NewQuantity` (and propagate its
+  error) at any boundary where the `int` came from outside the domain layer and
+  hasn't already been validated in this exact call path — `insertUseCase.go` and
+  `buildVariantStockRows` both qualify because their `Stock` field has no
+  domain-layer check before this task. Use a direct cast only where the value is
+  already known-safe: reading a persisted DB row (`ToDomain()`), or a value that's
+  already been checked for negativity earlier in the same function
+  (`Update`/`BulkUpdate`'s `AdjustVariantStock` calls). Don't add a second
+  `NewQuantity` check right after an existing `< 0` guard — it's redundant and risks
+  swapping which sentinel error a caller sees.
+- Resist adding a custom `MarshalJSON`/`UnmarshalJSON` to `Quantity`. It isn't needed:
+  nothing serializes `InventoryLevel`/`StockMove` today (see "Why this is lower-risk
+  than it sounds" above), and adding one preemptively is exactly the kind of
+  speculative flexibility this codebase's conventions ask you to avoid.
+- `Money` (Phase 7's other value object, for `Price`/`Weight`) is intentionally not
+  part of this task — see "What this task deliberately does NOT do". If picked up
+  later, budget time to also decide the wire-format question before touching any
+  code, since `Price ` is `json`-serialized today and `Money` isn't a bare number.
+- This task does not touch `Variant.Stock int` (the separate CQRS read-model leak
+  noted in `issue.md` §2) — that's not a value-object gap, it's a "this field
+  shouldn't be on this struct at all" gap, and Phase 5 already addressed the
+  equivalent problem for `Product`'s read-only fields (`ProductListItem`/
+  `ProductDetail`). If it's ever revisited, model it after that phase, not this one.

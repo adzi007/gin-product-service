@@ -75,7 +75,7 @@ type fakeProductRepo struct {
 	createVariantsWithStockErr    error
 
 	adjustVariantStockVariantID uuid.UUID
-	adjustVariantStockTargetQty int
+	adjustVariantStockTargetQty domain.Quantity
 	adjustVariantStockResult    domain.InventoryLevel
 	adjustVariantStockErr       error
 
@@ -277,7 +277,7 @@ func (f *fakeProductRepo) CreateVariantsWithStock(ctx context.Context, params do
 	return params.Variants, nil
 }
 
-func (f *fakeProductRepo) AdjustVariantStock(ctx context.Context, variantID uuid.UUID, targetQty int) (domain.InventoryLevel, error) {
+func (f *fakeProductRepo) AdjustVariantStock(ctx context.Context, variantID uuid.UUID, targetQty domain.Quantity) (domain.InventoryLevel, error) {
 	f.adjustVariantStockVariantID = variantID
 	f.adjustVariantStockTargetQty = targetQty
 	if f.adjustVariantStockErr != nil {

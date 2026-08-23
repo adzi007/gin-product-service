@@ -159,7 +159,7 @@ func (r *productRepo) Create(ctx context.Context, params domain.CreateProductPar
 			pgUUID(locationID),
 			pgtype.UUID{}, // NULL
 			string(move.MoveType),
-			move.Quantity,
+			move.Quantity.Int(),
 		)
 		if err != nil {
 			return domain.Product{}, err
@@ -174,8 +174,8 @@ func (r *productRepo) Create(ctx context.Context, params domain.CreateProductPar
 			pgUUID(level.ID),
 			pgUUID(level.InventoryItemID),
 			pgUUID(locationID),
-			level.AvailableQty,
-			level.ReservedQty,
+			level.AvailableQty.Int(),
+			level.ReservedQty.Int(),
 		)
 		if err != nil {
 			return domain.Product{}, err
@@ -1361,7 +1361,7 @@ func (r *productRepo) CreateVariantsWithStock(ctx context.Context, params domain
 			pgUUID(locationID),
 			pgtype.UUID{}, // NULL
 			string(move.MoveType),
-			move.Quantity,
+			move.Quantity.Int(),
 		)
 		if err != nil {
 			fmt.Println("DEBUG Repo CreateVariantsWithStock 8", err.Error())
@@ -1377,8 +1377,8 @@ func (r *productRepo) CreateVariantsWithStock(ctx context.Context, params domain
 			pgUUID(level.ID),
 			pgUUID(level.InventoryItemID),
 			pgUUID(locationID),
-			level.AvailableQty,
-			level.ReservedQty,
+			level.AvailableQty.Int(),
+			level.ReservedQty.Int(),
 		)
 		if err != nil {
 			fmt.Println("DEBUG Repo CreateVariantsWithStock 9", err.Error())
@@ -1414,7 +1414,7 @@ func (r *productRepo) CreateVariantsWithStock(ctx context.Context, params domain
 // AdjustVariantStock records an ADJUST stock move that sets a variant's
 // available quantity at the default location to the given absolute target,
 // upserting the inventory_levels row for that item/location pair.
-func (r *productRepo) AdjustVariantStock(ctx context.Context, variantID uuid.UUID, targetQty int) (domain.InventoryLevel, error) {
+func (r *productRepo) AdjustVariantStock(ctx context.Context, variantID uuid.UUID, targetQty domain.Quantity) (domain.InventoryLevel, error) {
 
 	defer metrics.ObserveDB("product", "adjust_variant_stock")(time.Now())
 
@@ -1461,7 +1461,7 @@ func (r *productRepo) AdjustVariantStock(ctx context.Context, variantID uuid.UUI
 		currentQty = 0
 	}
 
-	delta := targetQty - currentQty
+	delta := targetQty.Int() - currentQty
 
 	// Record the ADJUST stock move (from the default location).
 	_, err = tx.Exec(ctx, `
@@ -1489,7 +1489,7 @@ func (r *productRepo) AdjustVariantStock(ctx context.Context, variantID uuid.UUI
 		pgUUID(uuid.Must(uuid.NewV7())),
 		pgUUID(itemID),
 		pgUUID(locationID),
-		targetQty,
+		targetQty.Int(),
 		0,
 	)
 	if err != nil {
