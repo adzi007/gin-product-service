@@ -1,6 +1,6 @@
-# Task: Introduce aggregate behavior on Product (Phase 4)
+# Task: Separate read models from the write aggregate (Phase 5)
 
-Source: `issue.md`, "Phase 4 — Introduce aggregate behavior".
+Source: `issue.md`, "Phase 5 — Separate read models from the write aggregate".
 
 > Audience note: this doc is written so a junior developer or another LLM can execute
 > it without re-deriving the plan. Follow the steps in order. Don't skip ahead or
@@ -9,585 +9,675 @@ Source: `issue.md`, "Phase 4 — Introduce aggregate behavior".
 
 ## Context — what already happened
 
-- Phase 1 (bounded-context split) is done: `internal/domain/product.go`,
-  `internal/domain/variant.go`, and `internal/domain/inventory.go` exist as separate
-  files.
-- Phase 2 (move HTTP DTOs out of `domain`) is done: no `binding:`/`validate:` tags
-  remain in `product.go`/`variant.go`.
-- Phase 3 (strip persistence tags) is done: no `db:"..."` tags remain in
-  `product.go`, `variant.go`, or `inventory.go`. Row-scanning structs live in
+- Phase 1 (bounded-context split): `internal/domain/product.go`, `variant.go`, and
+  `inventory.go` exist as separate files.
+- Phase 2 (move HTTP DTOs out of `domain`): no `binding:`/`validate:` tags remain in
+  `product.go`/`variant.go`.
+- Phase 3 (strip persistence tags): no `db:"..."` tags remain in `product.go`,
+  `variant.go`, or `inventory.go`. Row-scanning structs live in
   `internal/infrastructure/repository/model`.
+- Phase 4 (aggregate behavior) is done: `Product` has `NewProduct`, `AddVariant`,
+  `Archive`, `Restore`; `ProductStatus.CanTransitionTo`; `InventoryLevel.Reserve`.
+  `internal/app/product/insertUseCase.go` and `updateUseCase.go` already call these.
 - `internal/domain/category.go` is a separate, already-shipped module — **out of
   scope** for this task. Do not touch `category.go` or `categoryRepo.go`.
 
 ## Goal
 
-Today every struct in `product.go`/`variant.go`/`inventory.go` is a pure data bag —
-zero methods. Business rules ("archived can't go back to draft directly", "SKU must
-be unique within a product") are re-implemented ad hoc inside use cases
-(`internal/app/product/*.go`) by reading/writing struct fields directly. This task adds
-a small, deliberately narrow set of constructors and mutation methods to the domain
-types so those rules live with the data and can be unit-tested without a mock
-repository, per `issue.md` Phase 4:
+Today `internal/domain/product.go` defines `Product` with three fields that only
+exist to serve *read* endpoints, not the create/update aggregate:
 
 ```go
-func NewProduct(handle, title string, categoryID int) (*Product, error)
-func (p *Product) AddVariant(v Variant) error   // enforces SKU uniqueness within the product
-func (p *Product) Archive() error               // enforces allowed status transitions
-func (p *Product) Restore() error               // enforces allowed status transitions
-func (s ProductStatus) CanTransitionTo(next ProductStatus) bool
-func (l *InventoryLevel) Reserve(qty int) error // rejects qty > AvailableQty or qty < 0
+type Product struct {
+	...
+	Thumbnail *ProductThumbnail `json:"thumbnail"`
+	...
+	Category  ProductCategory   `json:"category"`
+	Prices    ProductPrices     `json:"prices"`
+	...
+}
+```
+
+- `Category`/`Prices` are only ever populated by `productRepo.FindAll` (list) and
+  `Category` alone by `productRepo.findProductBy` (detail, used by `FindByID`/
+  `FindByHandle`) — see `internal/infrastructure/repository/productRepo.go:319-333`
+  and `:857-866`.
+- `Thumbnail` is only populated by `FindAll`.
+- Nothing sets any of the three when creating or updating a product
+  (`insertUseCase.go`, `updateUseCase.go` never touch them).
+
+This means every write path (`Create`, `Update`, `Archive`, `Restore`, and every
+option/variant/media use case that loads a product via `productRepo.FindByID` just
+to check it exists) carries three read-only fields it never uses. This task moves
+those fields off `Product` and onto two new **read-model** types that wrap it:
+
+```go
+// ProductListItem — the shape returned by GET /products (one row of the list).
+type ProductListItem struct {
+	Product
+	Category  ProductCategory
+	Prices    ProductPrices
+	Thumbnail *ProductThumbnail
+}
+
+// ProductDetail — the shape returned by GET /products/:id and GET /products/:handle.
+type ProductDetail struct {
+	Product
+	Category ProductCategory
+}
 ```
 
 By the end of this task:
-- The five methods/functions above exist on their respective types with unit tests.
-- `updateProductUc.Archive`/`Restore` (in `internal/app/product/updateUseCase.go`) call
-  `product.Archive()`/`product.Restore()` instead of unconditionally calling
-  `productRepo.UpdateStatus`.
-- `insertProductUc.Create` (in `internal/app/product/insertUseCase.go`) calls
-  `domain.NewProduct(...)` and `product.AddVariant(...)` instead of hand-building the
-  `domain.Product{...}` struct literal and appending to a local `variants` slice.
-- `InventoryLevel.Reserve` is added with a unit test but **no call site** — there is no
-  reservation feature wired up yet (only `domain.StockMoveReserve`/`StockMoveUnreserve`
-  constants exist, unused). Wiring it into a real reserve/unreserve flow is future work,
-  not part of this task.
+- `Product` no longer has `Category`, `Prices`, or `Thumbnail` fields.
+- `ProductRepository.FindAll` returns `[]ProductListItem` instead of `[]Product`.
+- `ProductRepository.FindByID`/`FindByHandle` return `ProductDetail` instead of
+  `Product`.
+- `QueryProductUseCase.GetByID`/`GetByHandle` return `domain.ProductDetail`.
+- `PaginatedProducts.Data` is `[]ProductListItem`.
+- The HTTP response JSON shape for `GET /products` and `GET /products/:id` is
+  **byte-for-byte unchanged** — this is a type-level refactor, not a behavior change.
+  `Category`/`Prices`/`Thumbnail` keep the exact same `json:"..."` tags they have
+  today, just moved to the new wrapper types.
 
-This task does NOT include: splitting `ProductRepository` (Phase 6), separating read
-models like `ProductCategory`/`PaginatedProducts` (Phase 5), value objects like
-`Quantity`/`Money` (Phase 7), or adding aggregate methods to `Variant`,
-`ProductOption`, or `VariantMedia` — those are out of scope. Do not touch
+### Why this is lower-risk than it sounds
+
+`Product` is embedded (not referenced) in both new types, so every existing call
+site that does `product.ID`, `product.Status`, `product.Archive()`, etc. keeps
+compiling unchanged — Go promotes embedded fields and methods automatically. Go
+also promotes **pointer-receiver methods on a value-embedded field** as long as the
+outer value is addressable, which every `product, err := uc.productRepo.FindByID(...)`
+local variable is. Concretely:
+
+- `internal/app/product/updateUseCase.go`'s `Archive`/`Restore` call
+  `product.Archive()` / `product.Restore()` on the result of `FindByID`. Once
+  `FindByID` returns `ProductDetail`, `product.Archive()` still works with **zero
+  code changes** in that file, because `ProductDetail` embeds `Product` by value and
+  `Archive`/`Restore` have pointer receivers.
+- `internal/app/product/mediaUseCase.go`, `optionUseCase.go`, `variantUseCase.go` all
+  call `uc.productRepo.FindByID(...)` and only ever read `product.Options` /
+  `product.Variants` afterward — these also need **zero code changes**.
+
+Only three places actually need edits: the domain interfaces/types, the Postgres
+repository implementation, and the HTTP handler's detail-view mapping function
+(`toProductDetailData`) plus its test fakes. This task does NOT include: splitting
+`ProductRepository` (Phase 6), value objects like `Quantity`/`Money` (Phase 7), or
+any change to `ListProductParams`'s fields (it's already a plain filter/pagination
+struct with no domain-object fields — moving it to the same file as the new types is
+a pure organizational move, not a behavioral one). Do not touch
 `internal/domain/category.go`, `categoryRepo.go`, or anything under
 `internal/app/category/`.
 
 ## Step-by-step
 
-### 1. Add the new error
+### 1. Create the read-model file
 
-Open `internal/domain/product.go`. In the `var (...)` error block (currently lines
-92-135), add one new sentinel error next to `ErrProductInvalidStatus`:
-
-```go
-// ErrProductInvalidStatusTransition is returned when a status change is not
-// allowed from the product's current status (e.g. archived -> draft).
-ErrProductInvalidStatusTransition = errors.New("invalid product status transition")
-```
-
-Open `internal/domain/inventory.go` and add two new errors after the `StockMoveType`
-const block:
+Create `internal/domain/product_readmodel.go`:
 
 ```go
-var (
-	// ErrInvalidQuantity is returned when a negative quantity is passed to an
-	// inventory-mutating method.
-	ErrInvalidQuantity = errors.New("quantity must not be negative")
-	// ErrInsufficientStock is returned when a reservation would exceed the
-	// currently available quantity.
-	ErrInsufficientStock = errors.New("insufficient available stock")
-)
-```
+package domain
 
-You'll need to add `"errors"` to `inventory.go`'s import block (it currently only
-imports `"time"` and `"github.com/google/uuid"`).
+// ProductListItem is the read-model shape for a single row returned by
+// GET /products. It embeds Product for the fields shared with the write
+// aggregate and adds projections that only exist at query time: the joined
+// category reference, the computed min/max variant price range, and the
+// primary gallery image.
+type ProductListItem struct {
+	Product
+	Category  ProductCategory   `json:"category"`
+	Prices    ProductPrices     `json:"prices"`
+	Thumbnail *ProductThumbnail `json:"thumbnail"`
+}
 
-Build after this step: `go build ./...` must still pass (new unused errors are fine in
-Go, they're package-level vars).
-
-### 2. Add `ProductStatus.CanTransitionTo`
-
-In `internal/domain/product.go`, directly below the `ProductStatus` const block
-(after line 19), add:
-
-```go
-// CanTransitionTo reports whether transitioning from s to next is allowed.
-// Allowed transitions: draft -> active, draft -> archived, active -> archived,
-// archived -> active (restore). All other transitions, including transitioning
-// to the same status, are rejected.
-func (s ProductStatus) CanTransitionTo(next ProductStatus) bool {
-	switch s {
-	case ProductStatusDraft:
-		return next == ProductStatusActive || next == ProductStatusArchived
-	case ProductStatusActive:
-		return next == ProductStatusArchived
-	case ProductStatusArchived:
-		return next == ProductStatusActive
-	default:
-		return false
-	}
+// ProductDetail is the read-model shape for a single product returned by
+// GET /products/:id and GET /products/:handle. It embeds Product and adds
+// the joined category reference consumed by the detail view.
+type ProductDetail struct {
+	Product
+	Category ProductCategory `json:"category"`
 }
 ```
 
-This is the single source of truth for valid transitions — do not duplicate this
-switch anywhere else.
+Do not move `ProductCategory`, `ProductPrices`, `ProductThumbnail`,
+`ListProductParams`, or `PaginatedProducts` into this file yet — that happens in
+step 2, once you're editing `product.go` anyway, to keep this step a pure addition.
 
-### 3. Add `Product.Archive()` and `Product.Restore()`
+Build after this step: `go build ./...` must still pass (the new types are unused
+so far, which is fine).
 
-Directly below the `Product` struct definition in `internal/domain/product.go`
-(after the closing brace, before `ProductCategory`), add:
+### 2. Remove the read-only fields from `Product`, relocate the shape types
 
-```go
-// Archive transitions the product to the archived status. It mutates p in
-// place and returns ErrProductInvalidStatusTransition if the current status
-// cannot transition to archived.
-func (p *Product) Archive() error {
-	if !p.Status.CanTransitionTo(ProductStatusArchived) {
-		return ErrProductInvalidStatusTransition
-	}
-	p.Status = ProductStatusArchived
-	return nil
-}
+Open `internal/domain/product.go`.
 
-// Restore transitions an archived product back to active. It mutates p in
-// place and returns ErrProductInvalidStatusTransition if the current status
-// cannot transition to active.
-func (p *Product) Restore() error {
-	if !p.Status.CanTransitionTo(ProductStatusActive) {
-		return ErrProductInvalidStatusTransition
-	}
-	p.Status = ProductStatusActive
-	return nil
-}
-```
-
-These only mutate the in-memory value — they do not talk to the repository. Wiring
-into the use case is step 6.
-
-### 4. Add `NewProduct`
-
-Still in `internal/domain/product.go`, add this near the bottom of the file (or
-directly after the `Product` struct + its new methods):
+**2a.** In the `Product` struct (currently lines 40-56), delete the `Thumbnail`,
+`Category`, and `Prices` fields:
 
 ```go
-// NewProduct constructs a new draft product with a generated ID, validating the
-// minimal set of fields required for any product to exist. Callers set
-// Description/Vendor/Options/Media directly on the returned value, and use
-// AddVariant to attach variants.
-func NewProduct(handle, title string, categoryID int) (*Product, error) {
-	if strings.TrimSpace(handle) == "" || strings.TrimSpace(title) == "" {
-		return nil, ErrProductInvalidInput
-	}
-	if categoryID <= 0 {
-		return nil, ErrProductInvalidInput
-	}
-	return &Product{
-		ID:         uuid.Must(uuid.NewV7()),
-		Handle:     handle,
-		Title:      title,
-		Status:     ProductStatusDraft,
-		CategoryID: categoryID,
-	}, nil
+// before
+type Product struct {
+	ID          uuid.UUID         `json:"id"`
+	Handle      string            `json:"handle"`
+	Title       string            `json:"title"`
+	Status      ProductStatus     `json:"status"`
+	Thumbnail   *ProductThumbnail `json:"thumbnail"`
+	Description *string           `json:"description,omitempty"`
+	Vendor      *string           `json:"vendor,omitempty"`
+	CategoryID  int               `json:"-"`
+	Category    ProductCategory   `json:"category"`
+	Prices      ProductPrices     `json:"prices"`
+	Options     []ProductOption   `json:"options,omitempty"`
+	Variants    []Variant         `json:"variants,omitempty"`
+	Media       []ProductMedia    `json:"media,omitempty"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   *time.Time        `json:"updated_at,omitempty"`
+}
+
+// after
+type Product struct {
+	ID          uuid.UUID       `json:"id"`
+	Handle      string          `json:"handle"`
+	Title       string          `json:"title"`
+	Status      ProductStatus   `json:"status"`
+	Description *string         `json:"description,omitempty"`
+	Vendor      *string         `json:"vendor,omitempty"`
+	CategoryID  int             `json:"-"`
+	Options     []ProductOption `json:"options,omitempty"`
+	Variants    []Variant       `json:"variants,omitempty"`
+	Media       []ProductMedia  `json:"media,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   *time.Time      `json:"updated_at,omitempty"`
 }
 ```
 
-Add `"strings"` to `product.go`'s import block (it currently imports `"context"`,
-`"errors"`, `"time"`, `github.com/google/uuid`, `github.com/shopspring/decimal`).
+**2b.** Cut the `ProductCategory`, `ProductPrices`, and `ProductThumbnail` type
+definitions (currently lines 115-138, right after `AddVariant`) out of `product.go`
+and paste them into `internal/domain/product_readmodel.go` from step 1, above the
+`ProductListItem`/`ProductDetail` types you already added there. Keep their doc
+comments as-is — they're still accurate, just describe read-model types now instead
+of `Product` fields.
 
-### 5. Add `Product.AddVariant`
-
-Directly below `NewProduct`, add:
+**2c.** Cut `ListProductParams` and `PaginatedProducts` (currently lines 242-263)
+out of `product.go` and paste them into `product_readmodel.go` too, directly below
+the types from 2b. Update `PaginatedProducts.Data`'s type while you're there:
 
 ```go
-// AddVariant appends v to the product's variant list, enforcing that its SKU
-// (if set) does not duplicate an existing variant's SKU on this product. Empty
-// SKUs are not checked for uniqueness — multiple variants may have no SKU.
-func (p *Product) AddVariant(v Variant) error {
-	if v.SKU != nil && strings.TrimSpace(*v.SKU) != "" {
-		for _, existing := range p.Variants {
-			if existing.SKU != nil && *existing.SKU == *v.SKU {
-				return ErrSKUAlreadyExists
+// before
+type PaginatedProducts struct {
+	Data       []Product `json:"data"`
+	Total      int       `json:"total"`
+	Page       int       `json:"page"`
+	PerPage    int       `json:"per_page"`
+	TotalPages int       `json:"total_pages"`
+}
+
+// after
+type PaginatedProducts struct {
+	Data       []ProductListItem `json:"data"`
+	Total      int               `json:"total"`
+	Page       int               `json:"page"`
+	PerPage    int               `json:"per_page"`
+	TotalPages int               `json:"total_pages"`
+}
+```
+
+Build after this step: `go build ./...` will **fail** — that's expected. You should
+see errors in `internal/infrastructure/repository/productRepo.go` (setting
+`.Category`/`.Prices`/`.Thumbnail` on a `domain.Product` that no longer has those
+fields) and possibly in test files. Do not fix those yet; steps 3-6 do that in order
+so you can tell which change fixed which error.
+
+### 3. Update the two interfaces in `product.go`
+
+**3a.** `ProductRepository` (currently lines 311-360): change `FindAll`,
+`FindByID`, `FindByHandle`:
+
+```go
+// before
+FindAll(ctx context.Context, params ListProductParams) ([]Product, int, error)
+FindByID(ctx context.Context, id uuid.UUID) (Product, error)
+FindByHandle(ctx context.Context, handle string) (Product, error)
+
+// after
+FindAll(ctx context.Context, params ListProductParams) ([]ProductListItem, int, error)
+FindByID(ctx context.Context, id uuid.UUID) (ProductDetail, error)
+FindByHandle(ctx context.Context, handle string) (ProductDetail, error)
+```
+
+**3b.** `QueryProductUseCase` (currently lines 265-270): change `GetByID`/
+`GetByHandle`:
+
+```go
+// before
+type QueryProductUseCase interface {
+	FindAll(ctx context.Context, params ListProductParams) (PaginatedProducts, error)
+	GetByID(ctx context.Context, id uuid.UUID) (Product, error)
+	GetByHandle(ctx context.Context, handle string) (Product, error)
+}
+
+// after
+type QueryProductUseCase interface {
+	FindAll(ctx context.Context, params ListProductParams) (PaginatedProducts, error)
+	GetByID(ctx context.Context, id uuid.UUID) (ProductDetail, error)
+	GetByHandle(ctx context.Context, handle string) (ProductDetail, error)
+}
+```
+
+Leave every other method on both interfaces untouched — this task does not split
+`ProductRepository` (that's Phase 6).
+
+### 4. Update `internal/app/product/queryUseCase.go`
+
+Open the file. `GetByID`/`GetByHandle`'s declared return type must match the
+interface change from step 3b:
+
+```go
+// before
+func (uc *queryProductUc) GetByID(ctx context.Context, id uuid.UUID) (domain.Product, error) {
+	data, err := uc.productRepo.FindByID(ctx, id)
+	if err != nil {
+		if err != domain.ErrProductNotFound {
+			logger.L(ctx).Error("find product by id failed", zap.Error(err), zap.String("id", id.String()))
+		}
+		return domain.Product{}, err
+	}
+	...
+}
+
+// after
+func (uc *queryProductUc) GetByID(ctx context.Context, id uuid.UUID) (domain.ProductDetail, error) {
+	data, err := uc.productRepo.FindByID(ctx, id)
+	if err != nil {
+		if err != domain.ErrProductNotFound {
+			logger.L(ctx).Error("find product by id failed", zap.Error(err), zap.String("id", id.String()))
+		}
+		return domain.ProductDetail{}, err
+	}
+	...
+}
+```
+
+Do the same for `GetByHandle` (change both `domain.Product` occurrences to
+`domain.ProductDetail`). `FindAll` needs **no changes** — it already just forwards
+whatever `uc.productRepo.FindAll` returns into `PaginatedProducts.Data`, and both
+sides of that assignment are now `[]domain.ProductListItem`.
+
+Build after this step: still expected to fail in `productRepo.go` and possibly
+handler/test files — keep going.
+
+### 5. Update `internal/infrastructure/repository/productRepo.go`
+
+This is the step with real logic changes. Go slowly.
+
+**5a. `FindAll`** (currently lines 208-338). Change the signature and the loop body
+that builds the result slice:
+
+```go
+// before
+func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductParams) ([]domain.Product, int, error) {
+	...
+	products := make([]domain.Product, 0, len(listRows))
+	for _, row := range listRows {
+		p := row.Product.ToDomain()
+		if row.CategorySlug != nil {
+			p.Category.Slug = *row.CategorySlug
+		}
+		if row.CategoryName != nil {
+			p.Category.Name = *row.CategoryName
+		}
+		p.Prices.StartPrice = row.StartPrice
+		p.Prices.MaxPrice = row.MaxPrice
+		if row.ThumbnailURL != nil {
+			p.Thumbnail = &domain.ProductThumbnail{
+				Type:    *row.ThumbnailType,
+				URL:     *row.ThumbnailURL,
+				AltText: row.ThumbnailAltText,
 			}
 		}
-	}
-	p.Variants = append(p.Variants, v)
-	return nil
-}
-```
-
-Build after steps 2-5: `go build ./...` must pass — nothing calls these yet, but they
-must compile standalone.
-
-### 6. Add `InventoryLevel.Reserve`
-
-In `internal/domain/inventory.go`, directly below the `InventoryLevel` struct
-definition, add:
-
-```go
-// Reserve moves qty units from AvailableQty to ReservedQty. It returns
-// ErrInvalidQuantity if qty is negative, or ErrInsufficientStock if qty
-// exceeds the currently available quantity. On success it mutates l in place.
-func (l *InventoryLevel) Reserve(qty int) error {
-	if qty < 0 {
-		return ErrInvalidQuantity
-	}
-	if qty > l.AvailableQty {
-		return ErrInsufficientStock
-	}
-	l.AvailableQty -= qty
-	l.ReservedQty += qty
-	return nil
-}
-```
-
-There is intentionally no caller for this method yet (see "Goal" above) — do not
-invent a call site or force it into `AdjustVariantStock`, which is a different
-operation (sets an absolute target quantity, not a reservation).
-
-### 7. Wire `Archive`/`Restore` into the use case
-
-Open `internal/app/product/updateUseCase.go`. Replace both methods:
-
-```go
-func (uc *updateProductUc) Archive(ctx context.Context, id uuid.UUID) error {
-
-	product, err := uc.productRepo.FindByID(ctx, id)
-	if err != nil {
-		logger.L(ctx).Error("archive product failed", zap.Error(err), zap.String("id", id.String()))
-		return err
+		products = append(products, p)
 	}
 
-	if err := product.Archive(); err != nil {
-		logger.L(ctx).Error("archive product failed", zap.Error(err), zap.String("id", id.String()))
-		return err
-	}
-
-	if err := uc.productRepo.UpdateStatus(ctx, id, product.Status); err != nil {
-		logger.L(ctx).Error("archive product failed", zap.Error(err), zap.String("id", id.String()))
-		return err
-	}
-
-	logger.L(ctx).Info("[INFO] Success archive product", zap.String("id", id.String()))
-
-	return nil
+	return products, total, nil
 }
 
-func (uc *updateProductUc) Restore(ctx context.Context, id uuid.UUID) error {
-
-	product, err := uc.productRepo.FindByID(ctx, id)
-	if err != nil {
-		logger.L(ctx).Error("restore product failed", zap.Error(err), zap.String("id", id.String()))
-		return err
-	}
-
-	if err := product.Restore(); err != nil {
-		logger.L(ctx).Error("restore product failed", zap.Error(err), zap.String("id", id.String()))
-		return err
-	}
-
-	if err := uc.productRepo.UpdateStatus(ctx, id, product.Status); err != nil {
-		logger.L(ctx).Error("restore product failed", zap.Error(err), zap.String("id", id.String()))
-		return err
-	}
-
-	logger.L(ctx).Info("[INFO] Success restore product", zap.String("id", id.String()))
-
-	return nil
-}
-```
-
-`domain.ProductRepository` already has `FindByID` — no interface change needed.
-
-Note the behavior change this introduces: calling Archive on an already-archived
-product (or Restore on a non-archived product) now returns
-`ErrProductInvalidStatusTransition` instead of silently succeeding. Check
-`internal/delivery/http` for the handlers calling `Archive`/`Restore` and confirm they
-propagate use-case errors to an HTTP status the same way other domain errors do (grep
-for `ErrProductNotFound` or `ErrProductInvalidStatus` in the handler package to see the
-existing error-to-status mapping pattern, and add a case for the new error following
-the same pattern — likely 409 Conflict, matching how `ErrSKUAlreadyExists` or similar
-conflicts are mapped).
-
-`internal/app/product/lifecycleUseCase_test.go` already has tests for
-Archive/Restore — run it and update any test that asserted the old "always succeeds"
-behavior, or that mocks `productRepo` without stubbing `FindByID` for these paths.
-
-### 8. Wire `NewProduct` and `AddVariant` into `insertUseCase.go`
-
-Open `internal/app/product/insertUseCase.go`. This is the trickiest step — go slowly.
-
-**8a.** In `validateCreateInput`, delete the `seenSKUs` duplicate-SKU check (it becomes
-redundant with `AddVariant`), but keep the rest of the per-variant validation
-(Price/Weight nil check, Stock negative check):
-
-```go
-// before
-seenSKUs := make(map[string]struct{}, len(input.Variants))
-for _, v := range input.Variants {
-	if v.Price == nil || v.Weight == nil {
-		return domain.ErrProductInvalidInput
-	}
-	if v.Stock < 0 {
-		return domain.ErrProductInvalidInput
-	}
-	if v.SKU != nil && strings.TrimSpace(*v.SKU) != "" {
-		if _, dup := seenSKUs[*v.SKU]; dup {
-			return domain.ErrSKUAlreadyExists
+// after
+func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductParams) ([]domain.ProductListItem, int, error) {
+	...
+	products := make([]domain.ProductListItem, 0, len(listRows))
+	for _, row := range listRows {
+		item := domain.ProductListItem{Product: row.Product.ToDomain()}
+		if row.CategorySlug != nil {
+			item.Category.Slug = *row.CategorySlug
 		}
-		seenSKUs[*v.SKU] = struct{}{}
+		if row.CategoryName != nil {
+			item.Category.Name = *row.CategoryName
+		}
+		item.Prices.StartPrice = row.StartPrice
+		item.Prices.MaxPrice = row.MaxPrice
+		if row.ThumbnailURL != nil {
+			item.Thumbnail = &domain.ProductThumbnail{
+				Type:    *row.ThumbnailType,
+				URL:     *row.ThumbnailURL,
+				AltText: row.ThumbnailAltText,
+			}
+		}
+		products = append(products, item)
 	}
-}
 
-// after
-for _, v := range input.Variants {
-	if v.Price == nil || v.Weight == nil {
-		return domain.ErrProductInvalidInput
-	}
-	if v.Stock < 0 {
-		return domain.ErrProductInvalidInput
-	}
+	return products, total, nil
 }
 ```
 
-Also delete the handle/title/categoryID checks at the top of `validateCreateInput`
-(they become redundant with `NewProduct`, added next):
+Everything above the loop (query building, `pgx.CollectRows`) is unchanged — only
+the loop body and the two `[]domain.Product` occurrences in the signature/`make`
+call change.
 
-```go
-// delete these two blocks — NewProduct now enforces them
-if strings.TrimSpace(input.Handle) == "" || strings.TrimSpace(input.Title) == "" {
-	return domain.ErrProductInvalidInput
-}
-if input.CategoryID <= 0 {
-	return domain.ErrProductInvalidInput
-}
-```
-
-Leave the option-name checks and status-validity check in `validateCreateInput`
-untouched.
-
-**8b.** In `Create`, replace the `productID := uuid.Must(uuid.NewV7())` line (currently
-right after the `validateCreateInput` call) with a call to `domain.NewProduct`:
+**5b. `FindByID` / `FindByHandle`** (currently lines 341-352). Only the return type
+in the signature changes — the bodies just forward to `findProductBy`:
 
 ```go
 // before
-if err := validateCreateInput(input); err != nil {
-	return domain.Product{}, err
+func (r *productRepo) FindByID(ctx context.Context, id uuid.UUID) (domain.Product, error) {
+	defer metrics.ObserveDB("product", "find_by_id")(time.Now())
+	return r.findProductBy(ctx, "products.id = $1", pgUUID(id))
 }
 
-productID := uuid.Must(uuid.NewV7())
+func (r *productRepo) FindByHandle(ctx context.Context, handle string) (domain.Product, error) {
+	...
+}
 
 // after
-if err := validateCreateInput(input); err != nil {
-	return domain.Product{}, err
+func (r *productRepo) FindByID(ctx context.Context, id uuid.UUID) (domain.ProductDetail, error) {
+	defer metrics.ObserveDB("product", "find_by_id")(time.Now())
+	return r.findProductBy(ctx, "products.id = $1", pgUUID(id))
 }
 
-product, err := domain.NewProduct(input.Handle, input.Title, input.CategoryID)
-if err != nil {
-	return domain.Product{}, err
-}
-productID := product.ID
-```
-
-Everything below this (the options loop, media loop) already uses the local
-`productID` variable — no further change needed there.
-
-**8c.** In the variant-building loop, replace the final `variants = append(variants,
-domain.Variant{...})` with `product.AddVariant(...)`, and delete the now-unused
-`variants` slice declaration:
-
-```go
-// delete this line near the top of Create, alongside inventoryItems/stockMoves/inventoryLevels:
-variants := make([]domain.Variant, 0, len(input.Variants))
-
-// inside the `for _, v := range input.Variants` loop, replace:
-variants = append(variants, domain.Variant{
-	ID:        variantID,
-	ProductID: productID,
-	SKU:       v.SKU,
-	Barcode:   v.Barcode,
-	Title:     v.Title,
-	Price:     *v.Price,
-	Weight:    *v.Weight,
-	Options:   optsJSON,
-	IsDeleted: false,
-	Media:     variantMedia,
-})
-
-// with:
-if err := product.AddVariant(domain.Variant{
-	ID:        variantID,
-	ProductID: productID,
-	SKU:       v.SKU,
-	Barcode:   v.Barcode,
-	Title:     v.Title,
-	Price:     *v.Price,
-	Weight:    *v.Weight,
-	Options:   optsJSON,
-	IsDeleted: false,
-	Media:     variantMedia,
-}); err != nil {
-	return domain.Product{}, err
+func (r *productRepo) FindByHandle(ctx context.Context, handle string) (domain.ProductDetail, error) {
+	...
 }
 ```
 
-**8d.** After the loop, replace the manual `domain.Product{...}` struct literal with
-setting the remaining fields directly on `product`:
+**5c. `findProductBy`** (currently lines 825-887) — the private helper both of the
+above call. Change its return type and the local variable it builds:
 
 ```go
 // before
-status := domain.ProductStatusDraft
-if input.Status != nil {
-	status = *input.Status
-}
-
-product := domain.Product{
-	ID:          productID,
-	Handle:      input.Handle,
-	Title:       input.Title,
-	Status:      status,
-	Description: input.Description,
-	Vendor:      input.Vendor,
-	CategoryID:  input.CategoryID,
-	Options:     options,
-	Variants:    variants,
-	Media:       media,
-}
-
-created, err := uc.productRepo.Create(ctx, domain.CreateProductParams{
-	Product:         product,
+func (r *productRepo) findProductBy(ctx context.Context, predicate string, arg interface{}) (domain.Product, error) {
 	...
+	row, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[productDetailRow])
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Product{}, domain.ErrProductNotFound
+		}
+		return domain.Product{}, err
+	}
+
+	product := row.Product.ToDomain()
+	if row.CategorySlug != nil {
+		product.Category.Slug = *row.CategorySlug
+	}
+	if row.CategoryName != nil {
+		product.Category.Name = *row.CategoryName
+	}
+	if row.CategoryId != nil {
+		product.Category.Id = *row.CategoryId
+	}
+
+	options, err := r.findProductOptions(ctx, product.ID)
+	if err != nil {
+		return domain.Product{}, err
+	}
+	product.Options = options
+
+	variants, err := r.findProductVariants(ctx, product.ID)
+	if err != nil {
+		return domain.Product{}, err
+	}
+	product.Variants = variants
+
+	media, err := r.findProductMedia(ctx, product.ID)
+	if err != nil {
+		return domain.Product{}, err
+	}
+	product.Media = media
+
+	return product, nil
+}
 
 // after
-if input.Status != nil {
-	product.Status = *input.Status
-}
-product.Description = input.Description
-product.Vendor = input.Vendor
-product.Options = options
-product.Media = media
-
-created, err := uc.productRepo.Create(ctx, domain.CreateProductParams{
-	Product:         *product,
+func (r *productRepo) findProductBy(ctx context.Context, predicate string, arg interface{}) (domain.ProductDetail, error) {
 	...
+	row, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[productDetailRow])
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ProductDetail{}, domain.ErrProductNotFound
+		}
+		return domain.ProductDetail{}, err
+	}
+
+	detail := domain.ProductDetail{Product: row.Product.ToDomain()}
+	if row.CategorySlug != nil {
+		detail.Category.Slug = *row.CategorySlug
+	}
+	if row.CategoryName != nil {
+		detail.Category.Name = *row.CategoryName
+	}
+	if row.CategoryId != nil {
+		detail.Category.Id = *row.CategoryId
+	}
+
+	options, err := r.findProductOptions(ctx, detail.ID)
+	if err != nil {
+		return domain.ProductDetail{}, err
+	}
+	detail.Options = options
+
+	variants, err := r.findProductVariants(ctx, detail.ID)
+	if err != nil {
+		return domain.ProductDetail{}, err
+	}
+	detail.Variants = variants
+
+	media, err := r.findProductMedia(ctx, detail.ID)
+	if err != nil {
+		return domain.ProductDetail{}, err
+	}
+	detail.Media = media
+
+	return detail, nil
+}
 ```
 
-Note `CreateProductParams.Product` is `domain.Product` (a value, not a pointer) — you
-must dereference `product` (`*product`) when building the params struct, since
-`NewProduct` returns `*Product`.
+Note `detail.ID`, `detail.Options`, `detail.Variants`, `detail.Media` all resolve to
+the embedded `Product`'s fields via promotion — you're not adding new fields to
+`ProductDetail`, just renaming the local variable from `product` to `detail` and
+changing its type. `findProductOptions`/`findProductVariants`/`findProductMedia`
+themselves are untouched — they take a `uuid.UUID` and don't know about `Product` or
+`ProductDetail` at all.
 
-Also double-check: the existing `err` variable name from
-`domain.NewProduct(...)` in step 8b is reused by `created, err :=
-uc.productRepo.Create(...)` later — since that line uses `:=` with a new variable
-(`created`) alongside `err`, this is fine in Go, but if you get a "no new variables on
-left side of :=" compile error anywhere, change that specific line's `err` reuse to
-match whatever the compiler flags.
+**5d.** Everything else in `productRepo.go` (`Create`, `UpdateHeader`,
+`AdjustVariantStock`, all the option/variant/media methods, `productListRow`,
+`productDetailRow`) is untouched. In particular, do **not** touch `Create` — it
+still builds and returns a plain `domain.Product`, which is correct: creating a
+product doesn't need category/price/thumbnail data.
 
-### 9. Build and fix compile errors
+Build after this step: `go build ./...` should now fail only in
+`internal/delivery/http/handler/product_handler.go` and possibly test files.
 
-```bash
-go build ./...
-```
+### 6. Update the handler
 
-Fix anything the compiler flags — most likely a leftover reference to the deleted
-`variants` local variable, or a mismatched `Product` vs `*Product` type at a call site
-in `insertUseCase.go`.
-
-### 10. Write unit tests
-
-Create `internal/domain/product_test.go`:
+Open `internal/delivery/http/handler/product_handler.go`. Only `toProductDetailData`
+needs a signature change — it's the only place that reads `p.Category` for a value
+now sourced from `ProductDetail` instead of `Product`:
 
 ```go
-package domain
+// before
+func toProductDetailData(p domain.Product) productDetailData {
 
-import (
-	"testing"
-
-	"github.com/stretchr/testify/assert" // check go.mod for the actual assertion lib used elsewhere in the repo; internal/app/product/*_test.go already has examples to copy the import/style from
-)
-
-func TestNewProduct(t *testing.T) {
-	p, err := NewProduct("my-handle", "My Title", 1)
-	assert.NoError(t, err)
-	assert.Equal(t, ProductStatusDraft, p.Status)
-	assert.NotEqual(t, [16]byte{}, [16]byte(p.ID))
-
-	_, err = NewProduct("", "My Title", 1)
-	assert.ErrorIs(t, err, ErrProductInvalidInput)
-
-	_, err = NewProduct("my-handle", "My Title", 0)
-	assert.ErrorIs(t, err, ErrProductInvalidInput)
-}
-
-func TestProductAddVariant(t *testing.T) {
-	p, _ := NewProduct("h", "t", 1)
-	sku := "SKU-1"
-
-	assert.NoError(t, p.AddVariant(Variant{SKU: &sku}))
-	assert.Len(t, p.Variants, 1)
-
-	err := p.AddVariant(Variant{SKU: &sku})
-	assert.ErrorIs(t, err, ErrSKUAlreadyExists)
-	assert.Len(t, p.Variants, 1) // rejected variant must not be appended
-
-	// nil/empty SKUs never collide with each other
-	assert.NoError(t, p.AddVariant(Variant{}))
-	assert.NoError(t, p.AddVariant(Variant{}))
-}
-
-func TestProductStatusCanTransitionTo(t *testing.T) {
-	cases := []struct {
-		from, to ProductStatus
-		want     bool
-	}{
-		{ProductStatusDraft, ProductStatusActive, true},
-		{ProductStatusDraft, ProductStatusArchived, true},
-		{ProductStatusActive, ProductStatusArchived, true},
-		{ProductStatusArchived, ProductStatusActive, true},
-		{ProductStatusActive, ProductStatusDraft, false},
-		{ProductStatusArchived, ProductStatusDraft, false},
-		{ProductStatusDraft, ProductStatusDraft, false},
-	}
-	for _, c := range cases {
-		assert.Equal(t, c.want, c.from.CanTransitionTo(c.to), "%s -> %s", c.from, c.to)
-	}
-}
-
-func TestProductArchiveRestore(t *testing.T) {
-	p, _ := NewProduct("h", "t", 1)
-
-	assert.NoError(t, p.Archive())
-	assert.Equal(t, ProductStatusArchived, p.Status)
-
-	assert.ErrorIs(t, p.Archive(), ErrProductInvalidStatusTransition)
-
-	assert.NoError(t, p.Restore())
-	assert.Equal(t, ProductStatusActive, p.Status)
-
-	assert.ErrorIs(t, p.Restore(), ErrProductInvalidStatusTransition)
-}
+// after
+func toProductDetailData(p domain.ProductDetail) productDetailData {
 ```
 
-Create `internal/domain/inventory_test.go`:
+The function body (currently lines 1590-1620+) does not need any other change: `p.ID`,
+`p.Handle`, `p.Category.Id`, `p.Category.Slug`, `p.Category.Name`, `p.Options`,
+`p.Variants` all still resolve correctly via embedding/promotion.
+
+Do **not** change `toProductData` (used for the create/update response) — it takes
+`domain.Product` and never reads `Category`/`Prices`/`Thumbnail`, so it's unaffected.
+Its two call sites (`toProductData(created)` from `insertUseCase.Create`,
+`toProductData(updated)` from `updateUseCase.Update`) still receive plain
+`domain.Product` values, since those use cases' return types didn't change.
+
+Build after this step: `go build ./...` should now pass for non-test code. Run
+`go vet ./...` too.
+
+### 7. Fix the test fakes
+
+**7a.** Open `internal/app/product/queryUseCase_test.go`. Update `fakeProductRepo`'s
+field types and the three methods this task touched:
 
 ```go
-package domain
+// field declarations — before
+findAllData   []domain.Product
+...
+findByIDData    domain.Product
 
-import "testing"
+// after
+findAllData   []domain.ProductListItem
+...
+findByIDData    domain.ProductDetail
+```
 
-func TestInventoryLevelReserve(t *testing.T) {
-	l := InventoryLevel{AvailableQty: 10, ReservedQty: 0}
+```go
+// before
+func (f *fakeProductRepo) FindAll(ctx context.Context, params domain.ListProductParams) ([]domain.Product, int, error) {
+	f.findAllParams = params
+	return f.findAllData, f.findAllTotal, f.findAllErr
+}
 
-	if err := l.Reserve(4); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func (f *fakeProductRepo) FindByID(ctx context.Context, id uuid.UUID) (domain.Product, error) {
+	if f.findByIDErr != nil {
+		return domain.Product{}, f.findByIDErr
 	}
-	if l.AvailableQty != 6 || l.ReservedQty != 4 {
-		t.Fatalf("got AvailableQty=%d ReservedQty=%d, want 6/4", l.AvailableQty, l.ReservedQty)
+	if f.findByIDData.ID != uuid.Nil {
+		return f.findByIDData, nil
 	}
+	return domain.Product{ID: id}, nil
+}
 
-	if err := l.Reserve(100); err != ErrInsufficientStock {
-		t.Fatalf("got %v, want ErrInsufficientStock", err)
+func (f *fakeProductRepo) FindByHandle(ctx context.Context, handle string) (domain.Product, error) {
+	if f.findByHandleErr != nil {
+		return domain.Product{}, f.findByHandleErr
 	}
-	if err := l.Reserve(-1); err != ErrInvalidQuantity {
-		t.Fatalf("got %v, want ErrInvalidQuantity", err)
+	return domain.Product{Handle: handle}, nil
+}
+
+// after
+func (f *fakeProductRepo) FindAll(ctx context.Context, params domain.ListProductParams) ([]domain.ProductListItem, int, error) {
+	f.findAllParams = params
+	return f.findAllData, f.findAllTotal, f.findAllErr
+}
+
+func (f *fakeProductRepo) FindByID(ctx context.Context, id uuid.UUID) (domain.ProductDetail, error) {
+	if f.findByIDErr != nil {
+		return domain.ProductDetail{}, f.findByIDErr
 	}
+	if f.findByIDData.ID != uuid.Nil {
+		return f.findByIDData, nil
+	}
+	return domain.ProductDetail{Product: domain.Product{ID: id}}, nil
+}
+
+func (f *fakeProductRepo) FindByHandle(ctx context.Context, handle string) (domain.ProductDetail, error) {
+	if f.findByHandleErr != nil {
+		return domain.ProductDetail{}, f.findByHandleErr
+	}
+	return domain.ProductDetail{Product: domain.Product{Handle: handle}}, nil
 }
 ```
 
-Before writing these, check `go.mod` and an existing test file (e.g.
-`internal/app/product/lifecycleUseCase_test.go`) to see which assertion library the
-repo actually uses (`testify` vs stdlib) and match that style instead of guessing —
-the `product_test.go` example above uses `testify/assert`; if the repo doesn't already
-depend on it, use plain stdlib `t.Fatalf`/`if got != want` checks like the
-`inventory_test.go` example instead, to avoid adding a new dependency for this task.
+**7b.** Fix the three test functions that construct `findAllData` with the old
+element type — `TestQueryProductUseCase_FindAll_AppliesDefaults`,
+`TestQueryProductUseCase_FindAll_ComputesTotalPages`, and
+`TestQueryProductUseCase_FindAll_PassesFiltersThrough` each have a line like:
 
-### 11. Verify
+```go
+// before
+findAllData:  []domain.Product{{}},   // or []domain.Product{{}, {}}
+
+// after
+findAllData:  []domain.ProductListItem{{}},   // or []domain.ProductListItem{{}, {}}
+```
+
+Everything else in this test file (`got.ID`, `got.Handle` assertions in
+`TestQueryProductUseCase_GetByID_ReturnsProduct` /
+`TestQueryProductUseCase_GetByHandle_ReturnsProduct`) needs **no changes** — those
+fields resolve the same way through the embedded `Product`.
+
+**7c.** Open `internal/delivery/http/handler/product_handler_test.go`. Two tests
+construct a `domain.Product{...}` literal with a `Category` field directly —
+that field no longer exists on `Product`, so these need to wrap in `ProductDetail`/
+`ProductListItem`:
+
+```go
+// TestToProductDetailData_CategoryAndStock — before
+p := domain.Product{
+	ID:       uuid.New(),
+	Handle:   "ergonomic-cotton-hoodie",
+	Title:    "Ergonomic Cotton Hoodie",
+	Status:   domain.ProductStatusActive,
+	Category: domain.ProductCategory{Slug: "apparel", Name: "Apparel"},
+	Variants: []domain.Variant{ ... },
+}
+
+// after
+p := domain.ProductDetail{
+	Product: domain.Product{
+		ID:       uuid.New(),
+		Handle:   "ergonomic-cotton-hoodie",
+		Title:    "Ergonomic Cotton Hoodie",
+		Status:   domain.ProductStatusActive,
+		Variants: []domain.Variant{ ... },
+	},
+	Category: domain.ProductCategory{Slug: "apparel", Name: "Apparel"},
+}
+```
+
+Apply the same wrap-in-`ProductDetail` change to
+`TestToProductDetailData_JSONOmitsCategoryID`'s literal.
+
+`TestProductListJSON_CategoryAndPrices` marshals a `domain.Product` directly (not
+through `toProductDetailData`) to assert on the list JSON shape — since list items
+are no longer plain `Product`, change what it builds and marshals:
+
+```go
+// before
+p := domain.Product{
+	ID:       uuid.New(),
+	Handle:   "ergonomic-cotton-hoodie",
+	Title:    "Ergonomic Cotton Hoodie",
+	Category: domain.ProductCategory{Slug: "apparel", Name: "Apparel"},
+	Prices:   domain.ProductPrices{StartPrice: decimal.NewFromFloat(29.99), MaxPrice: decimal.NewFromFloat(59.99)},
+}
+raw, err := json.Marshal(p)
+
+// after
+item := domain.ProductListItem{
+	Product: domain.Product{
+		ID:     uuid.New(),
+		Handle: "ergonomic-cotton-hoodie",
+		Title:  "Ergonomic Cotton Hoodie",
+	},
+	Category: domain.ProductCategory{Slug: "apparel", Name: "Apparel"},
+	Prices:   domain.ProductPrices{StartPrice: decimal.NewFromFloat(29.99), MaxPrice: decimal.NewFromFloat(59.99)},
+}
+raw, err := json.Marshal(item)
+```
+
+The rest of that test (the `strings.Contains` assertions) needs no changes — the
+expected JSON substrings (`"category"`, `"slug":"apparel"`, `"prices"`,
+`"startPrice"`, etc.) are unchanged, since the field tags didn't change, only which
+struct they live on.
+
+### 8. Build and verify
 
 ```bash
 go build ./...
@@ -595,54 +685,63 @@ go vet ./...
 go test ./...
 ```
 
-All must pass. Then also run:
+All must pass. Then also run, and read the output rather than just the pass/fail
+line:
 
 ```bash
 go test ./internal/domain/... -v
 go test ./internal/app/product/... -v
+go test ./internal/delivery/http/handler/... -v
 ```
 
-and read through the `product` package's test output specifically — `insertUseCase.go`
-and `updateUseCase.go` changed behavior in ways existing tests may assert against (e.g.
-a test that called `Archive` twice expecting no error will now need to expect
-`ErrProductInvalidStatusTransition` on the second call).
+If anything else fails to compile that isn't covered above, it's almost certainly
+another spot constructing a `domain.Product{...}` literal with `Category`/`Prices`/
+`Thumbnail` set — grep for those three field names across `internal/` to be sure you
+caught every occurrence:
 
-### 12. Manual sanity check
+```bash
+grep -rn "Category:\|Prices:\|Thumbnail:" internal/ --include=*.go
+```
+
+### 9. Manual sanity check
 
 Start the server (`air` or `go run cmd/main.go`) and exercise:
-- `POST /api/v1/products` with a body containing two variants that share the same SKU
-  — must now fail with the SKU-conflict error (same error, same HTTP status as before;
-  only the code path that produces it changed).
-- `POST /api/v1/products/:id/archive` (or whatever the actual route is — check
-  `internal/delivery/http/router.go`) called twice in a row — the second call must
-  return a clear error instead of silently succeeding.
-- `POST /api/v1/products/:id/restore` on a non-archived product — must return a clear
-  error.
-- A normal create → archive → restore happy path — must behave exactly as before.
+- `GET /api/v1/products` — response `data[]` items must still contain `category`,
+  `prices` (with `startPrice`/`maxPrice`), and `thumbnail`, and must still omit
+  `category_id`. Compare against the response shape before this change (or against
+  `TestProductListJSON_CategoryAndPrices`'s assertions) — it must be identical.
+- `GET /api/v1/products/:id` and `GET /api/v1/products/:handle` — response `data`
+  must still contain `category` (with `id`/`slug`/`name`... check
+  `productCategoryData` in the handler for the exact exposed shape) and must still
+  omit `category_id`.
+- `POST /api/v1/products` (create) and `PATCH /api/v1/products/:id` (update) —
+  responses are built via `toProductData`, untouched by this task; confirm they
+  still look the same as before.
+- Archive → Restore a product (exercises `updateUseCase.go`, which calls
+  `productRepo.FindByID` and then `product.Archive()`/`product.Restore()` on the
+  result) — must behave exactly as before Phase 5, since that code path needed zero
+  edits.
 
 ## Notes for whoever picks this up
 
-- Resist the urge to also refactor `variantUseCase.go`'s standalone `Create`/
-  `BulkCreate` (adding variants to an *existing* product, not at product-creation
-  time) to use `Product.AddVariant`. Doing that correctly requires loading the full
-  product with its current variants first (an extra repository round trip that doesn't
-  happen today), which is a behavior/performance change, not a mechanical one. Leave it
-  as-is; it can be tackled as its own follow-up once this phase is verified stable.
-- Don't wire `InventoryLevel.Reserve` into `AdjustVariantStock` or any existing
-  endpoint. `AdjustVariantStock` sets an absolute target quantity (used by variant
-  create/update to set initial/new stock); `Reserve` models moving already-available
-  stock into a reserved state for an order, which isn't a feature this codebase has an
-  endpoint for yet. Adding one is out of scope.
-- Don't add more transitions to `CanTransitionTo` than the five listed in step 2 unless
-  a real product requirement calls for it (e.g. "active -> draft" was deliberately left
-  out — there was no existing code path that did this before this task, so allowing it
-  now would be scope creep, not a bug fix).
-- If you find another place in `internal/app/product/` that duplicates the SKU-dup or
-  status-transition logic this task centralizes, it's fine to point it at the new
-  domain method in this same PR — but don't go looking for more than what steps 7-8
-  already covered; a broader sweep is Phase 6/7 territory.
-- Keep `NewProduct`/`AddVariant`/`Archive`/`Restore`/`Reserve` free of any repository or
-  context.Context dependency — they must stay pure, dependency-free functions/methods
-  so they stay trivially unit-testable. If a rule you're asked to add needs to check
-  something only the database knows (e.g. "handle is unique store-wide"), that check
-  stays at the use-case/repository layer, not in these methods.
+- Resist the temptation to also give `ProductListItem`/`ProductDetail` their own
+  constructors or validation — they're pure read-model wrappers assembled by the
+  repository from query results, not aggregates with invariants. Nothing about them
+  needs to be "valid" independent of what the SQL query returned.
+- Don't try to unify `ProductListItem` and `ProductDetail` into one type "since
+  they're similar." They intentionally diverge (list has `Prices`/`Thumbnail`,
+  detail doesn't) because they're populated by two different queries with two
+  different costs — `FindAll`'s query joins a price-aggregation subquery per row,
+  which `findProductBy` doesn't need for a single-product fetch. Collapsing them
+  would force one query to do unnecessary work for the other's caller.
+- Don't move `InsertProductUseCase`, `UpdateProductUseCase`, or their input types —
+  they're already correctly scoped to the write side and don't reference the three
+  fields this task removes.
+- If you find another place outside what steps 5-7 covered that reads
+  `product.Category`/`.Prices`/`.Thumbnail` off a `domain.Product` (as opposed to a
+  `ProductDetail`/`ProductListItem`), it means there's an undiscovered call site —
+  re-run the grep in step 8 rather than guessing; do not silently add the fields
+  back onto `Product` to make it compile.
+- This task does not change `internal/wire/container.go` — `NewProductQueryUseCase`,
+  `NewProductRepository`, etc. are constructed the same way; only the types flowing
+  through the interfaces they already return changed.

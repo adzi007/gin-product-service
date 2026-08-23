@@ -45,7 +45,7 @@ func TestUpdateProductUseCase_Update_PropagatesError(t *testing.T) {
 func TestUpdateProductUseCase_Archive(t *testing.T) {
 	id := uuid.New()
 	repo := &fakeProductRepo{
-		findByIDData: domain.Product{ID: id, Status: domain.ProductStatusDraft},
+		findByIDData: domain.ProductDetail{Product: domain.Product{ID: id, Status: domain.ProductStatusDraft}},
 	}
 	uc := NewProductUpdateUseCase(repo)
 
@@ -63,7 +63,7 @@ func TestUpdateProductUseCase_Archive(t *testing.T) {
 func TestUpdateProductUseCase_Archive_AlreadyArchived(t *testing.T) {
 	id := uuid.New()
 	repo := &fakeProductRepo{
-		findByIDData: domain.Product{ID: id, Status: domain.ProductStatusArchived},
+		findByIDData: domain.ProductDetail{Product: domain.Product{ID: id, Status: domain.ProductStatusArchived}},
 	}
 	uc := NewProductUpdateUseCase(repo)
 
@@ -76,7 +76,7 @@ func TestUpdateProductUseCase_Archive_AlreadyArchived(t *testing.T) {
 func TestUpdateProductUseCase_Restore(t *testing.T) {
 	id := uuid.New()
 	repo := &fakeProductRepo{
-		findByIDData: domain.Product{ID: id, Status: domain.ProductStatusArchived},
+		findByIDData: domain.ProductDetail{Product: domain.Product{ID: id, Status: domain.ProductStatusArchived}},
 	}
 	uc := NewProductUpdateUseCase(repo)
 
@@ -91,7 +91,7 @@ func TestUpdateProductUseCase_Restore(t *testing.T) {
 func TestUpdateProductUseCase_Restore_NotArchived(t *testing.T) {
 	id := uuid.New()
 	repo := &fakeProductRepo{
-		findByIDData: domain.Product{ID: id, Status: domain.ProductStatusActive},
+		findByIDData: domain.ProductDetail{Product: domain.Product{ID: id, Status: domain.ProductStatusActive}},
 	}
 	uc := NewProductUpdateUseCase(repo)
 
@@ -117,11 +117,13 @@ func TestDeleteProductUseCase_Purge(t *testing.T) {
 func TestOptionUseCase_Create_GeneratesIDsAndPosition(t *testing.T) {
 	productID := uuid.New()
 	repo := &fakeProductRepo{
-		findByIDData: domain.Product{
-			ID: productID,
-			Options: []domain.ProductOption{
-				{ID: uuid.New(), Position: 0},
-				{ID: uuid.New(), Position: 1},
+		findByIDData: domain.ProductDetail{
+			Product: domain.Product{
+				ID: productID,
+				Options: []domain.ProductOption{
+					{ID: uuid.New(), Position: 0},
+					{ID: uuid.New(), Position: 1},
+				},
 			},
 		},
 	}

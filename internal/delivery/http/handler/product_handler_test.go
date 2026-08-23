@@ -16,22 +16,24 @@ import (
 )
 
 func TestToProductDetailData_CategoryAndStock(t *testing.T) {
-	p := domain.Product{
-		ID:       uuid.New(),
-		Handle:   "ergonomic-cotton-hoodie",
-		Title:    "Ergonomic Cotton Hoodie",
-		Status:   domain.ProductStatusActive,
-		Category: domain.ProductCategory{Slug: "apparel", Name: "Apparel"},
-		Variants: []domain.Variant{
-			{
-				ID:    uuid.New(),
-				SKU:   strPtr("HOODIE-BLK-M"),
-				Price: decimal.NewFromFloat(59.99),
-				// Stock:   decimal.NewFromInt(25),
-				Stock:   25,
-				Options: []byte(`[{"option":"Color","value":"Black"}]`),
+	p := domain.ProductDetail{
+		Product: domain.Product{
+			ID:     uuid.New(),
+			Handle: "ergonomic-cotton-hoodie",
+			Title:  "Ergonomic Cotton Hoodie",
+			Status: domain.ProductStatusActive,
+			Variants: []domain.Variant{
+				{
+					ID:    uuid.New(),
+					SKU:   strPtr("HOODIE-BLK-M"),
+					Price: decimal.NewFromFloat(59.99),
+					// Stock:   decimal.NewFromInt(25),
+					Stock:   25,
+					Options: []byte(`[{"option":"Color","value":"Black"}]`),
+				},
 			},
 		},
+		Category: domain.ProductCategory{Slug: "apparel", Name: "Apparel"},
 	}
 
 	data := toProductDetailData(p)
@@ -57,15 +59,17 @@ func TestToProductDetailData_CategoryAndStock(t *testing.T) {
 }
 
 func TestToProductDetailData_JSONOmitsCategoryID(t *testing.T) {
-	p := domain.Product{
-		ID:       uuid.New(),
-		Handle:   "ergonomic-cotton-hoodie",
-		Title:    "Ergonomic Cotton Hoodie",
-		Status:   domain.ProductStatusActive,
-		Category: domain.ProductCategory{Slug: "apparel", Name: "Apparel"},
-		Variants: []domain.Variant{
-			{ID: uuid.New(), Price: decimal.NewFromFloat(59.99), Stock: 25, Options: []byte(`[]`)},
+	p := domain.ProductDetail{
+		Product: domain.Product{
+			ID:     uuid.New(),
+			Handle: "ergonomic-cotton-hoodie",
+			Title:  "Ergonomic Cotton Hoodie",
+			Status: domain.ProductStatusActive,
+			Variants: []domain.Variant{
+				{ID: uuid.New(), Price: decimal.NewFromFloat(59.99), Stock: 25, Options: []byte(`[]`)},
+			},
 		},
+		Category: domain.ProductCategory{Slug: "apparel", Name: "Apparel"},
 	}
 
 	raw, err := json.Marshal(toProductDetailData(p))
@@ -85,15 +89,17 @@ func TestToProductDetailData_JSONOmitsCategoryID(t *testing.T) {
 }
 
 func TestProductListJSON_CategoryAndPrices(t *testing.T) {
-	p := domain.Product{
-		ID:       uuid.New(),
-		Handle:   "ergonomic-cotton-hoodie",
-		Title:    "Ergonomic Cotton Hoodie",
+	item := domain.ProductListItem{
+		Product: domain.Product{
+			ID:     uuid.New(),
+			Handle: "ergonomic-cotton-hoodie",
+			Title:  "Ergonomic Cotton Hoodie",
+		},
 		Category: domain.ProductCategory{Slug: "apparel", Name: "Apparel"},
 		Prices:   domain.ProductPrices{StartPrice: decimal.NewFromFloat(29.99), MaxPrice: decimal.NewFromFloat(59.99)},
 	}
 
-	raw, err := json.Marshal(p)
+	raw, err := json.Marshal(item)
 	if err != nil {
 		t.Fatalf("marshal failed: %v", err)
 	}
@@ -125,19 +131,19 @@ func (f *fakeQueryProductUseCase) FindAll(ctx context.Context, params domain.Lis
 	return f.findAllResult, f.findAllErr
 }
 
-func (f *fakeQueryProductUseCase) GetByID(ctx context.Context, id uuid.UUID) (domain.Product, error) {
-	return domain.Product{}, nil
+func (f *fakeQueryProductUseCase) GetByID(ctx context.Context, id uuid.UUID) (domain.ProductDetail, error) {
+	return domain.ProductDetail{}, nil
 }
 
-func (f *fakeQueryProductUseCase) GetByHandle(ctx context.Context, handle string) (domain.Product, error) {
-	return domain.Product{}, nil
+func (f *fakeQueryProductUseCase) GetByHandle(ctx context.Context, handle string) (domain.ProductDetail, error) {
+	return domain.ProductDetail{}, nil
 }
 
 func TestProductHandler_Fetch_ParsesFilters(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	queryUC := &fakeQueryProductUseCase{
-		findAllResult: domain.PaginatedProducts{Data: []domain.Product{}},
+		findAllResult: domain.PaginatedProducts{Data: []domain.ProductListItem{}},
 	}
 	h := NewProductHandler(nil, queryUC, nil, nil, nil, nil, nil)
 

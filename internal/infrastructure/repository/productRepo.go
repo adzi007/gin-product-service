@@ -205,7 +205,7 @@ func (r *productRepo) Create(ctx context.Context, params domain.CreateProductPar
 // category reference and min/max variant prices, no nested options/variants/
 // media) matching the given filter, plus the total count of matching rows
 // before pagination.
-func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductParams) ([]domain.Product, int, error) {
+func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductParams) ([]domain.ProductListItem, int, error) {
 
 	defer metrics.ObserveDB("product", "find_all")(time.Now())
 
@@ -313,32 +313,32 @@ func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductPara
 		return nil, 0, err
 	}
 
-	products := make([]domain.Product, 0, len(listRows))
+	products := make([]domain.ProductListItem, 0, len(listRows))
 	for _, row := range listRows {
-		p := row.Product.ToDomain()
+		item := domain.ProductListItem{Product: row.Product.ToDomain()}
 		if row.CategorySlug != nil {
-			p.Category.Slug = *row.CategorySlug
+			item.Category.Slug = *row.CategorySlug
 		}
 		if row.CategoryName != nil {
-			p.Category.Name = *row.CategoryName
+			item.Category.Name = *row.CategoryName
 		}
-		p.Prices.StartPrice = row.StartPrice
-		p.Prices.MaxPrice = row.MaxPrice
+		item.Prices.StartPrice = row.StartPrice
+		item.Prices.MaxPrice = row.MaxPrice
 		if row.ThumbnailURL != nil {
-			p.Thumbnail = &domain.ProductThumbnail{
+			item.Thumbnail = &domain.ProductThumbnail{
 				Type:    *row.ThumbnailType,
 				URL:     *row.ThumbnailURL,
 				AltText: row.ThumbnailAltText,
 			}
 		}
-		products = append(products, p)
+		products = append(products, item)
 	}
 
 	return products, total, nil
 }
 
 // FindByID returns a fully hydrated product (options, variants, media) by UUID.
-func (r *productRepo) FindByID(ctx context.Context, id uuid.UUID) (domain.Product, error) {
+func (r *productRepo) FindByID(ctx context.Context, id uuid.UUID) (domain.ProductDetail, error) {
 
 	defer metrics.ObserveDB("product", "find_by_id")(time.Now())
 
@@ -346,7 +346,7 @@ func (r *productRepo) FindByID(ctx context.Context, id uuid.UUID) (domain.Produc
 }
 
 // FindByHandle returns a fully hydrated product (options, variants, media) by handle.
-func (r *productRepo) FindByHandle(ctx context.Context, handle string) (domain.Product, error) {
+func (r *productRepo) FindByHandle(ctx context.Context, handle string) (domain.ProductDetail, error) {
 
 	defer metrics.ObserveDB("product", "find_by_handle")(time.Now())
 
@@ -822,7 +822,7 @@ func (r *productRepo) FindOptionValueByID(ctx context.Context, valueID uuid.UUID
 // findProductBy loads a single products row (with its nested category
 // reference) plus its nested options, variants (with per-variant stock) and
 // media using separate read queries (no transaction needed for reads).
-func (r *productRepo) findProductBy(ctx context.Context, predicate string, arg interface{}) (domain.Product, error) {
+func (r *productRepo) findProductBy(ctx context.Context, predicate string, arg interface{}) (domain.ProductDetail, error) {
 
 	query := fmt.Sprintf(`
 		SELECT
@@ -843,47 +843,47 @@ func (r *productRepo) findProductBy(ctx context.Context, predicate string, arg i
 
 	rows, err := r.db.GetDb().Query(ctx, query, arg)
 	if err != nil {
-		return domain.Product{}, err
+		return domain.ProductDetail{}, err
 	}
 
 	row, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[productDetailRow])
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return domain.Product{}, domain.ErrProductNotFound
+			return domain.ProductDetail{}, domain.ErrProductNotFound
 		}
-		return domain.Product{}, err
+		return domain.ProductDetail{}, err
 	}
 
-	product := row.Product.ToDomain()
+	detail := domain.ProductDetail{Product: row.Product.ToDomain()}
 	if row.CategorySlug != nil {
-		product.Category.Slug = *row.CategorySlug
+		detail.Category.Slug = *row.CategorySlug
 	}
 	if row.CategoryName != nil {
-		product.Category.Name = *row.CategoryName
+		detail.Category.Name = *row.CategoryName
 	}
 	if row.CategoryId != nil {
-		product.Category.Id = *row.CategoryId
+		detail.Category.Id = *row.CategoryId
 	}
 
-	options, err := r.findProductOptions(ctx, product.ID)
+	options, err := r.findProductOptions(ctx, detail.ID)
 	if err != nil {
-		return domain.Product{}, err
+		return domain.ProductDetail{}, err
 	}
-	product.Options = options
+	detail.Options = options
 
-	variants, err := r.findProductVariants(ctx, product.ID)
+	variants, err := r.findProductVariants(ctx, detail.ID)
 	if err != nil {
-		return domain.Product{}, err
+		return domain.ProductDetail{}, err
 	}
-	product.Variants = variants
+	detail.Variants = variants
 
-	media, err := r.findProductMedia(ctx, product.ID)
+	media, err := r.findProductMedia(ctx, detail.ID)
 	if err != nil {
-		return domain.Product{}, err
+		return domain.ProductDetail{}, err
 	}
-	product.Media = media
+	detail.Media = media
 
-	return product, nil
+	return detail, nil
 }
 
 // findProductOptions loads product_options plus their nested option values.

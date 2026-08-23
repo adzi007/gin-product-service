@@ -12,11 +12,11 @@ import (
 
 type fakeProductRepo struct {
 	findAllParams domain.ListProductParams
-	findAllData   []domain.Product
+	findAllData   []domain.ProductListItem
 	findAllTotal  int
 	findAllErr    error
 
-	findByIDData    domain.Product
+	findByIDData    domain.ProductDetail
 	findByIDErr     error
 	findByHandleErr error
 
@@ -144,26 +144,26 @@ func (f *fakeProductRepo) Create(ctx context.Context, params domain.CreateProduc
 	return domain.Product{}, nil
 }
 
-func (f *fakeProductRepo) FindAll(ctx context.Context, params domain.ListProductParams) ([]domain.Product, int, error) {
+func (f *fakeProductRepo) FindAll(ctx context.Context, params domain.ListProductParams) ([]domain.ProductListItem, int, error) {
 	f.findAllParams = params
 	return f.findAllData, f.findAllTotal, f.findAllErr
 }
 
-func (f *fakeProductRepo) FindByID(ctx context.Context, id uuid.UUID) (domain.Product, error) {
+func (f *fakeProductRepo) FindByID(ctx context.Context, id uuid.UUID) (domain.ProductDetail, error) {
 	if f.findByIDErr != nil {
-		return domain.Product{}, f.findByIDErr
+		return domain.ProductDetail{}, f.findByIDErr
 	}
 	if f.findByIDData.ID != uuid.Nil {
 		return f.findByIDData, nil
 	}
-	return domain.Product{ID: id}, nil
+	return domain.ProductDetail{Product: domain.Product{ID: id}}, nil
 }
 
-func (f *fakeProductRepo) FindByHandle(ctx context.Context, handle string) (domain.Product, error) {
+func (f *fakeProductRepo) FindByHandle(ctx context.Context, handle string) (domain.ProductDetail, error) {
 	if f.findByHandleErr != nil {
-		return domain.Product{}, f.findByHandleErr
+		return domain.ProductDetail{}, f.findByHandleErr
 	}
-	return domain.Product{Handle: handle}, nil
+	return domain.ProductDetail{Product: domain.Product{Handle: handle}}, nil
 }
 
 func (f *fakeProductRepo) UpdateHeader(ctx context.Context, id uuid.UUID, input domain.UpdateProductInput) (domain.Product, error) {
@@ -409,7 +409,7 @@ var _ domain.QueryProductUseCase = (*queryProductUc)(nil)
 
 func TestQueryProductUseCase_FindAll_AppliesDefaults(t *testing.T) {
 	repo := &fakeProductRepo{
-		findAllData:  []domain.Product{{}},
+		findAllData:  []domain.ProductListItem{{}},
 		findAllTotal: 1,
 	}
 	uc := NewProductQueryUseCase(repo)
@@ -435,7 +435,7 @@ func TestQueryProductUseCase_FindAll_AppliesDefaults(t *testing.T) {
 
 func TestQueryProductUseCase_FindAll_ComputesTotalPages(t *testing.T) {
 	repo := &fakeProductRepo{
-		findAllData:  []domain.Product{{}, {}},
+		findAllData:  []domain.ProductListItem{{}, {}},
 		findAllTotal: 21,
 	}
 	uc := NewProductQueryUseCase(repo)
@@ -501,7 +501,7 @@ func TestQueryProductUseCase_GetByHandle_ReturnsProduct(t *testing.T) {
 }
 
 func TestQueryProductUseCase_FindAll_PassesFiltersThrough(t *testing.T) {
-	repo := &fakeProductRepo{findAllData: []domain.Product{{}}}
+	repo := &fakeProductRepo{findAllData: []domain.ProductListItem{{}}}
 	uc := NewProductQueryUseCase(repo)
 
 	_, err := uc.FindAll(context.Background(), domain.ListProductParams{

@@ -62,14 +62,14 @@ func (uc *queryProductUc) FindAll(ctx context.Context, params domain.ListProduct
 	return result, nil
 }
 
-func (uc *queryProductUc) GetByID(ctx context.Context, id uuid.UUID) (domain.Product, error) {
+func (uc *queryProductUc) GetByID(ctx context.Context, id uuid.UUID) (domain.ProductDetail, error) {
 
 	data, err := uc.productRepo.FindByID(ctx, id)
 	if err != nil {
 		if err != domain.ErrProductNotFound {
 			logger.L(ctx).Error("find product by id failed", zap.Error(err), zap.String("id", id.String()))
 		}
-		return domain.Product{}, err
+		return domain.ProductDetail{}, err
 	}
 
 	logger.L(ctx).Info("[INFO] Success get product by id", zap.String("id", id.String()))
@@ -77,14 +77,14 @@ func (uc *queryProductUc) GetByID(ctx context.Context, id uuid.UUID) (domain.Pro
 	return data, nil
 }
 
-func (uc *queryProductUc) GetByHandle(ctx context.Context, handle string) (domain.Product, error) {
+func (uc *queryProductUc) GetByHandle(ctx context.Context, handle string) (domain.ProductDetail, error) {
 
 	data, err := uc.productRepo.FindByHandle(ctx, handle)
 	if err != nil {
 		if err != domain.ErrProductNotFound {
 			logger.L(ctx).Error("find product by handle failed", zap.Error(err), zap.String("handle", handle))
 		}
-		return domain.Product{}, err
+		return domain.ProductDetail{}, err
 	}
 
 	logger.L(ctx).Info("[INFO] Success get product by handle", zap.String("handle", handle))

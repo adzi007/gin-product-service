@@ -22,11 +22,13 @@ func decPtr(f float64) *decimal.Decimal {
 func TestVariantUseCase_Create_GeneratesIDAndPosition(t *testing.T) {
 	productID := uuid.New()
 	repo := &fakeProductRepo{
-		findByIDData: domain.Product{
-			ID: productID,
-			Variants: []domain.Variant{
-				{ID: uuid.New(), Position: 0},
-				{ID: uuid.New(), Position: 1},
+		findByIDData: domain.ProductDetail{
+			Product: domain.Product{
+				ID: productID,
+				Variants: []domain.Variant{
+					{ID: uuid.New(), Position: 0},
+					{ID: uuid.New(), Position: 1},
+				},
 			},
 		},
 	}
@@ -78,10 +80,12 @@ func TestVariantUseCase_Create_ProductNotFound(t *testing.T) {
 func TestVariantUseCase_Create_InvalidOption(t *testing.T) {
 	productID := uuid.New()
 	repo := &fakeProductRepo{
-		findByIDData: domain.Product{
-			ID: productID,
-			Options: []domain.ProductOption{
-				{ID: uuid.New(), Name: "Color", Values: []domain.ProductOptionValue{{ID: uuid.New(), Value: "Black"}}},
+		findByIDData: domain.ProductDetail{
+			Product: domain.Product{
+				ID: productID,
+				Options: []domain.ProductOption{
+					{ID: uuid.New(), Name: "Color", Values: []domain.ProductOptionValue{{ID: uuid.New(), Value: "Black"}}},
+				},
 			},
 		},
 	}
@@ -100,9 +104,11 @@ func TestVariantUseCase_Create_InvalidOption(t *testing.T) {
 func TestVariantUseCase_BulkCreate_PositionsSequential(t *testing.T) {
 	productID := uuid.New()
 	repo := &fakeProductRepo{
-		findByIDData: domain.Product{
-			ID:       productID,
-			Variants: []domain.Variant{{ID: uuid.New(), Position: 0}},
+		findByIDData: domain.ProductDetail{
+			Product: domain.Product{
+				ID:       productID,
+				Variants: []domain.Variant{{ID: uuid.New(), Position: 0}},
+			},
 		},
 	}
 	uc := NewVariantUseCase(repo)

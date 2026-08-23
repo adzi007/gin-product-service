@@ -12,9 +12,11 @@ import (
 func TestMediaUseCase_Create_GeneratesIDsAndPositions(t *testing.T) {
 	productID := uuid.New()
 	repo := &fakeProductRepo{
-		findByIDData: domain.Product{
-			ID:    productID,
-			Media: []domain.ProductMedia{{ID: uuid.New(), Position: 0}},
+		findByIDData: domain.ProductDetail{
+			Product: domain.Product{
+				ID:    productID,
+				Media: []domain.ProductMedia{{ID: uuid.New(), Position: 0}},
+			},
 		},
 	}
 	uc := NewMediaUseCase(repo)

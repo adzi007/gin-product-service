@@ -1587,7 +1587,7 @@ func strOrEmpty(s *string) string {
 	return *s
 }
 
-func toProductDetailData(p domain.Product) productDetailData {
+func toProductDetailData(p domain.ProductDetail) productDetailData {
 	data := productDetailData{
 		ID:          p.ID,
 		Handle:      p.Handle,
