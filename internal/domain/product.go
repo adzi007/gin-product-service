@@ -3,6 +3,7 @@ package domain
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -17,6 +18,23 @@ const (
 	ProductStatusActive   ProductStatus = "active"
 	ProductStatusArchived ProductStatus = "archived"
 )
+
+// CanTransitionTo reports whether transitioning from s to next is allowed.
+// Allowed transitions: draft -> active, draft -> archived, active -> archived,
+// archived -> active (restore). All other transitions, including transitioning
+// to the same status, are rejected.
+func (s ProductStatus) CanTransitionTo(next ProductStatus) bool {
+	switch s {
+	case ProductStatusDraft:
+		return next == ProductStatusActive || next == ProductStatusArchived
+	case ProductStatusActive:
+		return next == ProductStatusArchived
+	case ProductStatusArchived:
+		return next == ProductStatusActive
+	default:
+		return false
+	}
+}
 
 // Product is the catalog master record.
 type Product struct {
@@ -35,6 +53,63 @@ type Product struct {
 	Media       []ProductMedia    `json:"media,omitempty"`
 	CreatedAt   time.Time         `json:"created_at"`
 	UpdatedAt   *time.Time        `json:"updated_at,omitempty"`
+}
+
+// Archive transitions the product to the archived status. It mutates p in
+// place and returns ErrProductInvalidStatusTransition if the current status
+// cannot transition to archived.
+func (p *Product) Archive() error {
+	if !p.Status.CanTransitionTo(ProductStatusArchived) {
+		return ErrProductInvalidStatusTransition
+	}
+	p.Status = ProductStatusArchived
+	return nil
+}
+
+// Restore transitions an archived product back to active. It mutates p in
+// place and returns ErrProductInvalidStatusTransition if the current status
+// cannot transition to active.
+func (p *Product) Restore() error {
+	if !p.Status.CanTransitionTo(ProductStatusActive) {
+		return ErrProductInvalidStatusTransition
+	}
+	p.Status = ProductStatusActive
+	return nil
+}
+
+// NewProduct constructs a new draft product with a generated ID, validating the
+// minimal set of fields required for any product to exist. Callers set
+// Description/Vendor/Options/Media directly on the returned value, and use
+// AddVariant to attach variants.
+func NewProduct(handle, title string, categoryID int) (*Product, error) {
+	if strings.TrimSpace(handle) == "" || strings.TrimSpace(title) == "" {
+		return nil, ErrProductInvalidInput
+	}
+	if categoryID <= 0 {
+		return nil, ErrProductInvalidInput
+	}
+	return &Product{
+		ID:         uuid.Must(uuid.NewV7()),
+		Handle:     handle,
+		Title:      title,
+		Status:     ProductStatusDraft,
+		CategoryID: categoryID,
+	}, nil
+}
+
+// AddVariant appends v to the product's variant list, enforcing that its SKU
+// (if set) does not duplicate an existing variant's SKU on this product. Empty
+// SKUs are not checked for uniqueness — multiple variants may have no SKU.
+func (p *Product) AddVariant(v Variant) error {
+	if v.SKU != nil && strings.TrimSpace(*v.SKU) != "" {
+		for _, existing := range p.Variants {
+			if existing.SKU != nil && *existing.SKU == *v.SKU {
+				return ErrSKUAlreadyExists
+			}
+		}
+	}
+	p.Variants = append(p.Variants, v)
+	return nil
 }
 
 // ProductCategory is the nested category shape exposed on product responses.
@@ -110,6 +185,9 @@ var (
 	// ErrProductInvalidStatus is returned when an unrecognized product status
 	// string is passed to the use case or handler.
 	ErrProductInvalidStatus = errors.New("invalid product status")
+	// ErrProductInvalidStatusTransition is returned when a status change is not
+	// allowed from the product's current status (e.g. archived -> draft).
+	ErrProductInvalidStatusTransition = errors.New("invalid product status transition")
 	// ErrOptionNotFound is returned when no product option matches the given id.
 	ErrOptionNotFound = errors.New("option not found")
 	// ErrOptionValueNotFound is returned when no product option value matches

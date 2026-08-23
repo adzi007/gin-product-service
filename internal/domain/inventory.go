@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +19,15 @@ const (
 	StockMoveUnreserve StockMoveType = "UNRESERVE"
 )
 
+var (
+	// ErrInvalidQuantity is returned when a negative quantity is passed to an
+	// inventory-mutating method.
+	ErrInvalidQuantity = errors.New("quantity must not be negative")
+	// ErrInsufficientStock is returned when a reservation would exceed the
+	// currently available quantity.
+	ErrInsufficientStock = errors.New("insufficient available stock")
+)
+
 type InventoryItem struct {
 	ID             uuid.UUID  `json:"id"`
 	VariantID      *uuid.UUID `json:"variant_id,omitempty"`
@@ -33,6 +43,21 @@ type InventoryLevel struct {
 	AvailableQty    int       `json:"available_qty"`
 	ReservedQty     int       `json:"reserved_qty"`
 	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// Reserve moves qty units from AvailableQty to ReservedQty. It returns
+// ErrInvalidQuantity if qty is negative, or ErrInsufficientStock if qty
+// exceeds the currently available quantity. On success it mutates l in place.
+func (l *InventoryLevel) Reserve(qty int) error {
+	if qty < 0 {
+		return ErrInvalidQuantity
+	}
+	if qty > l.AvailableQty {
+		return ErrInsufficientStock
+	}
+	l.AvailableQty -= qty
+	l.ReservedQty += qty
+	return nil
 }
 
 type StockMove struct {

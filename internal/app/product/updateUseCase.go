@@ -35,8 +35,18 @@ func (uc *updateProductUc) Update(ctx context.Context, id uuid.UUID, input domai
 
 func (uc *updateProductUc) Archive(ctx context.Context, id uuid.UUID) error {
 
-	err := uc.productRepo.UpdateStatus(ctx, id, domain.ProductStatusArchived)
+	product, err := uc.productRepo.FindByID(ctx, id)
 	if err != nil {
+		logger.L(ctx).Error("archive product failed", zap.Error(err), zap.String("id", id.String()))
+		return err
+	}
+
+	if err := product.Archive(); err != nil {
+		logger.L(ctx).Error("archive product failed", zap.Error(err), zap.String("id", id.String()))
+		return err
+	}
+
+	if err := uc.productRepo.UpdateStatus(ctx, id, product.Status); err != nil {
 		logger.L(ctx).Error("archive product failed", zap.Error(err), zap.String("id", id.String()))
 		return err
 	}
@@ -48,8 +58,18 @@ func (uc *updateProductUc) Archive(ctx context.Context, id uuid.UUID) error {
 
 func (uc *updateProductUc) Restore(ctx context.Context, id uuid.UUID) error {
 
-	err := uc.productRepo.UpdateStatus(ctx, id, domain.ProductStatusActive)
+	product, err := uc.productRepo.FindByID(ctx, id)
 	if err != nil {
+		logger.L(ctx).Error("restore product failed", zap.Error(err), zap.String("id", id.String()))
+		return err
+	}
+
+	if err := product.Restore(); err != nil {
+		logger.L(ctx).Error("restore product failed", zap.Error(err), zap.String("id", id.String()))
+		return err
+	}
+
+	if err := uc.productRepo.UpdateStatus(ctx, id, product.Status); err != nil {
 		logger.L(ctx).Error("restore product failed", zap.Error(err), zap.String("id", id.String()))
 		return err
 	}

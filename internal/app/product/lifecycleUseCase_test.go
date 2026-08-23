@@ -43,10 +43,12 @@ func TestUpdateProductUseCase_Update_PropagatesError(t *testing.T) {
 }
 
 func TestUpdateProductUseCase_Archive(t *testing.T) {
-	repo := &fakeProductRepo{}
+	id := uuid.New()
+	repo := &fakeProductRepo{
+		findByIDData: domain.Product{ID: id, Status: domain.ProductStatusDraft},
+	}
 	uc := NewProductUpdateUseCase(repo)
 
-	id := uuid.New()
 	if err := uc.Archive(context.Background(), id); err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -58,16 +60,44 @@ func TestUpdateProductUseCase_Archive(t *testing.T) {
 	}
 }
 
-func TestUpdateProductUseCase_Restore(t *testing.T) {
-	repo := &fakeProductRepo{}
+func TestUpdateProductUseCase_Archive_AlreadyArchived(t *testing.T) {
+	id := uuid.New()
+	repo := &fakeProductRepo{
+		findByIDData: domain.Product{ID: id, Status: domain.ProductStatusArchived},
+	}
 	uc := NewProductUpdateUseCase(repo)
 
+	err := uc.Archive(context.Background(), id)
+	if err != domain.ErrProductInvalidStatusTransition {
+		t.Fatalf("expected ErrProductInvalidStatusTransition, got %v", err)
+	}
+}
+
+func TestUpdateProductUseCase_Restore(t *testing.T) {
 	id := uuid.New()
+	repo := &fakeProductRepo{
+		findByIDData: domain.Product{ID: id, Status: domain.ProductStatusArchived},
+	}
+	uc := NewProductUpdateUseCase(repo)
+
 	if err := uc.Restore(context.Background(), id); err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 	if repo.updateStatusStatus != domain.ProductStatusActive {
 		t.Errorf("expected active status, got %q", repo.updateStatusStatus)
+	}
+}
+
+func TestUpdateProductUseCase_Restore_NotArchived(t *testing.T) {
+	id := uuid.New()
+	repo := &fakeProductRepo{
+		findByIDData: domain.Product{ID: id, Status: domain.ProductStatusActive},
+	}
+	uc := NewProductUpdateUseCase(repo)
+
+	err := uc.Restore(context.Background(), id)
+	if err != domain.ErrProductInvalidStatusTransition {
+		t.Fatalf("expected ErrProductInvalidStatusTransition, got %v", err)
 	}
 }
 

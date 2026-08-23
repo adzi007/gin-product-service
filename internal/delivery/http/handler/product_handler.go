@@ -1439,6 +1439,8 @@ func mapProductError(err error) (int, string) {
 		return http.StatusNotFound, "ERR_MEDIA_NOT_FOUND"
 	case domain.ErrVariantMediaNotFound:
 		return http.StatusNotFound, "ERR_VARIANT_MEDIA_NOT_FOUND"
+	case domain.ErrProductInvalidStatusTransition:
+		return http.StatusConflict, "ERR_INVALID_STATUS_TRANSITION"
 	default:
 		return http.StatusInternalServerError, "ERR_INTERNAL"
 	}

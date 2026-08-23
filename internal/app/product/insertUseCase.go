@@ -29,7 +29,11 @@ func (uc *insertProductUc) Create(ctx context.Context, input domain.CreateProduc
 		return domain.Product{}, err
 	}
 
-	productID := uuid.Must(uuid.NewV7())
+	product, err := domain.NewProduct(input.Handle, input.Title, input.CategoryID)
+	if err != nil {
+		return domain.Product{}, err
+	}
+	productID := product.ID
 
 	// Build product options and option values, remembering the generated IDs so
 	// variant options and repository inserts can reference them.
@@ -80,7 +84,6 @@ func (uc *insertProductUc) Create(ctx context.Context, input domain.CreateProduc
 		})
 	}
 
-	variants := make([]domain.Variant, 0, len(input.Variants))
 	inventoryItems := make([]domain.InventoryItem, 0, len(input.Variants))
 	stockMoves := make([]domain.StockMove, 0, len(input.Variants))
 	inventoryLevels := make([]domain.InventoryLevel, 0, len(input.Variants))
@@ -113,7 +116,7 @@ func (uc *insertProductUc) Create(ctx context.Context, input domain.CreateProduc
 		}
 		// targetQty := decimal.NewFromInt(int64(v.Stock))
 
-		variants = append(variants, domain.Variant{
+		if err := product.AddVariant(domain.Variant{
 			ID:        variantID,
 			ProductID: productID,
 			SKU:       v.SKU,
@@ -124,7 +127,9 @@ func (uc *insertProductUc) Create(ctx context.Context, input domain.CreateProduc
 			Options:   optsJSON,
 			IsDeleted: false,
 			Media:     variantMedia,
-		})
+		}); err != nil {
+			return domain.Product{}, err
+		}
 
 		inventoryItems = append(inventoryItems, domain.InventoryItem{
 			ID:             inventoryItemID,
@@ -154,26 +159,16 @@ func (uc *insertProductUc) Create(ctx context.Context, input domain.CreateProduc
 		})
 	}
 
-	status := domain.ProductStatusDraft
 	if input.Status != nil {
-		status = *input.Status
+		product.Status = *input.Status
 	}
-
-	product := domain.Product{
-		ID:          productID,
-		Handle:      input.Handle,
-		Title:       input.Title,
-		Status:      status,
-		Description: input.Description,
-		Vendor:      input.Vendor,
-		CategoryID:  input.CategoryID,
-		Options:     options,
-		Variants:    variants,
-		Media:       media,
-	}
+	product.Description = input.Description
+	product.Vendor = input.Vendor
+	product.Options = options
+	product.Media = media
 
 	created, err := uc.productRepo.Create(ctx, domain.CreateProductParams{
-		Product:         product,
+		Product:         *product,
 		InventoryItems:  inventoryItems,
 		StockMoves:      stockMoves,
 		InventoryLevels: inventoryLevels,
@@ -191,12 +186,6 @@ func (uc *insertProductUc) Create(ctx context.Context, input domain.CreateProduc
 // validateCreateInput performs use-case level validation that cannot be
 // expressed (or is more naturally expressed) with struct tags.
 func validateCreateInput(input domain.CreateProductInput) error {
-	if strings.TrimSpace(input.Handle) == "" || strings.TrimSpace(input.Title) == "" {
-		return domain.ErrProductInvalidInput
-	}
-	if input.CategoryID <= 0 {
-		return domain.ErrProductInvalidInput
-	}
 	if input.Status != nil && !isValidProductStatus(*input.Status) {
 		return domain.ErrProductInvalidStatus
 	}
@@ -215,19 +204,12 @@ func validateCreateInput(input domain.CreateProductInput) error {
 		seenOptionNames[opt.Name] = struct{}{}
 	}
 
-	seenSKUs := make(map[string]struct{}, len(input.Variants))
 	for _, v := range input.Variants {
 		if v.Price == nil || v.Weight == nil {
 			return domain.ErrProductInvalidInput
 		}
 		if v.Stock < 0 {
 			return domain.ErrProductInvalidInput
-		}
-		if v.SKU != nil && strings.TrimSpace(*v.SKU) != "" {
-			if _, dup := seenSKUs[*v.SKU]; dup {
-				return domain.ErrSKUAlreadyExists
-			}
-			seenSKUs[*v.SKU] = struct{}{}
 		}
 	}
 

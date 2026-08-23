@@ -1,399 +1,593 @@
-# Task: Strip persistence tags from domain entities (Phase 3)
+# Task: Introduce aggregate behavior on Product (Phase 4)
 
-Source: `issue.md`, "Phase 3 — Strip persistence tags from entities".
+Source: `issue.md`, "Phase 4 — Introduce aggregate behavior".
 
 > Audience note: this doc is written so a junior developer or another LLM can execute
 > it without re-deriving the plan. Follow the steps in order. Don't skip ahead or
-> combine steps — each one is designed to leave the repo in a compilable (or
-> intentionally-broken-with-a-known-fix) state so mistakes are easy to isolate.
+> combine steps — each one is designed to leave the repo in a compilable state so
+> mistakes are easy to isolate. Run `go build ./...` after every step.
 
 ## Context — what already happened
 
 - Phase 1 (bounded-context split) is done: `internal/domain/product.go`,
-  `internal/domain/variant.go`, and `internal/domain/inventory.go` already exist as
-  separate files.
-- Phase 2 (move HTTP DTOs out of `domain`) is done: `internal/domain/product.go` and
-  `internal/domain/variant.go` have no `binding:`/`validate:` tags. Do not reopen that
-  work.
-- `internal/domain/category.go` still has `binding:`/`validate:` tags — that's a
-  pre-existing, separate module, **out of scope** for this task. Do not touch
-  `category.go`.
+  `internal/domain/variant.go`, and `internal/domain/inventory.go` exist as separate
+  files.
+- Phase 2 (move HTTP DTOs out of `domain`) is done: no `binding:`/`validate:` tags
+  remain in `product.go`/`variant.go`.
+- Phase 3 (strip persistence tags) is done: no `db:"..."` tags remain in
+  `product.go`, `variant.go`, or `inventory.go`. Row-scanning structs live in
+  `internal/infrastructure/repository/model`.
+- `internal/domain/category.go` is a separate, already-shipped module — **out of
+  scope** for this task. Do not touch `category.go` or `categoryRepo.go`.
 
 ## Goal
 
-Right now, structs in `internal/domain/product.go`, `internal/domain/variant.go`, and
-`internal/domain/inventory.go` carry `db:"..."` tags used by
-`pgx.RowToStructByName`/`pgx.CollectRows` in
-`internal/infrastructure/repository/productRepo.go`. Persistence/column-mapping is an
-infrastructure concern, not a domain concern (see `CLAUDE.md`'s Architecture section:
-domain should contain "entity structs and interface definitions only"). Today a
-column rename forces editing the domain package.
+Today every struct in `product.go`/`variant.go`/`inventory.go` is a pure data bag —
+zero methods. Business rules ("archived can't go back to draft directly", "SKU must
+be unique within a product") are re-implemented ad hoc inside use cases
+(`internal/app/product/*.go`) by reading/writing struct fields directly. This task adds
+a small, deliberately narrow set of constructors and mutation methods to the domain
+types so those rules live with the data and can be unit-tested without a mock
+repository, per `issue.md` Phase 4:
+
+```go
+func NewProduct(handle, title string, categoryID int) (*Product, error)
+func (p *Product) AddVariant(v Variant) error   // enforces SKU uniqueness within the product
+func (p *Product) Archive() error               // enforces allowed status transitions
+func (p *Product) Restore() error               // enforces allowed status transitions
+func (s ProductStatus) CanTransitionTo(next ProductStatus) bool
+func (l *InventoryLevel) Reserve(qty int) error // rejects qty > AvailableQty or qty < 0
+```
 
 By the end of this task:
-- No struct in `internal/domain/product.go`, `internal/domain/variant.go`, or
-  `internal/domain/inventory.go` has a `db:"..."` tag (including `db:"-"`).
-- A new package `internal/infrastructure/repository/model` holds row structs with
-  `db:"..."` tags that `pgx.RowToStructByName` scans into.
-- Every repository function that currently scans directly into a `domain.*` struct
-  scans into the matching `model.*` struct instead, then converts it to `domain.*` via
-  a `ToDomain()` method.
-- Use case signatures, handler signatures, and JSON response shapes are **unchanged**.
-  This is a pure "move the tag, add a conversion" refactor — no behavior change.
+- The five methods/functions above exist on their respective types with unit tests.
+- `updateProductUc.Archive`/`Restore` (in `internal/app/product/updateUseCase.go`) call
+  `product.Archive()`/`product.Restore()` instead of unconditionally calling
+  `productRepo.UpdateStatus`.
+- `insertProductUc.Create` (in `internal/app/product/insertUseCase.go`) calls
+  `domain.NewProduct(...)` and `product.AddVariant(...)` instead of hand-building the
+  `domain.Product{...}` struct literal and appending to a local `variants` slice.
+- `InventoryLevel.Reserve` is added with a unit test but **no call site** — there is no
+  reservation feature wired up yet (only `domain.StockMoveReserve`/`StockMoveUnreserve`
+  constants exist, unused). Wiring it into a real reserve/unreserve flow is future work,
+  not part of this task.
 
-This task does NOT include: splitting `ProductRepository` (Phase 6), adding aggregate
-methods (Phase 4), introducing value objects like `Quantity`/`Money` (Phase 7), or
-moving read-model structs like `ProductCategory`/`PaginatedProducts` (Phase 5). Do not
-touch those in this PR. Do not touch `internal/domain/category.go` or
-`internal/infrastructure/repository/categoryRepo.go`.
-
-## Structs in scope
-
-From `internal/domain/product.go`:
-- `Product` (has both physical-column fields and `db:"-"` computed fields — see step 2)
-- `ProductOption`
-- `ProductOptionValue`
-- `ProductMedia`
-
-From `internal/domain/variant.go`:
-- `Variant`
-- `VariantMedia`
-
-From `internal/domain/inventory.go`:
-- `InventoryItem` — has `db:"..."` tags but is **never** scanned via
-  `pgx.RowToStructByName` (confirmed via grep — it's only ever constructed in Go code
-  and inserted with explicit positional args, e.g.
-  `internal/app/product/insertUseCase.go:129`, and
-  `internal/infrastructure/repository/productRepo.go:131`). No `model` struct is
-  needed for it — just delete its `db:"..."` tags.
-- `StockMove` — same situation as `InventoryItem`: constructed in Go
-  (`internal/app/product/insertUseCase.go:139`,
-  `internal/app/product/variantUseCase.go:374`), inserted with explicit positional
-  args, never scanned. Just delete its `db:"..."` tags.
-- `InventoryLevel` — **is** scanned via `pgx.RowToStructByName` (see step 3), so it
-  needs a `model` counterpart.
-
-Everything else in these three files (interfaces, `ProductStatus`, plain input/params
-structs like `CreateProductInput`, `CreateProductParams`, etc.) has no `db:"..."` tag
-today — leave it untouched.
+This task does NOT include: splitting `ProductRepository` (Phase 6), separating read
+models like `ProductCategory`/`PaginatedProducts` (Phase 5), value objects like
+`Quantity`/`Money` (Phase 7), or adding aggregate methods to `Variant`,
+`ProductOption`, or `VariantMedia` — those are out of scope. Do not touch
+`internal/domain/category.go`, `categoryRepo.go`, or anything under
+`internal/app/category/`.
 
 ## Step-by-step
 
-### 1. Create the new package
+### 1. Add the new error
 
-Create `internal/infrastructure/repository/model/` with three files, mirroring the
-domain file split:
-- `product_model.go`
-- `variant_model.go`
-- `inventory_model.go`
-
-Each file starts with `package model`.
-
-### 2. Define row structs with `db` tags only, plus a `ToDomain()` method
-
-For each struct below, define a `model` counterpart: same field names/types, only the
-`db:"..."` tag (drop `json:"..."` — nothing in `model` is ever serialized to JSON),
-plus a `ToDomain()` method that builds the matching `domain.*` value.
-
-**`model.Product`** (`product_model.go`) — only the physical columns. `Product` in
-`domain` also has `Thumbnail`, `Category`, `Prices`, `Options`, `Variants`, `Media`
-fields tagged `db:"-"` today — those are populated by application code *after* the
-row scan (see `productRepo.go:316-333` for an example), never scanned directly, so
-they are **not** part of `model.Product` at all:
+Open `internal/domain/product.go`. In the `var (...)` error block (currently lines
+92-135), add one new sentinel error next to `ErrProductInvalidStatus`:
 
 ```go
-// internal/infrastructure/repository/model/product_model.go
-package model
+// ErrProductInvalidStatusTransition is returned when a status change is not
+// allowed from the product's current status (e.g. archived -> draft).
+ErrProductInvalidStatusTransition = errors.New("invalid product status transition")
+```
 
-import (
-	"time"
+Open `internal/domain/inventory.go` and add two new errors after the `StockMoveType`
+const block:
 
-	"github.com/google/uuid"
-	"gin-product-service/internal/domain"
+```go
+var (
+	// ErrInvalidQuantity is returned when a negative quantity is passed to an
+	// inventory-mutating method.
+	ErrInvalidQuantity = errors.New("quantity must not be negative")
+	// ErrInsufficientStock is returned when a reservation would exceed the
+	// currently available quantity.
+	ErrInsufficientStock = errors.New("insufficient available stock")
 )
-
-type Product struct {
-	ID          uuid.UUID  `db:"id"`
-	Handle      string     `db:"handle"`
-	Title       string     `db:"title"`
-	Status      string     `db:"status"`
-	Description *string    `db:"description"`
-	Vendor      *string    `db:"vendor"`
-	CategoryID  int        `db:"category_id"`
-	CreatedAt   time.Time  `db:"created_at"`
-	UpdatedAt   *time.Time `db:"updated_at"`
-}
-
-func (m Product) ToDomain() domain.Product {
-	return domain.Product{
-		ID:          m.ID,
-		Handle:      m.Handle,
-		Title:       m.Title,
-		Status:      domain.ProductStatus(m.Status),
-		Description: m.Description,
-		Vendor:      m.Vendor,
-		CategoryID:  m.CategoryID,
-		CreatedAt:   m.CreatedAt,
-		UpdatedAt:   m.UpdatedAt,
-	}
-}
-
-type ProductOption struct {
-	ID        uuid.UUID `db:"id"`
-	ProductID uuid.UUID `db:"product_id"`
-	Name      string    `db:"name"`
-	Position  int       `db:"position"`
-}
-
-func (m ProductOption) ToDomain() domain.ProductOption {
-	return domain.ProductOption{
-		ID:        m.ID,
-		ProductID: m.ProductID,
-		Name:      m.Name,
-		Position:  m.Position,
-	}
-}
-
-type ProductOptionValue struct {
-	ID       uuid.UUID `db:"id"`
-	OptionID uuid.UUID `db:"option_id"`
-	Value    string    `db:"value"`
-	Position int       `db:"position"`
-}
-
-func (m ProductOptionValue) ToDomain() domain.ProductOptionValue {
-	return domain.ProductOptionValue{
-		ID:       m.ID,
-		OptionID: m.OptionID,
-		Value:    m.Value,
-		Position: m.Position,
-	}
-}
-
-type ProductMedia struct {
-	ID        uuid.UUID  `db:"id"`
-	ProductID uuid.UUID  `db:"product_id"`
-	Type      string     `db:"type"`
-	URL       string     `db:"url"`
-	AltText   *string    `db:"alt_text"`
-	Position  int        `db:"position"`
-	CreatedAt time.Time  `db:"created_at"`
-	UpdatedAt *time.Time `db:"updated_at"`
-}
-
-func (m ProductMedia) ToDomain() domain.ProductMedia {
-	return domain.ProductMedia{
-		ID:        m.ID,
-		ProductID: m.ProductID,
-		Type:      m.Type,
-		URL:       m.URL,
-		AltText:   m.AltText,
-		Position:  m.Position,
-		CreatedAt: m.CreatedAt,
-		UpdatedAt: m.UpdatedAt,
-	}
-}
 ```
 
-Check `go.mod` for the exact module path before writing the import — use whatever
-`module` line says (this repo's is `gin-product-service`, so
-`gin-product-service/internal/domain`).
+You'll need to add `"errors"` to `inventory.go`'s import block (it currently only
+imports `"time"` and `"github.com/google/uuid"`).
 
-**`model.Variant` / `model.VariantMedia`** (`variant_model.go`) — same pattern.
-`domain.Variant.Media []VariantMedia` is tagged `db:"-"` today (populated separately,
-same as `Product.Options`/`Media`) so it is **not** part of `model.Variant`. Keep
-`Options []byte` as raw JSONB bytes in both `model.Variant` and `domain.Variant` — do
-not attempt to change it to `[]VariantOption` in this task, that's a separate concern
-(see `issue.md` section 2, "Persistence-format leak") and out of scope here:
+Build after this step: `go build ./...` must still pass (new unused errors are fine in
+Go, they're package-level vars).
+
+### 2. Add `ProductStatus.CanTransitionTo`
+
+In `internal/domain/product.go`, directly below the `ProductStatus` const block
+(after line 19), add:
 
 ```go
-// internal/infrastructure/repository/model/variant_model.go
-package model
-
-type Variant struct {
-	ID        uuid.UUID       `db:"id"`
-	ProductID uuid.UUID       `db:"product_id"`
-	SKU       *string         `db:"sku"`
-	Barcode   *string         `db:"barcode"`
-	Title     *string         `db:"title"`
-	Price     decimal.Decimal `db:"price"`
-	Weight    decimal.Decimal `db:"weight"`
-	Position  int             `db:"position"`
-	Stock     int             `db:"stock"`
-	Options   []byte          `db:"options"`
-	IsDeleted bool            `db:"is_deleted"`
-	CreatedAt time.Time       `db:"created_at"`
-	UpdatedAt *time.Time      `db:"updated_at"`
+// CanTransitionTo reports whether transitioning from s to next is allowed.
+// Allowed transitions: draft -> active, draft -> archived, active -> archived,
+// archived -> active (restore). All other transitions, including transitioning
+// to the same status, are rejected.
+func (s ProductStatus) CanTransitionTo(next ProductStatus) bool {
+	switch s {
+	case ProductStatusDraft:
+		return next == ProductStatusActive || next == ProductStatusArchived
+	case ProductStatusActive:
+		return next == ProductStatusArchived
+	case ProductStatusArchived:
+		return next == ProductStatusActive
+	default:
+		return false
+	}
 }
-
-func (m Variant) ToDomain() domain.Variant { /* map every field, same shape as above */ }
-
-type VariantMedia struct {
-	VariantID uuid.UUID `db:"variant_id"`
-	MediaID   uuid.UUID `db:"media_id"`
-	Position  int       `db:"position"`
-}
-
-func (m VariantMedia) ToDomain() domain.VariantMedia { /* map every field */ }
 ```
 
-(Add the `uuid`, `decimal`, and `time` imports as needed — same as `product_model.go`.)
+This is the single source of truth for valid transitions — do not duplicate this
+switch anywhere else.
 
-**`model.InventoryLevel`** (`inventory_model.go`) — the only inventory struct that
-needs a model counterpart (see "Structs in scope" above for why `InventoryItem`/
-`StockMove` don't):
+### 3. Add `Product.Archive()` and `Product.Restore()`
+
+Directly below the `Product` struct definition in `internal/domain/product.go`
+(after the closing brace, before `ProductCategory`), add:
 
 ```go
-// internal/infrastructure/repository/model/inventory_model.go
-package model
-
-type InventoryLevel struct {
-	ID              uuid.UUID `db:"id"`
-	InventoryItemID uuid.UUID `db:"inventory_item_id"`
-	LocationID      uuid.UUID `db:"location_id"`
-	AvailableQty    int       `db:"available_qty"`
-	ReservedQty     int       `db:"reserved_qty"`
-	UpdatedAt       time.Time `db:"updated_at"`
+// Archive transitions the product to the archived status. It mutates p in
+// place and returns ErrProductInvalidStatusTransition if the current status
+// cannot transition to archived.
+func (p *Product) Archive() error {
+	if !p.Status.CanTransitionTo(ProductStatusArchived) {
+		return ErrProductInvalidStatusTransition
+	}
+	p.Status = ProductStatusArchived
+	return nil
 }
 
-func (m InventoryLevel) ToDomain() domain.InventoryLevel { /* map every field */ }
+// Restore transitions an archived product back to active. It mutates p in
+// place and returns ErrProductInvalidStatusTransition if the current status
+// cannot transition to active.
+func (p *Product) Restore() error {
+	if !p.Status.CanTransitionTo(ProductStatusActive) {
+		return ErrProductInvalidStatusTransition
+	}
+	p.Status = ProductStatusActive
+	return nil
+}
 ```
 
-### 3. Update every scan site in `productRepo.go` to use `model.*`, then convert
+These only mutate the in-memory value — they do not talk to the repository. Wiring
+into the use case is step 6.
 
-Grep to find every call site first, to make sure you don't miss one — this list was
-correct at the time of writing this task, but re-grep before editing since line
-numbers shift as you edit:
+### 4. Add `NewProduct`
 
-```bash
-grep -n "RowToStructByName\[domain\.\|RowToStructByName\[productListRow\]\|RowToStructByName\[productDetailRow\]" internal/infrastructure/repository/productRepo.go
+Still in `internal/domain/product.go`, add this near the bottom of the file (or
+directly after the `Product` struct + its new methods):
+
+```go
+// NewProduct constructs a new draft product with a generated ID, validating the
+// minimal set of fields required for any product to exist. Callers set
+// Description/Vendor/Options/Media directly on the returned value, and use
+// AddVariant to attach variants.
+func NewProduct(handle, title string, categoryID int) (*Product, error) {
+	if strings.TrimSpace(handle) == "" || strings.TrimSpace(title) == "" {
+		return nil, ErrProductInvalidInput
+	}
+	if categoryID <= 0 {
+		return nil, ErrProductInvalidInput
+	}
+	return &Product{
+		ID:         uuid.Must(uuid.NewV7()),
+		Handle:     handle,
+		Title:      title,
+		Status:     ProductStatusDraft,
+		CategoryID: categoryID,
+	}, nil
+}
 ```
 
-Expected matches (line numbers as of writing this task):
+Add `"strings"` to `product.go`'s import block (it currently imports `"context"`,
+`"errors"`, `"time"`, `github.com/google/uuid`, `github.com/shopspring/decimal`).
 
-| Line | Current                                              | Change to                                       |
-|------|-------------------------------------------------------|--------------------------------------------------|
-| 310  | `RowToStructByName[productListRow]`                   | keep — `productListRow` itself changes (step 4) |
-| 409  | `RowToStructByName[domain.Product]`                    | `RowToStructByName[model.Product]` + `.ToDomain()` |
-| 435  | `RowToStructByName[domain.Product]`                    | same as above |
-| 583  | `RowToStructByName[domain.ProductOption]`              | `RowToStructByName[model.ProductOption]` + `.ToDomain()` |
-| 683  | `RowToStructByName[domain.ProductOption]`              | same |
-| 709  | `RowToStructByName[domain.ProductOptionValue]`         | `RowToStructByName[model.ProductOptionValue]` + `.ToDomain()` |
-| 747  | `RowToStructByName[domain.ProductOptionValue]`         | same |
-| 770  | `RowToStructByName[domain.ProductOptionValue]`         | same |
-| 810  | `RowToStructByName[domain.ProductOptionValue]`         | same |
-| 848  | `RowToStructByName[productDetailRow]`                  | keep — `productDetailRow` itself changes (step 4) |
-| 901  | `RowToStructByName[domain.ProductOption]`              | `RowToStructByName[model.ProductOption]` + `.ToDomain()` (then map `.Values` per-item) |
-| 920  | `RowToStructByName[domain.ProductOptionValue]`         | `RowToStructByName[model.ProductOptionValue]` + `.ToDomain()` per-item |
-| 972  | `RowToStructByName[domain.Variant]`                    | `RowToStructByName[model.Variant]` + `.ToDomain()` per-item |
-| 991  | `RowToStructByName[domain.VariantMedia]`                | `RowToStructByName[model.VariantMedia]` + `.ToDomain()` per-item |
-| 1024 | `RowToStructByName[domain.ProductMedia]`                | `RowToStructByName[model.ProductMedia]` + `.ToDomain()` per-item |
-| 1463 | `RowToStructByName[domain.InventoryLevel]`              | `RowToStructByName[model.InventoryLevel]` + `.ToDomain()` |
-| 1506 | `RowToStructByName[domain.Variant]`                     | `RowToStructByName[model.Variant]` + `.ToDomain()` |
-| 1816 | `RowToStructByName[domain.ProductMedia]`                | `RowToStructByName[model.ProductMedia]` + `.ToDomain()` per-item |
-| 1845 | `RowToStructByName[domain.ProductMedia]`                | `RowToStructByName[model.ProductMedia]` + `.ToDomain()` |
-| 1863 | `RowToStructByName[domain.ProductMedia]`                | `RowToStructByName[model.ProductMedia]` + `.ToDomain()` |
-| 1951 | `RowToStructByName[domain.ProductMedia]`                | `RowToStructByName[model.ProductMedia]` + `.ToDomain()` |
-| 1977 | `RowToStructByName[domain.VariantMedia]`                | `RowToStructByName[model.VariantMedia]` + `.ToDomain()` |
+### 5. Add `Product.AddVariant`
 
-For a single-row site (`pgx.CollectOneRow`), the pattern is:
+Directly below `NewProduct`, add:
+
+```go
+// AddVariant appends v to the product's variant list, enforcing that its SKU
+// (if set) does not duplicate an existing variant's SKU on this product. Empty
+// SKUs are not checked for uniqueness — multiple variants may have no SKU.
+func (p *Product) AddVariant(v Variant) error {
+	if v.SKU != nil && strings.TrimSpace(*v.SKU) != "" {
+		for _, existing := range p.Variants {
+			if existing.SKU != nil && *existing.SKU == *v.SKU {
+				return ErrSKUAlreadyExists
+			}
+		}
+	}
+	p.Variants = append(p.Variants, v)
+	return nil
+}
+```
+
+Build after steps 2-5: `go build ./...` must pass — nothing calls these yet, but they
+must compile standalone.
+
+### 6. Add `InventoryLevel.Reserve`
+
+In `internal/domain/inventory.go`, directly below the `InventoryLevel` struct
+definition, add:
+
+```go
+// Reserve moves qty units from AvailableQty to ReservedQty. It returns
+// ErrInvalidQuantity if qty is negative, or ErrInsufficientStock if qty
+// exceeds the currently available quantity. On success it mutates l in place.
+func (l *InventoryLevel) Reserve(qty int) error {
+	if qty < 0 {
+		return ErrInvalidQuantity
+	}
+	if qty > l.AvailableQty {
+		return ErrInsufficientStock
+	}
+	l.AvailableQty -= qty
+	l.ReservedQty += qty
+	return nil
+}
+```
+
+There is intentionally no caller for this method yet (see "Goal" above) — do not
+invent a call site or force it into `AdjustVariantStock`, which is a different
+operation (sets an absolute target quantity, not a reservation).
+
+### 7. Wire `Archive`/`Restore` into the use case
+
+Open `internal/app/product/updateUseCase.go`. Replace both methods:
+
+```go
+func (uc *updateProductUc) Archive(ctx context.Context, id uuid.UUID) error {
+
+	product, err := uc.productRepo.FindByID(ctx, id)
+	if err != nil {
+		logger.L(ctx).Error("archive product failed", zap.Error(err), zap.String("id", id.String()))
+		return err
+	}
+
+	if err := product.Archive(); err != nil {
+		logger.L(ctx).Error("archive product failed", zap.Error(err), zap.String("id", id.String()))
+		return err
+	}
+
+	if err := uc.productRepo.UpdateStatus(ctx, id, product.Status); err != nil {
+		logger.L(ctx).Error("archive product failed", zap.Error(err), zap.String("id", id.String()))
+		return err
+	}
+
+	logger.L(ctx).Info("[INFO] Success archive product", zap.String("id", id.String()))
+
+	return nil
+}
+
+func (uc *updateProductUc) Restore(ctx context.Context, id uuid.UUID) error {
+
+	product, err := uc.productRepo.FindByID(ctx, id)
+	if err != nil {
+		logger.L(ctx).Error("restore product failed", zap.Error(err), zap.String("id", id.String()))
+		return err
+	}
+
+	if err := product.Restore(); err != nil {
+		logger.L(ctx).Error("restore product failed", zap.Error(err), zap.String("id", id.String()))
+		return err
+	}
+
+	if err := uc.productRepo.UpdateStatus(ctx, id, product.Status); err != nil {
+		logger.L(ctx).Error("restore product failed", zap.Error(err), zap.String("id", id.String()))
+		return err
+	}
+
+	logger.L(ctx).Info("[INFO] Success restore product", zap.String("id", id.String()))
+
+	return nil
+}
+```
+
+`domain.ProductRepository` already has `FindByID` — no interface change needed.
+
+Note the behavior change this introduces: calling Archive on an already-archived
+product (or Restore on a non-archived product) now returns
+`ErrProductInvalidStatusTransition` instead of silently succeeding. Check
+`internal/delivery/http` for the handlers calling `Archive`/`Restore` and confirm they
+propagate use-case errors to an HTTP status the same way other domain errors do (grep
+for `ErrProductNotFound` or `ErrProductInvalidStatus` in the handler package to see the
+existing error-to-status mapping pattern, and add a case for the new error following
+the same pattern — likely 409 Conflict, matching how `ErrSKUAlreadyExists` or similar
+conflicts are mapped).
+
+`internal/app/product/lifecycleUseCase_test.go` already has tests for
+Archive/Restore — run it and update any test that asserted the old "always succeeds"
+behavior, or that mocks `productRepo` without stubbing `FindByID` for these paths.
+
+### 8. Wire `NewProduct` and `AddVariant` into `insertUseCase.go`
+
+Open `internal/app/product/insertUseCase.go`. This is the trickiest step — go slowly.
+
+**8a.** In `validateCreateInput`, delete the `seenSKUs` duplicate-SKU check (it becomes
+redundant with `AddVariant`), but keep the rest of the per-variant validation
+(Price/Weight nil check, Stock negative check):
 
 ```go
 // before
-product, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[domain.Product])
-if err != nil {
-	return domain.Product{}, err
+seenSKUs := make(map[string]struct{}, len(input.Variants))
+for _, v := range input.Variants {
+	if v.Price == nil || v.Weight == nil {
+		return domain.ErrProductInvalidInput
+	}
+	if v.Stock < 0 {
+		return domain.ErrProductInvalidInput
+	}
+	if v.SKU != nil && strings.TrimSpace(*v.SKU) != "" {
+		if _, dup := seenSKUs[*v.SKU]; dup {
+			return domain.ErrSKUAlreadyExists
+		}
+		seenSKUs[*v.SKU] = struct{}{}
+	}
 }
-return product, nil
 
 // after
-row, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[model.Product])
-if err != nil {
-	return domain.Product{}, err
+for _, v := range input.Variants {
+	if v.Price == nil || v.Weight == nil {
+		return domain.ErrProductInvalidInput
+	}
+	if v.Stock < 0 {
+		return domain.ErrProductInvalidInput
+	}
 }
-return row.ToDomain(), nil
 ```
 
-For a multi-row site (`pgx.CollectRows`), convert with a loop or a small helper:
+Also delete the handle/title/categoryID checks at the top of `validateCreateInput`
+(they become redundant with `NewProduct`, added next):
+
+```go
+// delete these two blocks — NewProduct now enforces them
+if strings.TrimSpace(input.Handle) == "" || strings.TrimSpace(input.Title) == "" {
+	return domain.ErrProductInvalidInput
+}
+if input.CategoryID <= 0 {
+	return domain.ErrProductInvalidInput
+}
+```
+
+Leave the option-name checks and status-validity check in `validateCreateInput`
+untouched.
+
+**8b.** In `Create`, replace the `productID := uuid.Must(uuid.NewV7())` line (currently
+right after the `validateCreateInput` call) with a call to `domain.NewProduct`:
 
 ```go
 // before
-options, err := pgx.CollectRows(optionRows, pgx.RowToStructByName[domain.ProductOption])
+if err := validateCreateInput(input); err != nil {
+	return domain.Product{}, err
+}
+
+productID := uuid.Must(uuid.NewV7())
 
 // after
-optionModels, err := pgx.CollectRows(optionRows, pgx.RowToStructByName[model.ProductOption])
+if err := validateCreateInput(input); err != nil {
+	return domain.Product{}, err
+}
+
+product, err := domain.NewProduct(input.Handle, input.Title, input.CategoryID)
 if err != nil {
-	return nil, err
+	return domain.Product{}, err
 }
-options := make([]domain.ProductOption, 0, len(optionModels))
-for _, m := range optionModels {
-	options = append(options, m.ToDomain())
-}
+productID := product.ID
 ```
 
-Add the import `"gin-product-service/internal/infrastructure/repository/model"`
-(check the exact module path in `go.mod` first) to `productRepo.go`.
+Everything below this (the options loop, media loop) already uses the local
+`productID` variable — no further change needed there.
 
-### 4. Update `productListRow` and `productDetailRow` to embed `model.Product`
-
-These two structs (`productRepo.go:1036` and `productRepo.go:1049`) currently embed
-`domain.Product` directly, relying on its `db:"..."` tags for the base columns:
+**8c.** In the variant-building loop, replace the final `variants = append(variants,
+domain.Variant{...})` with `product.AddVariant(...)`, and delete the now-unused
+`variants` slice declaration:
 
 ```go
-type productListRow struct {
-	domain.Product
-	CategorySlug     *string         `db:"category_slug"`
-	CategoryName     *string         `db:"category_name"`
-	StartPrice       decimal.Decimal `db:"start_price"`
-	MaxPrice         decimal.Decimal `db:"max_price"`
-	ThumbnailType    *string         `db:"thumbnail_type"`
-	ThumbnailURL     *string         `db:"thumbnail_url"`
-	ThumbnailAltText *string         `db:"thumbnail_alt_text"`
+// delete this line near the top of Create, alongside inventoryItems/stockMoves/inventoryLevels:
+variants := make([]domain.Variant, 0, len(input.Variants))
+
+// inside the `for _, v := range input.Variants` loop, replace:
+variants = append(variants, domain.Variant{
+	ID:        variantID,
+	ProductID: productID,
+	SKU:       v.SKU,
+	Barcode:   v.Barcode,
+	Title:     v.Title,
+	Price:     *v.Price,
+	Weight:    *v.Weight,
+	Options:   optsJSON,
+	IsDeleted: false,
+	Media:     variantMedia,
+})
+
+// with:
+if err := product.AddVariant(domain.Variant{
+	ID:        variantID,
+	ProductID: productID,
+	SKU:       v.SKU,
+	Barcode:   v.Barcode,
+	Title:     v.Title,
+	Price:     *v.Price,
+	Weight:    *v.Weight,
+	Options:   optsJSON,
+	IsDeleted: false,
+	Media:     variantMedia,
+}); err != nil {
+	return domain.Product{}, err
 }
 ```
 
-Change `domain.Product` to `model.Product` in both `productListRow` and
-`productDetailRow`. Then fix their call sites:
+**8d.** After the loop, replace the manual `domain.Product{...}` struct literal with
+setting the remaining fields directly on `product`:
 
-- `productRepo.go:316-333` (inside the `productListRow` loop): `p := row.Product`
-  becomes `p := row.Product.ToDomain()` — everything after that (`p.Category.Slug =
-  ...`, `p.Prices.StartPrice = ...`, etc.) stays the same, since it's already setting
-  fields on the `domain.Product` value, not the row.
-- The `productDetailRow` call site (around `productRepo.go:848` in `findProductBy`):
-  same fix — call `.ToDomain()` on the embedded `model.Product` before assigning
-  category slug/name onto the resulting `domain.Product`.
+```go
+// before
+status := domain.ProductStatusDraft
+if input.Status != nil {
+	status = *input.Status
+}
 
-### 5. Strip `db:"..."` tags from the domain structs
+product := domain.Product{
+	ID:          productID,
+	Handle:      input.Handle,
+	Title:       input.Title,
+	Status:      status,
+	Description: input.Description,
+	Vendor:      input.Vendor,
+	CategoryID:  input.CategoryID,
+	Options:     options,
+	Variants:    variants,
+	Media:       media,
+}
 
-Now remove every `db:"..."` tag (including `db:"-"`) from:
-- `internal/domain/product.go`: `Product`, `ProductOption`, `ProductOptionValue`,
-  `ProductMedia`
-- `internal/domain/variant.go`: `Variant`, `VariantMedia`
-- `internal/domain/inventory.go`: `InventoryItem`, `InventoryLevel`, `StockMove`
+created, err := uc.productRepo.Create(ctx, domain.CreateProductParams{
+	Product:         product,
+	...
 
-Keep the `json:"..."` tags exactly as they are — those are still needed for API
-responses and are out of scope for this task (see `issue.md` Phase 2/3 split: Phase 2
-already handled `binding`/`validate`, this task only handles `db`).
+// after
+if input.Status != nil {
+	product.Status = *input.Status
+}
+product.Description = input.Description
+product.Vendor = input.Vendor
+product.Options = options
+product.Media = media
 
-While you're in `internal/domain/inventory.go`, also delete the two dead
-commented-out lines the review flagged (`// AvailableQty decimal.Decimal ...` and
-`// ReservedQty decimal.Decimal ...` on `InventoryLevel`, and `// Quantity
-decimal.Decimal ...` on `StockMove`) — they're commented-out code with no tags to
-strip, just delete them outright. Also delete the commented-out `// Stock
-decimal.Decimal` line on `domain.Variant`. Do not otherwise change these structs'
-field types (e.g. don't switch `int` to `decimal.Decimal` — that's Phase 7).
+created, err := uc.productRepo.Create(ctx, domain.CreateProductParams{
+	Product:         *product,
+	...
+```
 
-### 6. Fix remaining compile errors
+Note `CreateProductParams.Product` is `domain.Product` (a value, not a pointer) — you
+must dereference `product` (`*product`) when building the params struct, since
+`NewProduct` returns `*Product`.
+
+Also double-check: the existing `err` variable name from
+`domain.NewProduct(...)` in step 8b is reused by `created, err :=
+uc.productRepo.Create(...)` later — since that line uses `:=` with a new variable
+(`created`) alongside `err`, this is fine in Go, but if you get a "no new variables on
+left side of :=" compile error anywhere, change that specific line's `err` reuse to
+match whatever the compiler flags.
+
+### 9. Build and fix compile errors
 
 ```bash
 go build ./...
 ```
 
-Fix anything still referencing a `db:"..."` tag indirectly (there shouldn't be any —
-`db` tags are inert Go struct tags, removing them can't break compilation on its own;
-any errors at this point come from step 3/4's `.ToDomain()` conversions being
-incomplete or missing, not from tag removal itself).
+Fix anything the compiler flags — most likely a leftover reference to the deleted
+`variants` local variable, or a mismatched `Product` vs `*Product` type at a call site
+in `insertUseCase.go`.
 
-### 7. Verify
+### 10. Write unit tests
+
+Create `internal/domain/product_test.go`:
+
+```go
+package domain
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert" // check go.mod for the actual assertion lib used elsewhere in the repo; internal/app/product/*_test.go already has examples to copy the import/style from
+)
+
+func TestNewProduct(t *testing.T) {
+	p, err := NewProduct("my-handle", "My Title", 1)
+	assert.NoError(t, err)
+	assert.Equal(t, ProductStatusDraft, p.Status)
+	assert.NotEqual(t, [16]byte{}, [16]byte(p.ID))
+
+	_, err = NewProduct("", "My Title", 1)
+	assert.ErrorIs(t, err, ErrProductInvalidInput)
+
+	_, err = NewProduct("my-handle", "My Title", 0)
+	assert.ErrorIs(t, err, ErrProductInvalidInput)
+}
+
+func TestProductAddVariant(t *testing.T) {
+	p, _ := NewProduct("h", "t", 1)
+	sku := "SKU-1"
+
+	assert.NoError(t, p.AddVariant(Variant{SKU: &sku}))
+	assert.Len(t, p.Variants, 1)
+
+	err := p.AddVariant(Variant{SKU: &sku})
+	assert.ErrorIs(t, err, ErrSKUAlreadyExists)
+	assert.Len(t, p.Variants, 1) // rejected variant must not be appended
+
+	// nil/empty SKUs never collide with each other
+	assert.NoError(t, p.AddVariant(Variant{}))
+	assert.NoError(t, p.AddVariant(Variant{}))
+}
+
+func TestProductStatusCanTransitionTo(t *testing.T) {
+	cases := []struct {
+		from, to ProductStatus
+		want     bool
+	}{
+		{ProductStatusDraft, ProductStatusActive, true},
+		{ProductStatusDraft, ProductStatusArchived, true},
+		{ProductStatusActive, ProductStatusArchived, true},
+		{ProductStatusArchived, ProductStatusActive, true},
+		{ProductStatusActive, ProductStatusDraft, false},
+		{ProductStatusArchived, ProductStatusDraft, false},
+		{ProductStatusDraft, ProductStatusDraft, false},
+	}
+	for _, c := range cases {
+		assert.Equal(t, c.want, c.from.CanTransitionTo(c.to), "%s -> %s", c.from, c.to)
+	}
+}
+
+func TestProductArchiveRestore(t *testing.T) {
+	p, _ := NewProduct("h", "t", 1)
+
+	assert.NoError(t, p.Archive())
+	assert.Equal(t, ProductStatusArchived, p.Status)
+
+	assert.ErrorIs(t, p.Archive(), ErrProductInvalidStatusTransition)
+
+	assert.NoError(t, p.Restore())
+	assert.Equal(t, ProductStatusActive, p.Status)
+
+	assert.ErrorIs(t, p.Restore(), ErrProductInvalidStatusTransition)
+}
+```
+
+Create `internal/domain/inventory_test.go`:
+
+```go
+package domain
+
+import "testing"
+
+func TestInventoryLevelReserve(t *testing.T) {
+	l := InventoryLevel{AvailableQty: 10, ReservedQty: 0}
+
+	if err := l.Reserve(4); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if l.AvailableQty != 6 || l.ReservedQty != 4 {
+		t.Fatalf("got AvailableQty=%d ReservedQty=%d, want 6/4", l.AvailableQty, l.ReservedQty)
+	}
+
+	if err := l.Reserve(100); err != ErrInsufficientStock {
+		t.Fatalf("got %v, want ErrInsufficientStock", err)
+	}
+	if err := l.Reserve(-1); err != ErrInvalidQuantity {
+		t.Fatalf("got %v, want ErrInvalidQuantity", err)
+	}
+}
+```
+
+Before writing these, check `go.mod` and an existing test file (e.g.
+`internal/app/product/lifecycleUseCase_test.go`) to see which assertion library the
+repo actually uses (`testify` vs stdlib) and match that style instead of guessing —
+the `product_test.go` example above uses `testify/assert`; if the repo doesn't already
+depend on it, use plain stdlib `t.Fatalf`/`if got != want` checks like the
+`inventory_test.go` example instead, to avoid adding a new dependency for this task.
+
+### 11. Verify
 
 ```bash
 go build ./...
@@ -401,41 +595,54 @@ go vet ./...
 go test ./...
 ```
 
-All must pass. Also confirm no domain struct in the three in-scope files still has a
-`db` tag:
+All must pass. Then also run:
 
 ```bash
-grep -n "db:\"" internal/domain/product.go internal/domain/variant.go internal/domain/inventory.go
+go test ./internal/domain/... -v
+go test ./internal/app/product/... -v
 ```
 
-This must return no results. (`internal/domain/category.go` will still show matches —
-that's expected and out of scope.)
+and read through the `product` package's test output specifically — `insertUseCase.go`
+and `updateUseCase.go` changed behavior in ways existing tests may assert against (e.g.
+a test that called `Archive` twice expecting no error will now need to expect
+`ErrProductInvalidStatusTransition` on the second call).
 
-### 8. Manual sanity check
+### 12. Manual sanity check
 
-Start the server (`air` or `go run cmd/main.go`) and hit:
-- `GET /api/v1/products` (list — exercises `productListRow`)
-- `GET /api/v1/products/:id` (detail — exercises `productDetailRow`, options, variants,
-  media, inventory level lookups)
-
-Confirm the JSON response shape is byte-for-byte the same as before this refactor
-(field names, nesting, computed `category`/`prices`/`thumbnail` all still populated
-correctly). This is the step most likely to catch a missed field in a `ToDomain()`
-mapping — a forgotten field will silently zero-value instead of failing to compile.
+Start the server (`air` or `go run cmd/main.go`) and exercise:
+- `POST /api/v1/products` with a body containing two variants that share the same SKU
+  — must now fail with the SKU-conflict error (same error, same HTTP status as before;
+  only the code path that produces it changed).
+- `POST /api/v1/products/:id/archive` (or whatever the actual route is — check
+  `internal/delivery/http/router.go`) called twice in a row — the second call must
+  return a clear error instead of silently succeeding.
+- `POST /api/v1/products/:id/restore` on a non-archived product — must return a clear
+  error.
+- A normal create → archive → restore happy path — must behave exactly as before.
 
 ## Notes for whoever picks this up
 
-- This is mechanical and low-risk *if* every `ToDomain()` method maps every field.
-  The most common mistake is copy-pasting a `ToDomain()` method and forgetting to
-  update one field name for a different struct — double-check each one field-by-field
-  against the domain struct's definition after writing it.
-- Don't add `NewX()` constructors, validation, or any business logic to the `model`
-  package — it exists purely to carry `db` tags for scanning. If you find yourself
-  wanting to add behavior there, stop; that's Phase 4 territory.
-- Don't touch `internal/domain/category.go`, `categoryRepo.go`, or anything under
-  `internal/app/category/` — category is a separate, already-shipped module and not
-  part of this refactor.
-- If you hit a struct with a `db:"..."` tag in these three files that this doc didn't
-  mention, re-check whether it's actually scanned via `RowToStructByName` (grep for
-  its name) before assuming it needs a `model` counterpart — some, like
-  `InventoryItem`/`StockMove`, are write-only and just need the tag deleted.
+- Resist the urge to also refactor `variantUseCase.go`'s standalone `Create`/
+  `BulkCreate` (adding variants to an *existing* product, not at product-creation
+  time) to use `Product.AddVariant`. Doing that correctly requires loading the full
+  product with its current variants first (an extra repository round trip that doesn't
+  happen today), which is a behavior/performance change, not a mechanical one. Leave it
+  as-is; it can be tackled as its own follow-up once this phase is verified stable.
+- Don't wire `InventoryLevel.Reserve` into `AdjustVariantStock` or any existing
+  endpoint. `AdjustVariantStock` sets an absolute target quantity (used by variant
+  create/update to set initial/new stock); `Reserve` models moving already-available
+  stock into a reserved state for an order, which isn't a feature this codebase has an
+  endpoint for yet. Adding one is out of scope.
+- Don't add more transitions to `CanTransitionTo` than the five listed in step 2 unless
+  a real product requirement calls for it (e.g. "active -> draft" was deliberately left
+  out — there was no existing code path that did this before this task, so allowing it
+  now would be scope creep, not a bug fix).
+- If you find another place in `internal/app/product/` that duplicates the SKU-dup or
+  status-transition logic this task centralizes, it's fine to point it at the new
+  domain method in this same PR — but don't go looking for more than what steps 7-8
+  already covered; a broader sweep is Phase 6/7 territory.
+- Keep `NewProduct`/`AddVariant`/`Archive`/`Restore`/`Reserve` free of any repository or
+  context.Context dependency — they must stay pure, dependency-free functions/methods
+  so they stay trivially unit-testable. If a rule you're asked to add needs to check
+  something only the database knows (e.g. "handle is unique store-wide"), that check
+  stays at the use-case/repository layer, not in these methods.
