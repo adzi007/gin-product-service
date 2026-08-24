@@ -146,7 +146,7 @@ type ProductMedia struct {
 
 type InventoryItem struct {
 	ID             uuid.UUID        `json:"id"`
-	VariantID      *uuid.UUID       `json:"variant_id,omitempty"`
+	VariantID      uuid.UUID        `json:"variant_id"`
 	Description    *string          `json:"description,omitempty"`
 	TrackInventory bool             `json:"track_inventory"`
 	Levels         []InventoryLevel `json:"levels,omitempty"`
@@ -166,8 +166,8 @@ type InventoryLevel struct {
 	ID              uuid.UUID       `json:"id"`
 	InventoryItemID uuid.UUID       `json:"inventory_item_id"`
 	LocationID      uuid.UUID       `json:"location_id"`
-	AvailableQty    decimal.Decimal `json:"available_qty"`
-	ReservedQty     decimal.Decimal `json:"reserved_qty"`
+	AvailableQty    int             `json:"available_qty"`
+	ReservedQty     int             `json:"reserved_qty"`
 	UpdatedAt       time.Time       `json:"updated_at"`
 }
 
@@ -177,20 +177,30 @@ type StockMove struct {
 	FromLocationID  *uuid.UUID      `json:"from_location_id,omitempty"`
 	ToLocationID    *uuid.UUID      `json:"to_location_id,omitempty"`
 	MoveType        StockMoveType   `json:"move_type"`
-	Quantity        decimal.Decimal `json:"quantity"`
+	Quantity        int             `json:"quantity"`
 	CreatedBy       *uuid.UUID      `json:"created_by,omitempty"`
 	Reason          *string         `json:"reason,omitempty"`
 	CreatedAt       time.Time       `json:"created_at"`
 }
+
+type ReservationStatus string
+
+const (
+    ReservationActive   ReservationStatus = "ACTIVE"
+    ReservationReleased ReservationStatus = "RELEASED"
+    ReservationExpired  ReservationStatus = "EXPIRED"
+)
 
 type Reservation struct {
 	ID              uuid.UUID       `json:"id"`
 	InventoryItemID uuid.UUID       `json:"inventory_item_id"`
 	LocationID      uuid.UUID       `json:"location_id"`
 	OrderID         *uuid.UUID      `json:"order_id,omitempty"`
-	Quantity        decimal.Decimal `json:"quantity"`
+	Quantity        int             `json:"quantity"`
 	ReservedAt      time.Time       `json:"reserved_at"`
 	ExpiresAt       *time.Time      `json:"expires_at,omitempty"`
+  Status          ReservationStatus
+  ReleasedAt      *time.Time
 }
 
 ```
@@ -532,10 +542,35 @@ Executes an inventory move and recalculates `inventory_levels` atomically inside
 ```json
 {
   "inventory_item_id": "019154a1-8d2b-7c0a-9e12-32b001010050",
-  "to_location_id": "019154a1-8d2b-7c0a-9e12-32b001010077",
+  "from_location_id": "019154a1-8d2b-7c0a-9e12-32b001010077",
+  "to_location_id": "",
   "move_type": "IN",
-  "quantity": 100.0000,
+  "quantity": 100,
   "reason": "Initial warehouse stock receipt"
+}
+
+```
+
+```json
+{
+  "inventory_item_id": "019154a1-8d2b-7c0a-9e12-32b001010050",
+  "from_location_id": "019154a1-8d2b-7c0a-9e12-32b001010077",
+  "to_location_id": "019154a1-8d2b-7c0a-9e12-32b001010088",
+  "move_type": "TRANSFER",
+  "quantity": 100,
+  "reason": "Relocation place"
+}
+
+```
+
+```json
+{
+  "inventory_item_id": "019154a1-8d2b-7c0a-9e12-32b001010050",
+  "from_location_id": "019154a1-8d2b-7c0a-9e12-32b001010077",
+  "to_location_id": "",
+  "move_type": "ADJUST",
+  "quantity": 100,
+  "reason": "Admin corection or other reason"
 }
 
 ```
@@ -549,8 +584,42 @@ Executes an inventory move and recalculates `inventory_levels` atomically inside
     "move_id": "019154a1-8d2b-7c0a-9e12-32b001010888",
     "inventory_item_id": "019154a1-8d2b-7c0a-9e12-32b001010050",
     "location_id": "019154a1-8d2b-7c0a-9e12-32b001010077",
-    "available_qty": "100.0000",
-    "reserved_qty": "0.0000"
+    "available_qty": "100",
+    "reserved_qty": "0"
+  }
+}
+
+```
+
+#### `POST /v1/inventory/reservations`
+
+Executes an reservation `reservations` atomically inside a single database transaction.
+
+**Request Body:**
+
+```json
+{
+  "inventory_item_id": "...",
+  "location_id": "...",
+  "quantity": 2,
+  "order_id": "...",
+  "expires_at": "..."
+}
+
+```
+
+**Response (`200 OK`):**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "id": "...",
+    "inventory_item_id": "...",
+    "location_id": "...",
+    "quantity": 2,
+    "status": "ACTIVE",
+    "expires_at": "..."
   }
 }
 
@@ -886,6 +955,7 @@ This endpoint is **for controlled import/sync jobs only** (e.g., nightly PIM fee
 3. **MoveType `TRANSFER`:** Decreases `available_qty` at `from_location_id` and increases `available_qty` at `to_location_id`.
 4. **MoveType `RESERVE`:** Shifts quantity from `available_qty` to `reserved_qty` at the specified `location_id`. Fails if `available_qty < requested_qty`.
 5. **MoveType `UNRESERVE`:** Shifts quantity from `reserved_qty` back to `available_qty`.
+5. **MoveType `ADJUST`:** Increases or decrease `inventory_levels.available_qty` by comparing the user input and the current `inventory_levels.available_qty` 
 
 ---
 
@@ -1060,7 +1130,7 @@ Table variants {
 
 Table inventory_items {
   id uuid [pk, default: `gen_random_uuid()`]
-  variant_id uuid [unique]
+  variant_id uuid [not null, unique]
   description text
   track_inventory boolean [default: true]
   created_at timestamptz [default: `now()`]
@@ -1109,6 +1179,12 @@ Table stock_moves {
   created_at timestamptz [default: `now()`]
 }
 
+Enum reservation_status {
+  ACTIVE
+  RELEASED
+  EXPIRED
+}
+
 Table reservations {
   id uuid [pk, default: `gen_random_uuid()`]
   inventory_item_id uuid [not null]
@@ -1117,6 +1193,8 @@ Table reservations {
   quantity integer
   reserved_at timestamptz [default: `now()`]
   expires_at timestamptz
+  status          reservation_status [not null]
+  released_at    timestamptz
 }
 
 Table category {
