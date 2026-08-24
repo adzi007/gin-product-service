@@ -1,196 +1,127 @@
-# `internal/domain/product.go` — DDD/SOLID Review & Refactoring Proposal
+# Task: Implement Inventory & Reservation Service
 
-Scope: `internal/domain/product.go` (566 lines, single `package domain` file covering
-Product, Option, Variant, Media, Inventory and Stock Move).
+**Spec:** [specs/inventory-reservation.md](specs/inventory-reservation.md) — read the full spec before starting. This issue breaks it into ordered, checkable steps that follow this repo's existing Clean Architecture conventions (see `CLAUDE.md`).
 
-## Summary
+## Before you start
 
-The file conflates at least **three separate bounded contexts** (Catalog/Product,
-Inventory, Stock Movement) and **three separate concerns per struct** (domain entity,
-persistence row, HTTP DTO) into one flat, anemic package. This creates aggregate
-boundary leakage, makes invariants unenforceable, and produces fat interfaces that
-generate testing friction. Findings below are grouped by principle violated, followed
-by a phased refactor proposal.
+- Read `CLAUDE.md` in the repo root — it documents the layering (`delivery/http → app/<module> → domain ← infrastructure`) and module-wiring conventions. Every step below must follow it.
+- Look at the `category` module (`internal/domain/category.go`, `internal/app/category/*.go`, `internal/infrastructure/repository/categoryRepo.go`, `internal/delivery/http/handler/category_handler.go`) as the reference pattern for interfaces, use cases, repos, and handlers.
+- Some scaffolding already exists — do not recreate it, extend it:
+  - `internal/domain/inventory.go` already defines `StockMoveType`, `Quantity` (non-negative int wrapper with `NewQuantity`), `InventoryItem`, `InventoryLevel` (with a `Reserve` method), and `StockMove`. There is no `Reservation` type yet, and no repository/use-case interfaces.
+  - `internal/infrastructure/repository/model/inventory_model.go` has a DB model + `ToDomain()` for `InventoryLevel` only.
+  - `migrations/0002_add_inventory_levels_unique.sql` already adds a unique index on `(inventory_item_id, location_id)`. The base tables (`inventory_items`, `locations`, `inventory_levels`, `stock_moves`, `reservations`) are assumed to already exist in the database per the spec's schema (Section 2) — verify this against the actual DB before writing migrations for anything new (e.g. constraints, indexes needed for idempotency).
+  - `internal/domain/product.go` references `StockMoves []StockMove` on some struct — check for accidental coupling before adding new fields there.
 
----
-
-## 1. Domain boundary leakage
-
-- **Persistence tags on domain entities.** Every struct carries `db:"..."` tags
-  (`Product`, `Variant`, `InventoryLevel`, `StockMove`, ...). The domain layer should
-  define entities free of storage concerns; the `pgx.RowToStructByName` mapping is an
-  infrastructure/repository detail (per `CLAUDE.md`'s own layering: "entity structs and
-  interface definitions only"). Today a schema/column rename forces a change in the
-  domain package.
-- **HTTP/transport tags on domain entities.** `json:"..."`, `binding:"required"`, and
-  `validate:"..."` tags appear throughout (`CreateProductInput`, `VariantInput`,
-  `UpdateProductInput`, `ProductOptionInput`, etc.). `binding` is a Gin-specific
-  concept — this is a `delivery/http` DTO concern living in `domain`. The same struct
-  is simultaneously a DB row shape, a wire DTO, and (nominally) a business entity —
-  three responsibilities, one type, violating SRP three times over.
-- **Read-projection shapes bolted onto the write aggregate.** `ProductCategory`,
-  `ProductPrices`, and `ProductThumbnail` are query-time computed/joined shapes (per
-  their own doc comments: "computed across a product's non-deleted variants",
-  "sourced from the product_media row with position = 1") embedded directly as fields
-  on `Product`. This blurs command/query separation: the aggregate used to *create* a
-  product carries fields that only make sense on a *list/detail response*.
-- **Cross-aggregate embedding instead of reference.** `Product` holds both
-  `CategoryID int` (a reference) **and** `Category ProductCategory` (an embedded
-  denormalized copy of another aggregate's data). A product aggregate should reference
-  Category by ID only; assembling the display shape is an application/query-layer
-  job, not a domain-layer field.
-
-## 2. Loss of aggregate abstraction
-
-- **No aggregate root behavior — pure data bags.** Every type in the file is public
-  fields with zero methods. There is no `NewProduct(...)`, no `product.AddVariant(...)`,
-  no `product.Archive()`. Any code anywhere can mutate `product.Variants`,
-  `product.Options`, or flip `Status` directly, bypassing whatever invariants exist
-  (e.g. "an archived product can't gain new active variants", "SKU must be unique
-  within the product", "only one thumbnail per product"). Those rules currently only
-  exist as *sentinel errors* (`ErrSKUAlreadyExists`, `ErrInvalidOption`, ...) checked
-  ad hoc by use cases, not enforced by the type system.
-- **Product, Inventory, and StockMove are separate bounded contexts crammed into one
-  aggregate file.** `InventoryItem`, `InventoryLevel`, and `StockMove` are Odoo/Shopify
-  concepts that live in their own module per `PRD.md`, yet they're declared in
-  `product.go` alongside `ProductRepository`, and `ProductRepository` itself exposes
-  `AdjustVariantStock`/`VariantHasHistory` — inventory-mutation operations owned by the
-  Product repository. This makes "Product" a god-aggregate that reaches into another
-  context's consistency boundary instead of communicating with it through an explicit
-  interface (e.g. an `InventoryService`).
-- **Persistence-shaped escape hatch for computed data.** `Variant.Stock int` is
-  documented as "computed (not stored)... only populated on the single-product detail
-  path" — a read-model value smuggled onto the write aggregate's struct, with a
-  commented-out `decimal.Decimal` version left as dead code (`product.go:112`). This
-  is a CQRS leak: the same `Variant` type serves both as a transactional aggregate
-  member and a read-side projection depending on which code path populated it, so
-  nothing in the type signals whether `Stock` is trustworthy at any given call site.
-- **Persistence-format leak inside the aggregate.** `Variant.Options []byte` stores raw
-  JSONB straight on the domain entity (`db:"options"`), forcing every consumer to know
-  to unmarshal into `[]VariantOption` themselves. The domain should hold
-  `Options []VariantOption` and let the repository handle (de)serialization.
-
-## 3. SOLID violations
-
-- **ISP: `ProductRepository` is a 30+ method god interface** (`product.go:327-376`)
-  spanning product header CRUD, options, option values, variants, variant stock
-  adjustment, variant media, product media, and variant-media linking. Every
-  consumer/mock must implement all 30 methods even if it only touches media. This
-  should be split along aggregate/sub-resource lines: `ProductRepository`,
-  `OptionRepository`, `VariantRepository`, `MediaRepository`, `InventoryRepository`.
-- **SRP at the module level: Product "owns" Option, Variant, Media, and Inventory
-  operations.** `OptionUseCase`, `VariantUseCase`, `MediaUseCase` are reasonably
-  scoped individually, but all their DTOs and the repository contract for all of them
-  sit in one undifferentiated `product` domain concept — there's no compiler-enforced
-  boundary telling a developer that variant-media logic shouldn't reach into stock
-  movement internals.
-- **OCP friction from primitive/stringly-typed status and enums used without
-  validation helpers.** `ProductStatus`/`StockMoveType` are typed strings but have no
-  `IsValid()`/`CanTransitionTo()` methods, so every layer that needs to validate a
-  transition re-implements the whitelist (see `ErrProductInvalidStatus`,
-  `oneof=draft active archived` repeated as a validate tag on three different structs:
-  `CreateProductInput`, `UpdateProductInput`, and implicitly the DB check constraint).
-  Adding a new status requires updates in N places instead of one.
-
-## 4. Primitive obsession / missing value objects
-
-- `AvailableQty int`, `ReservedQty int` (`InventoryLevel`), and `Quantity int`
-  (`StockMove`) are raw ints with commented-out `decimal.Decimal` alternatives left in
-  place (`product.go:152-153,165`) — dead code plus an open question about which type
-  is authoritative. Neither the `int` nor a bare `decimal.Decimal` prevents negative
-  stock; a `Quantity` value object with a constructor that rejects negative values
-  would make "stock can't go negative" a compile-time-adjacent guarantee instead of a
-  use-case-level check.
-- `Price decimal.Decimal` / `Weight decimal.Decimal` have no unit or currency — a
-  `Money` value object (amount + currency) is missing entirely; today currency is
-  presumably assumed store-wide, which is an implicit, undocumented invariant.
-- `SKU *string`, `Barcode *string`, `Handle string` are bare strings with uniqueness/
-  format rules enforced only via DB constraints and sentinel errors
-  (`ErrSKUAlreadyExists`, `ErrProductHandleAlreadyExists`), never via a value type that
-  validates format at construction.
-
-## 5. Testing friction
-
-- **Fat `ProductRepository` interface forces 30-method mocks** for any use-case test,
-  even one that only exercises option reordering. This discourages writing focused
-  unit tests and pushes teams toward fewer, broader integration tests.
-- **No factory/constructor functions** mean invalid aggregates are trivial to
-  construct in tests (e.g. a `Product` with `Variants` referencing options that don't
-  exist in `Options`), so tests can't rely on "if it compiles/constructs, it's valid" —
-  every test must re-assert invariants that should have been guaranteed by the type.
-- **Anemic model pushes all business-rule testing to the use-case layer**, which
-  requires mocking the repository, than allowing pure, dependency-free unit tests
-  against domain methods (e.g. `product.Archive()`, `variant.AdjustStock(qty)`).
-  This is slower to write and slower to run at scale.
-- **Framework-tag coupling.** Because `binding`/`validate` struct tags live on the same
-  types used elsewhere, any test that constructs these structs is implicitly coupled
-  to `go-playground/validator`/Gin conventions even when the test has nothing to do
-  with HTTP binding.
+Work through the steps **in order**. Each step should be a separate commit. Run `go build ./...` and `go test ./...` after each step before moving to the next.
 
 ---
 
-## Refactoring Proposal
+## Step 0 — Verify current DB schema
 
-### Phase 1 — Split by bounded context (biggest leverage, lowest risk)
-Break `product.go` into separate files/concepts reflecting the actual bounded
-contexts already implied by `PRD.md`:
-- `internal/domain/product.go` — `Product`, `ProductOption(Value)`, `ProductMedia`,
-  status enum + errors, `ProductRepository` (product/option/media only).
-- `internal/domain/variant.go` — `Variant`, `VariantMedia`, `VariantOption`,
-  `VariantRepository`.
-- `internal/domain/inventory.go` — `InventoryItem`, `InventoryLevel`, `StockMove`,
-  `StockMoveType`, `InventoryRepository` (owns `AdjustVariantStock`,
-  `VariantHasHistory`, stock move creation). Product/Variant use cases depend on this
-  via interface, not direct field access.
+1. Connect to the dev database (see `.env` / `DATABASE_URL`) and confirm the tables in spec Section 2 (`inventory_items`, `locations`, `inventory_levels`, `stock_moves`, `reservations`) exist with the columns listed there. If any are missing, write a migration under `migrations/` to create them (idempotent, `IF NOT EXISTS`, following the style of the existing two migration files).
+2. Add the `CHECK` constraints from spec Section 23 (`available_qty >= 0`, `reserved_qty >= 0`, `quantity > 0`) if not already present, via a new migration.
+3. Add a unique constraint/index to support idempotent reservation creation (spec Section 26) — e.g. a unique index on `reservations(order_id)` if the business rule is "one reservation batch per order", or an `idempotency_keys` table if you want a generic key. Pick the simplest option that satisfies "same order_id retried must not double-reserve" and document the choice in the migration file comment.
 
-### Phase 2 — Move HTTP DTOs out of `domain`
-Relocate `CreateProductInput`, `UpdateProductInput`, `VariantInput`,
-`CreateVariantInput`, `*MediaInput`, `PositionUpdate`, etc. (anything with `binding`/
-Gin-flavored `validate` tags) to `internal/delivery/http/dto` (or similar). Handlers
-map DTO → a plain application-layer command struct (no tags) before calling the use
-case. This removes the Gin/validator dependency from `domain` entirely and lets
-`domain` use cases accept clean, tag-free input types.
+**Do not proceed past this step with assumptions about column names** — read the actual schema.
 
-### Phase 3 — Strip persistence tags from entities
-Keep `db:"..."` tags only on repository-layer row structs (introduce
-`infrastructure/repository/model` structs if the shape must diverge from the domain
-entity), or, if `pgx.RowToStructByName` mapping onto the domain type directly is kept
-for pragmatism, at minimum stop adding `json`/`binding` alongside `db` on the same
-field — one tag vocabulary per struct, one struct per responsibility.
+## Step 1 — Domain layer (`internal/domain/`)
 
-### Phase 4 — Introduce aggregate behavior
-Add constructors and mutation methods so invariants live with the data:
-```go
-func NewProduct(handle, title string, categoryID int) (*Product, error)
-func (p *Product) AddVariant(v Variant) error   // enforces option/SKU consistency
-func (p *Product) Archive() error               // enforces allowed transitions
-func (l *InventoryLevel) Reserve(qty int) error // rejects qty > AvailableQty
-func (s ProductStatus) CanTransitionTo(next ProductStatus) bool
-```
-Use cases call these instead of mutating struct fields directly, and unit tests can
-exercise the rules without a mock repository.
+Extend `internal/domain/inventory.go` (or add a new `internal/domain/reservation.go` if that keeps the file readable):
 
-### Phase 5 — Separate read models from the write aggregate
-Move `ProductCategory`, `ProductPrices`, `ProductThumbnail`, `PaginatedProducts`,
-`ListProductParams` into a query-side type (e.g. `ProductListItem`/`ProductDetail`
-in a `domain` read-model file, or a dedicated `query` package) so `Product` (the
-create/update aggregate) no longer carries fields that only exist for list/detail
-responses.
+1. Add `ReservationStatus` type with `ACTIVE`, `COMPLETED`, `CANCELLED`, `EXPIRED` constants (spec 2.5).
+2. Add a `Reservation` struct matching the `reservations` table (spec 2.5): `ID`, `InventoryItemID`, `LocationID`, `OrderID`, `Quantity`, `ReservedAt`, `ExpiresAt`, `Status`, `ReleasedAt`.
+3. Add a `Location` struct matching spec 2.2, if not present.
+4. Add domain errors: `ErrVariantNotFound`, `ErrInventoryItemNotFound`, `ErrLocationNotFound`, `ErrInventoryLevelNotFound`, `ErrReservationNotFound`, `ErrReservationAlreadyCompleted`, `ErrReservationAlreadyCancelled`, `ErrDuplicateActiveReservation`, `ErrFromToLocationSame` — these map to the HTTP status table in spec Section 21 (404/409/400). Reuse `ErrInsufficientStock` and `ErrInvalidQuantity` already defined.
+5. Add request/response input structs for each of the 4 APIs, mirroring the JSON shapes in spec Sections 4.1, 8, 12, 15 (e.g. `CreateStockMoveInput`, `CreateReservationInput`, `ReservationItemInput`).
+6. Define the use case interfaces (one per API, following the `InsertCategoryUseCase`/`QueryCategoryUseCase` split pattern):
+   - `StockMoveUseCase` — `Create(ctx, CreateStockMoveInput) (StockMove, error)`
+   - `ReservationUseCase` — `Create(ctx, CreateReservationInput) (order-level result, error)`, `Complete(ctx, orderID uuid.UUID) (result, error)`, `Cancel(ctx, orderID uuid.UUID) (result, error)`
+   - Optionally `ReservationExpiryUseCase` — `ExpireDue(ctx) (int, error)` for Step 5's background worker.
+7. Define the repository interface(s) the use cases depend on, e.g. `InventoryRepository`:
+   - `ResolveInventoryItemIDByVariant(ctx, variantID) (uuid.UUID, error)`
+   - `LockInventoryLevel(ctx, tx, inventoryItemID, locationID) (InventoryLevel, error)` — must be callable within a caller-supplied transaction (see Step 3 on how this repo does transactions; if there's no existing transaction abstraction, add one — check `internal/infrastructure/database/database.go` for what's there before inventing a new pattern).
+   - `UpdateInventoryLevel(ctx, tx, level InventoryLevel) error`
+   - `InsertStockMove(ctx, tx, move StockMove) error`
+   - `InsertReservation(ctx, tx, r Reservation) error`
+   - `FindActiveReservationsByOrderID(ctx, tx, orderID) ([]Reservation, error)`
+   - `FindReservationsByOrderID(ctx, tx, orderID) ([]Reservation, error)` (for idempotent complete/cancel checks)
+   - `UpdateReservationStatus(ctx, tx, reservationID, status, releasedAt) error`
+   - `FindDueActiveReservations(ctx, tx, now) ([]Reservation, error)` (for expiry)
 
-### Phase 6 — Split `ProductRepository`
-Break into `ProductRepository`, `OptionRepository`, `VariantRepository`,
-`MediaRepository`, `InventoryRepository` per Phase 1's file split. Wire each
-individually in `internal/wire/container.go`; use cases depend only on the
-sub-interface they actually need (ISP).
+Keep interfaces minimal — add methods as the use cases in Step 3 actually need them, don't speculate beyond the spec.
 
-### Phase 7 — Introduce value objects (lower priority, do incrementally)
-- `Quantity` (non-negative int/decimal wrapper) for `AvailableQty`, `ReservedQty`,
-  `StockMove.Quantity`.
-- `Money` (amount + currency) for `Price`.
-- Resolve the dead commented-out `decimal.Decimal` lines (`product.go:112,152-153,165`)
-  one way or the other — delete or migrate, don't leave both.
+## Step 2 — Transaction support
 
-Suggested order of execution: **Phase 2 and 3 first** (they're mechanical, low-risk,
-and immediately un-block the "one struct, three responsibilities" problem), then
-**Phase 1 and 6** (file/interface splits, still mechanical), then **Phase 4 and 5**
-(behavioral changes, need test coverage first), then **Phase 7** opportunistically.
+Check `internal/infrastructure/database/database.go` and `postgres.go` for whether a `BeginTx`/transaction-scoped executor already exists (the `Database` interface wraps `*pgxpool.Pool`).
+
+- If it doesn't, add a minimal way for a repository method to run multiple statements in one `pgx.Tx` — e.g. a `Database.WithTx(ctx, func(tx pgx.Tx) error) error` helper, or expose `Pool().Begin(ctx)` and let the repository manage `tx.Commit()`/`tx.Rollback()`.
+- This is required by spec Section 3.2 — every multi-statement operation (stock move, reservation create/complete/cancel) must be one transaction.
+- All locking (`SELECT ... FOR UPDATE`) must happen using the transaction handle, not the pool directly, or the lock is meaningless.
+
+## Step 3 — Repository layer (`internal/infrastructure/repository/inventoryRepo.go`)
+
+Follow `categoryRepo.go` / `productRepo.go` conventions: `pgx.CollectRows` + `pgx.RowToStructByName`, and wrap every method with `metrics.ObserveDB("inventory", "<operation>")(time.Now())`.
+
+Implement each interface method from Step 1. Key correctness points from the spec — do not skip these:
+
+- **Resolve variant → inventory_item_id** internally (spec 3.1) — never accept `inventory_item_id` from a handler input.
+- **Row locking** (spec 3.3): every read-before-write on `inventory_levels` uses `SELECT ... FOR UPDATE`.
+- **Deterministic lock ordering** (spec 22): when a single operation locks multiple `inventory_levels` rows (TRANSFER between two locations, multi-item reservation), sort the target rows by `(inventory_item_id, location_id)` before acquiring locks, to avoid deadlocks.
+- Add corresponding DB models in `internal/infrastructure/repository/model/inventory_model.go` (e.g. `Reservation`, `Location`, `StockMove` DB structs with `db:"..."` tags and `ToDomain()` methods) — extend the existing file, don't duplicate `InventoryLevel`.
+
+## Step 4 — Use case layer (`internal/app/inventory/`)
+
+Create one file per operation (matches `internal/app/category/insertUseCase.go` style):
+
+1. `stockMoveUseCase.go` — implements spec Sections 4–6:
+   - Validate per move type (4.2): `IN` needs `to_location_id`, `OUT` needs `from_location_id` + sufficient stock, `TRANSFER` needs both + different + sufficient stock at source, `ADJUST` computes `difference = requested - current` and sets `available_qty` to the requested value directly.
+   - Generate the `StockMove.ID` as UUIDv7 here (per `CLAUDE.md` convention), not in the repo.
+   - Wrap the whole operation in one transaction (Step 2's helper).
+2. `reservationUseCase.go`:
+   - `Create` — implements spec Sections 9–11: validate all items up front, then for every item in a single transaction: resolve inventory item, lock level (in deterministic order across all items first — see spec 22), check `available_qty >= quantity`, decrement available/increment reserved, insert `Reservation` row (UUIDv7 IDs). If any item fails, the whole transaction rolls back — no partial reservations (spec 9/10). Handle the idempotency requirement (spec 9, 26): if an active reservation set already exists for `order_id`, return the existing result instead of creating a duplicate — decide and implement based on the unique constraint added in Step 0.3.
+   - `Complete` — implements spec Sections 12–14: find `ACTIVE` reservations for `order_id`, lock reservation + inventory level rows, decrement `reserved_qty` only (never touch `available_qty`), set `status = COMPLETED`, `released_at = now()`. If no active reservations exist, check whether the order was already completed (return success, idempotent) vs. never existed (404/409). If any single item is missing from the query, that's fine — the query only returns what's ACTIVE.
+   - `Cancel` — implements spec Sections 15–17: same lock pattern, but restores `available_qty += quantity` as well as decrementing `reserved_qty`, sets `status = CANCELLED`.
+   - Idempotency for `Complete`/`Cancel`: calling twice on an already-`COMPLETED`/`CANCELLED` order must be a no-op returning the current state, not an error and not a double-mutation (spec 12, 13, 15, 16).
+3. (Optional, spec Section 18) `reservationExpiryUseCase.go` — `ExpireDue`: find `ACTIVE` reservations where `expires_at < now()`, apply the same state transition as `Cancel` (restore available, decrement reserved, `status = EXPIRED`). This will be invoked by a scheduled job in Step 6, not by an HTTP handler.
+
+Constructors return domain interface types (`domain.ReservationUseCase`, etc.), not concrete structs — match `NewCategoryInsertUseCase(...) domain.InsertCategoryUseCase`.
+
+## Step 5 — HTTP delivery layer
+
+1. Add DTOs in `internal/delivery/http/dto/inventory_dto.go` for request/response bodies (spec 4.1/6, 8/11, 14, 17) — separate from domain types per this repo's existing pattern (see `product_dto.go`).
+2. Add `internal/delivery/http/handler/inventory_handler.go` with:
+   - `POST /v1/inventory/stock-moves`
+   - `POST /v1/inventory/reservations`
+   - `PUT /v1/inventory/reservations/:orderId/complete`
+   - `PUT /v1/inventory/reservations/:orderId/cancel`
+3. Map domain errors to HTTP status codes per spec Section 21 (400/404/409/500). Check how `category_handler.go` / `product_handler.go` currently map errors (likely a shared error-to-status helper) and reuse it rather than inventing a new pattern.
+4. Register the routes in `internal/delivery/http/router.go` under `/api/v1` (check whether the spec's literal paths `/v1/inventory/...` should be nested under the existing `/api/v1` group or added as-is — match whatever convention the existing routes use, note the discrepancy if the spec's paths don't already start with `/api`).
+5. Wire the new handler into `internal/wire/container.go` (repo → use cases → handler, following the `category`/`product` blocks already there) and thread it through `cmd/server/gin_server.go`'s `SetupRouter` call.
+6. Add Swagger annotations matching the existing handlers' style, then regenerate docs: `swag init -g cmd/main.go -o docs --parseInternal` (run from repo root).
+
+## Step 6 — Reservation expiration worker (spec Section 18)
+
+Implement as a background goroutine or scheduled ticker (check `cmd/main.go` / `cmd/server/gin_server.go` for how the server starts background work, if anything, before inventing a new pattern) that periodically calls `ReservationExpiryUseCase.ExpireDue`. Make sure it shuts down cleanly with the existing SIGINT/SIGTERM graceful shutdown (`gin_server.go` already has a 15s shutdown timeout — the worker must respect the same shutdown signal, not leak a goroutine).
+
+## Step 7 — Tests (spec Section 27 items 13–15, Section 28)
+
+Write these as you go per layer, not all at the end:
+
+- **Use case unit tests** (`internal/app/inventory/*_test.go`), mocking the repository interface: cover every scenario in spec Section 28 — IN, OUT, OUT-insufficient, TRANSFER, ADJUST increase/decrease, multi-item reservation success, one-item-insufficient (full rollback, no partial state), completion (incl. double-completion no-op), cancellation (incl. double-cancellation no-op).
+- **Repository/integration tests** for transaction and locking behavior — needs a real or test Postgres instance (check if `productRepo_test.go` already sets up a test DB connection/container; reuse that setup). Must include the concurrent-reservation scenario from spec Section 28: two goroutines racing to reserve more stock than available combined — assert exactly one succeeds and final `available_qty` never goes negative.
+- **HTTP handler tests** (`internal/delivery/http/handler/inventory_handler_test.go`) for success and each error status (400/404/409), following `product_handler_test.go`'s pattern (likely uses `httptest` + a mocked use case).
+
+Run `go test ./...` and confirm everything passes before considering the task done.
+
+## Definition of done
+
+- [ ] Schema verified/migrated (Step 0)
+- [ ] Domain types, errors, and interfaces added (Step 1)
+- [ ] Transaction support in place (Step 2)
+- [ ] Repository implemented with row locking + deterministic lock ordering (Step 3)
+- [ ] All 4 use cases implemented and idempotent where required (Step 4)
+- [ ] All 4 endpoints wired end-to-end through `router.go` and `wire/container.go` (Step 5)
+- [ ] Expiration worker implemented and shuts down cleanly (Step 6)
+- [ ] Unit, repository, and handler tests all passing, covering every scenario in spec Section 28 (Step 7)
+- [ ] `go build ./...` and `go test ./...` pass with no failures
+- [ ] Swagger docs regenerated
