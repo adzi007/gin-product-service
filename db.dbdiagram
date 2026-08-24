@@ -1,0 +1,88 @@
+{
+  "version": "3.0.0",
+  "darkMode": true,
+  "gridEnabling": false,
+  "currentViewName": null,
+  "defaultView": {
+    "detailLevel": "All",
+    "relationshipMode": "All",
+    "tablePositions": [
+      {
+        "name": "products",
+        "schemaName": "public",
+        "x": 506.82666015625,
+        "y": 53
+      },
+      {
+        "name": "product_options",
+        "schemaName": "public",
+        "x": 1006.26806640625,
+        "y": 53
+      },
+      {
+        "name": "product_option_values",
+        "schemaName": "public",
+        "x": 1505.70947265625,
+        "y": 53
+      },
+      {
+        "name": "variants",
+        "schemaName": "public",
+        "x": 1006.26806640625,
+        "y": 259
+      },
+      {
+        "name": "inventory_items",
+        "schemaName": "public",
+        "x": 1505.70947265625,
+        "y": 259
+      },
+      {
+        "name": "locations",
+        "schemaName": "public",
+        "x": 12,
+        "y": 12
+      },
+      {
+        "name": "inventory_levels",
+        "schemaName": "public",
+        "x": 2040.5361328125,
+        "y": 12
+      },
+      {
+        "name": "stock_moves",
+        "schemaName": "public",
+        "x": 2033.4749264095378,
+        "y": 297.2925068337443
+      },
+      {
+        "name": "reservations",
+        "schemaName": "public",
+        "x": 2040.5361328125,
+        "y": 688
+      },
+      {
+        "name": "category",
+        "schemaName": "public",
+        "x": 12,
+        "y": 282
+      },
+      {
+        "name": "product_media",
+        "schemaName": "public",
+        "x": 1006.26806640625,
+        "y": 721
+      },
+      {
+        "name": "variant_media",
+        "schemaName": "public",
+        "x": 1505.70947265625,
+        "y": 497
+      }
+    ],
+    "tableGroupCollapseStates": [],
+    "stickyNoteLayouts": [],
+    "referencePaths": []
+  },
+  "views": {}
+}
