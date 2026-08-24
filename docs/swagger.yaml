@@ -188,6 +188,22 @@ definitions:
       url:
         type: string
     type: object
+  domain.StockMoveType:
+    enum:
+    - IN
+    - OUT
+    - TRANSFER
+    - ADJUST
+    - RESERVE
+    - UNRESERVE
+    type: string
+    x-enum-varnames:
+    - StockMoveIn
+    - StockMoveOut
+    - StockMoveTransfer
+    - StockMoveAdjust
+    - StockMoveReserve
+    - StockMoveUnreserve
   domain.UpdateCategoryInput:
     properties:
       description:
@@ -371,6 +387,48 @@ definitions:
     - title
     - variants
     type: object
+  dto.CreateReservationRequest:
+    properties:
+      expires_at:
+        type: string
+      items:
+        items:
+          $ref: '#/definitions/dto.ReservationItemRequest'
+        minItems: 1
+        type: array
+      order_id:
+        type: string
+    required:
+    - items
+    - order_id
+    type: object
+  dto.CreateStockMoveRequest:
+    properties:
+      created_by:
+        type: string
+      from_location_id:
+        type: string
+      move_type:
+        allOf:
+        - $ref: '#/definitions/domain.StockMoveType'
+        enum:
+        - IN
+        - OUT
+        - TRANSFER
+        - ADJUST
+      quantity:
+        type: integer
+      reason:
+        type: string
+      to_location_id:
+        type: string
+      variant_id:
+        type: string
+    required:
+    - move_type
+    - quantity
+    - variant_id
+    type: object
   dto.CreateVariantInput:
     properties:
       barcode:
@@ -468,6 +526,19 @@ definitions:
         type: array
     required:
     - positions
+    type: object
+  dto.ReservationItemRequest:
+    properties:
+      location_id:
+        type: string
+      quantity:
+        type: integer
+      variant_id:
+        type: string
+    required:
+    - location_id
+    - quantity
+    - variant_id
     type: object
   dto.UpdateMediaInput:
     properties:
@@ -815,6 +886,176 @@ paths:
       summary: List categories for dropdown
       tags:
       - categories
+  /inventory/reservations:
+    post:
+      consumes:
+      - application/json
+      description: Reserve multiple variants for an order atomically; retrying the
+        same order_id returns the existing reservations (idempotent)
+      parameters:
+      - description: Reservations to create
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/dto.CreateReservationRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Create reservations for an order
+      tags:
+      - inventory
+  /inventory/reservations/{orderId}/cancel:
+    put:
+      description: Transition all ACTIVE reservations of an order to CANCELLED (returns
+        reserved stock to available). Idempotent.
+      parameters:
+      - description: Order ID
+        in: path
+        name: orderId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Cancel an order's reservations
+      tags:
+      - inventory
+  /inventory/reservations/{orderId}/complete:
+    put:
+      description: Transition all ACTIVE reservations of an order to COMPLETED (consumes
+        reserved stock). Idempotent.
+      parameters:
+      - description: Order ID
+        in: path
+        name: orderId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Complete an order's reservations
+      tags:
+      - inventory
+  /inventory/stock-moves:
+    post:
+      consumes:
+      - application/json
+      description: Record a physical/administrative stock movement and update the
+        affected inventory level(s) atomically (IN/OUT/TRANSFER/ADJUST)
+      parameters:
+      - description: Stock move to create
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/dto.CreateStockMoveRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Create a stock move
+      tags:
+      - inventory
   /products:
     get:
       description: Get a paginated, filterable list of products

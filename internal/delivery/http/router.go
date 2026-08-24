@@ -21,7 +21,7 @@ func NewAppRouter(app *gin.Engine) router {
 	}
 }
 
-func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler, productHandler *handler.ProductHandler, infraCheckerUseCase domain.InfraCheckUseCase) *gin.Engine {
+func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler, productHandler *handler.ProductHandler, inventoryHandler *handler.InventoryHandler, infraCheckerUseCase domain.InfraCheckUseCase) *gin.Engine {
 
 	r := router.appServer
 
@@ -101,6 +101,16 @@ func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler, prod
 			// Static /reorder must be registered before /:media_id.
 			variants.PATCH("/:id/media/reorder", productHandler.ReorderVariantMedia)
 			variants.DELETE("/:id/media/:media_id", productHandler.DetachVariantMedia)
+		}
+
+		inventory := v1.Group("/inventory")
+		{
+			inventory.POST("/stock-moves", inventoryHandler.CreateStockMove)
+			inventory.POST("/reservations", inventoryHandler.CreateReservation)
+			// Static complete/cancel must be registered before the :orderId
+			// wildcard (if one were added later); Gin resolves these literally.
+			inventory.PUT("/reservations/:orderId/complete", inventoryHandler.CompleteReservation)
+			inventory.PUT("/reservations/:orderId/cancel", inventoryHandler.CancelReservation)
 		}
 	}
 

@@ -344,6 +344,248 @@ const docTemplate = `{
                 }
             }
         },
+        "/inventory/reservations": {
+            "post": {
+                "description": "Reserve multiple variants for an order atomically; retrying the same order_id returns the existing reservations (idempotent)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Create reservations for an order",
+                "parameters": [
+                    {
+                        "description": "Reservations to create",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/dto.CreateReservationRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/inventory/reservations/{orderId}/cancel": {
+            "put": {
+                "description": "Transition all ACTIVE reservations of an order to CANCELLED (returns reserved stock to available). Idempotent.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Cancel an order's reservations",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Order ID",
+                        "name": "orderId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/inventory/reservations/{orderId}/complete": {
+            "put": {
+                "description": "Transition all ACTIVE reservations of an order to COMPLETED (consumes reserved stock). Idempotent.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Complete an order's reservations",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Order ID",
+                        "name": "orderId",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/inventory/stock-moves": {
+            "post": {
+                "description": "Record a physical/administrative stock movement and update the affected inventory level(s) atomically (IN/OUT/TRANSFER/ADJUST)",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Create a stock move",
+                "parameters": [
+                    {
+                        "description": "Stock move to create",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/dto.CreateStockMoveRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/products": {
             "get": {
                 "description": "Get a paginated, filterable list of products",
@@ -2453,6 +2695,25 @@ const docTemplate = `{
                 }
             }
         },
+        "domain.StockMoveType": {
+            "type": "string",
+            "enum": [
+                "IN",
+                "OUT",
+                "TRANSFER",
+                "ADJUST",
+                "RESERVE",
+                "UNRESERVE"
+            ],
+            "x-enum-varnames": [
+                "StockMoveIn",
+                "StockMoveOut",
+                "StockMoveTransfer",
+                "StockMoveAdjust",
+                "StockMoveReserve",
+                "StockMoveUnreserve"
+            ]
+        },
         "domain.UpdateCategoryInput": {
             "type": "object",
             "required": [
@@ -2721,6 +2982,69 @@ const docTemplate = `{
                 }
             }
         },
+        "dto.CreateReservationRequest": {
+            "type": "object",
+            "required": [
+                "items",
+                "order_id"
+            ],
+            "properties": {
+                "expires_at": {
+                    "type": "string"
+                },
+                "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/dto.ReservationItemRequest"
+                    }
+                },
+                "order_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.CreateStockMoveRequest": {
+            "type": "object",
+            "required": [
+                "move_type",
+                "quantity",
+                "variant_id"
+            ],
+            "properties": {
+                "created_by": {
+                    "type": "string"
+                },
+                "from_location_id": {
+                    "type": "string"
+                },
+                "move_type": {
+                    "enum": [
+                        "IN",
+                        "OUT",
+                        "TRANSFER",
+                        "ADJUST"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/domain.StockMoveType"
+                        }
+                    ]
+                },
+                "quantity": {
+                    "type": "integer"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "to_location_id": {
+                    "type": "string"
+                },
+                "variant_id": {
+                    "type": "string"
+                }
+            }
+        },
         "dto.CreateVariantInput": {
             "type": "object",
             "required": [
@@ -2864,6 +3188,25 @@ const docTemplate = `{
                     "items": {
                         "$ref": "#/definitions/dto.PositionUpdate"
                     }
+                }
+            }
+        },
+        "dto.ReservationItemRequest": {
+            "type": "object",
+            "required": [
+                "location_id",
+                "quantity",
+                "variant_id"
+            ],
+            "properties": {
+                "location_id": {
+                    "type": "string"
+                },
+                "quantity": {
+                    "type": "integer"
+                },
+                "variant_id": {
+                    "type": "string"
                 }
             }
         },

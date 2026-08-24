@@ -59,6 +59,21 @@ func (p *postgresDatabase) GetDb() *pgxpool.Pool {
 	return p.Db
 }
 
+// WithTx runs fn inside a single database transaction, committing on success
+// and rolling back on any error (spec Section 3.2).
+func (p *postgresDatabase) WithTx(ctx context.Context, fn TxFunc) error {
+	tx, err := p.Db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := fn(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func (p *postgresDatabase) Close() {
 	p.Db.Close()
 }

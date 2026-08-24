@@ -1,10 +1,13 @@
 package domain
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // StockMoveType enumerates the allowed stock movement kinds.
@@ -90,4 +93,119 @@ type StockMove struct {
 	CreatedBy       *uuid.UUID    `json:"created_by,omitempty"`
 	Reason          *string       `json:"reason,omitempty"`
 	CreatedAt       time.Time     `json:"created_at"`
+}
+
+// Location represents a warehouse, store, or other physical stocking point
+// (spec Section 2.2).
+type Location struct {
+	ID        uuid.UUID       `json:"id" db:"id"`
+	Name      string          `json:"name" db:"name"`
+	Type      *string         `json:"type,omitempty" db:"type"`
+	Address   json.RawMessage `json:"address,omitempty" db:"address"`
+	IsDefault bool            `json:"is_default" db:"is_default"`
+	CreatedAt time.Time       `json:"created_at" db:"created_at"`
+}
+
+// Errors surfaced by the inventory module. ErrVariantNotFound, ErrInvalidQuantity
+// and ErrInsufficientStock are defined elsewhere in this package and reused.
+var (
+	// ErrInvalidStockMoveInput is returned when a stock move request fails basic
+	// validation (spec Section 21: quantity <= 0, invalid move type, missing
+	// required location).
+	ErrInvalidStockMoveInput = errors.New("invalid stock move input")
+	// ErrInventoryItemNotFound is returned when a variant has no inventory item.
+	ErrInventoryItemNotFound = errors.New("inventory item not found")
+	// ErrLocationNotFound is returned when a referenced location does not exist.
+	ErrLocationNotFound = errors.New("location not found")
+	// ErrInventoryLevelNotFound is returned when no inventory level exists for
+	// an item/location pair.
+	ErrInventoryLevelNotFound = errors.New("inventory level not found")
+	// ErrFromToLocationSame is returned when a TRANSFER references the same
+	// from and to location.
+	ErrFromToLocationSame = errors.New("from and to location must be different")
+)
+
+// Tx is the transaction handle passed to transaction-scoped repository methods.
+// It is an alias of pgx.Tx so use cases can reference it without importing pgx
+// directly.
+type Tx = pgx.Tx
+
+// CreateStockMoveInput is the request payload for creating a stock move
+// (spec Section 4.1). Move-type specific validation is applied by the use case.
+type CreateStockMoveInput struct {
+	VariantID      uuid.UUID     `json:"variant_id"`
+	MoveType       StockMoveType `json:"move_type"`
+	Quantity       int           `json:"quantity"`
+	FromLocationID *uuid.UUID    `json:"from_location_id"`
+	ToLocationID   *uuid.UUID    `json:"to_location_id"`
+	Reason         *string       `json:"reason"`
+	CreatedBy      *uuid.UUID    `json:"created_by"`
+}
+
+// StockMoveUseCase is the application-layer contract for recording a stock move
+// (spec Sections 4-6).
+type StockMoveUseCase interface {
+	Create(ctx context.Context, input CreateStockMoveInput) (StockMove, error)
+}
+
+// InventoryRepository is the persistence contract for the inventory module.
+//
+// Every method that participates in a multi-statement operation takes a
+// pgx.Tx obtained from WithTx; callers must never pass a transaction across two
+// WithTx invocations.
+//
+// Note: pgx.Tx appears in this domain interface as a deliberate, pragmatic
+// exception to the "no infrastructure types in domain" rule. Inventory
+// operations are inherently transactional (spec Section 3.2) and the use cases
+// orchestrate several statements inside a single transaction, so the repository
+// exposes a caller-supplied transaction handle rather than hiding it behind a
+// coarse-grained method.
+type InventoryRepository interface {
+	// WithTx runs fn inside a single database transaction. It commits when fn
+	// returns nil and rolls back otherwise. All other methods that accept a
+	// Tx must be invoked from inside fn.
+	WithTx(ctx context.Context, fn func(ctx context.Context, tx Tx) error) error
+
+	// ResolveInventoryItemIDByVariant returns the inventory_item.id for a
+	// variant, verifying the variant exists first (spec Section 3.1).
+	ResolveInventoryItemIDByVariant(ctx context.Context, tx Tx, variantID uuid.UUID) (uuid.UUID, error)
+
+	// LocationExists reports whether a location with the given id exists.
+	LocationExists(ctx context.Context, tx Tx, locationID uuid.UUID) (bool, error)
+
+	// LockInventoryLevel locks and returns the inventory level for an
+	// item/location pair (SELECT ... FOR UPDATE, spec Section 3.3). It returns
+	// ErrInventoryLevelNotFound when no level row exists.
+	LockInventoryLevel(ctx context.Context, tx Tx, inventoryItemID, locationID uuid.UUID) (InventoryLevel, error)
+
+	// UpdateInventoryLevel persists a modified inventory level.
+	UpdateInventoryLevel(ctx context.Context, tx Tx, level InventoryLevel) error
+
+	// InsertStockMove records a stock move.
+	InsertStockMove(ctx context.Context, tx Tx, move StockMove) error
+
+	// InsertReservation records a reservation row.
+	InsertReservation(ctx context.Context, tx Tx, r Reservation) error
+
+	// TryAcquireIdempotencyKey atomically claims the reservation idempotency key
+	// for an order (idempotency_keys table). It returns true for the request
+	// that wins the claim and false when a prior request already claimed it;
+	// the claim is rolled back if the surrounding transaction fails.
+	TryAcquireIdempotencyKey(ctx context.Context, tx Tx, orderID uuid.UUID) (bool, error)
+
+	// FindActiveReservationsByOrderID returns the ACTIVE reservations for an
+	// order, locking them FOR UPDATE in deterministic (item, location) order.
+	FindActiveReservationsByOrderID(ctx context.Context, tx Tx, orderID uuid.UUID) ([]Reservation, error)
+
+	// FindReservationsByOrderID returns all reservations for an order (any
+	// status), used for idempotent complete/cancel checks.
+	FindReservationsByOrderID(ctx context.Context, tx Tx, orderID uuid.UUID) ([]Reservation, error)
+
+	// UpdateReservationStatus transitions a reservation to the given status,
+	// stamping released_at when releasedAt is non-nil.
+	UpdateReservationStatus(ctx context.Context, tx Tx, reservationID uuid.UUID, status ReservationStatus, releasedAt *time.Time) error
+
+	// FindDueActiveReservations returns ACTIVE reservations whose expires_at is
+	// before now, locking them FOR UPDATE SKIP LOCKED (for the expiry worker).
+	FindDueActiveReservations(ctx context.Context, tx Tx, now time.Time) ([]Reservation, error)
 }

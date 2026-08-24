@@ -9,7 +9,7 @@ import (
 func TestRouterRegistersProductOptionRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	appRouter := NewAppRouter(gin.New())
-	r := appRouter.SetupRouter(nil, nil, nil)
+	r := appRouter.SetupRouter(nil, nil, nil, nil)
 
 	for _, route := range []struct {
 		method string
