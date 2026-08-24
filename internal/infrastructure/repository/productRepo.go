@@ -208,15 +208,24 @@ func (r *productRepo) Create(ctx context.Context, params domain.CreateProductPar
 	return product, nil
 }
 
-// FindAll returns a lightweight page of products (base columns plus the nested
-// category reference and min/max variant prices, no nested options/variants/
-// media) matching the given filter, plus the total count of matching rows
-// before pagination.
-func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductParams) ([]domain.ProductListItem, int, error) {
+// priceStatsJoin supplies each product's min/max variant price range as a
+// single-row LATERAL join. It is shared by FindAll's count and data queries so
+// the WHERE clause can reference price_stats.* columns.
+const priceStatsJoin = `LEFT JOIN LATERAL (
+		SELECT MIN(v.price) AS min_price, MAX(v.price) AS max_price
+		FROM variants v
+		WHERE v.product_id = products.id AND v.is_deleted = false
+	) price_stats ON true`
 
-	defer metrics.ObserveDB("product", "find_all")(time.Now())
-
-	// Build the base conditions. sort_by / sort_dir are whitelisted below
+// buildListConditions assembles the WHERE conditions (with $N placeholders),
+// their bound arguments, and the total number of bound arguments for the
+// product list query. Price filtering reuses the same price_stats join as the
+// SELECT: minPrice only keeps products whose highest variant price is >=
+// minPrice, maxPrice only keeps products whose lowest variant price is <=
+// maxPrice, and both together keep products whose price range overlaps the
+// requested window (inclusive on both ends). Sorting remains whitelisted by
+// the caller.
+func buildListConditions(params domain.ListProductParams) ([]string, []interface{}, int) {
 	conditions := []string{}
 	args := []interface{}{}
 	argIdx := 0
@@ -242,14 +251,40 @@ func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductPara
 		conditions = append(conditions, fmt.Sprintf("products.status = $%d", argIdx))
 	}
 
+	if params.MinPrice != nil {
+		argIdx++
+		args = append(args, pgNumeric(*params.MinPrice))
+		conditions = append(conditions, fmt.Sprintf("price_stats.max_price >= $%d", argIdx))
+	}
+
+	if params.MaxPrice != nil {
+		argIdx++
+		args = append(args, pgNumeric(*params.MaxPrice))
+		conditions = append(conditions, fmt.Sprintf("price_stats.min_price <= $%d", argIdx))
+	}
+
+	return conditions, args, argIdx
+}
+
+// FindAll returns a lightweight page of products (base columns plus the nested
+// category reference and min/max variant prices, no nested options/variants/
+// media) matching the given filter, plus the total count of matching rows
+// before pagination.
+func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductParams) ([]domain.ProductListItem, int, error) {
+
+	defer metrics.ObserveDB("product", "find_all")(time.Now())
+
+	conditions, args, argIdx := buildListConditions(params)
+
 	where := ""
 	if len(conditions) > 0 {
 		where = " WHERE " + strings.Join(conditions, " AND ")
 	}
 
-	// total count matching filters (before pagination). The category join is
-	// required because the search condition can reference category.name.
-	countQuery := "SELECT COUNT(*) FROM products LEFT JOIN category ON products.category_id = category.id" + where
+	// total count matching filters (before pagination). The category and
+	// price_stats joins are required because the search and price conditions
+	// reference category.name and price_stats.* respectively.
+	countQuery := "SELECT COUNT(*) FROM products LEFT JOIN category ON products.category_id = category.id " + priceStatsJoin + where
 	var total int
 	if err := r.db.GetDb().QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, err
@@ -291,11 +326,7 @@ func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductPara
 
 		FROM products
 		LEFT JOIN category ON products.category_id = category.id
-		LEFT JOIN LATERAL (
-			SELECT MIN(v.price) AS min_price, MAX(v.price) AS max_price
-			FROM variants v
-			WHERE v.product_id = products.id AND v.is_deleted = false
-		) price_stats ON true
+		%s
 		LEFT JOIN LATERAL (
 			SELECT pm.type, pm.url, pm.alt_text
 			FROM product_media pm
@@ -305,7 +336,7 @@ func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductPara
 		%s
 		ORDER BY %s %s
 		LIMIT $%d OFFSET $%d
-	`, where, sortBy, sortDir, argIdx+1, argIdx+2)
+	`, priceStatsJoin, where, sortBy, sortDir, argIdx+1, argIdx+2)
 
 	args = append(args, params.PerPage, offset)
 

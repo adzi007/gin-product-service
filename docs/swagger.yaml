@@ -1,52 +1,5 @@
 basePath: /api/v1
 definitions:
-  domain.AttachVariantMediaInput:
-    properties:
-      media_id:
-        type: string
-    required:
-    - media_id
-    type: object
-  domain.BulkCreateMediaInput:
-    properties:
-      media:
-        items:
-          $ref: '#/definitions/domain.CreateMediaInput'
-        minItems: 1
-        type: array
-    required:
-    - media
-    type: object
-  domain.BulkCreateVariantsInput:
-    properties:
-      variants:
-        items:
-          $ref: '#/definitions/domain.CreateVariantInput'
-        minItems: 1
-        type: array
-    required:
-    - variants
-    type: object
-  domain.BulkDeleteVariantsInput:
-    properties:
-      ids:
-        items:
-          type: string
-        minItems: 1
-        type: array
-    required:
-    - ids
-    type: object
-  domain.BulkUpdateVariantsInput:
-    properties:
-      updates:
-        items:
-          $ref: '#/definitions/domain.VariantUpdateItem'
-        minItems: 1
-        type: array
-    required:
-    - updates
-    type: object
   domain.Category:
     properties:
       created_at:
@@ -87,130 +40,6 @@ definitions:
     required:
     - name
     type: object
-  domain.CreateMediaInput:
-    properties:
-      altText:
-        type: string
-      position:
-        minimum: 0
-        type: integer
-      type:
-        enum:
-        - image
-        - video
-        type: string
-      url:
-        type: string
-    required:
-    - type
-    - url
-    type: object
-  domain.CreateOptionInput:
-    properties:
-      name:
-        type: string
-      values:
-        items:
-          type: string
-        minItems: 1
-        type: array
-    required:
-    - name
-    - values
-    type: object
-  domain.CreateOptionValueInput:
-    properties:
-      position:
-        minimum: 0
-        type: integer
-      value:
-        type: string
-    required:
-    - value
-    type: object
-  domain.CreateProductInput:
-    properties:
-      categoryId:
-        type: integer
-      description:
-        type: string
-      gallery:
-        items:
-          $ref: '#/definitions/domain.GalleryMediaInput'
-        type: array
-      handle:
-        type: string
-      options:
-        items:
-          $ref: '#/definitions/domain.ProductOptionInput'
-        type: array
-      status:
-        allOf:
-        - $ref: '#/definitions/domain.ProductStatus'
-        enum:
-        - draft
-        - active
-        - archived
-      title:
-        type: string
-      variants:
-        items:
-          $ref: '#/definitions/domain.VariantInput'
-        minItems: 1
-        type: array
-      vendor:
-        type: string
-    required:
-    - categoryId
-    - handle
-    - title
-    - variants
-    type: object
-  domain.CreateVariantInput:
-    properties:
-      barcode:
-        type: string
-      media:
-        items:
-          $ref: '#/definitions/domain.VariantMediaItemInput'
-        type: array
-      options:
-        additionalProperties:
-          type: string
-        type: object
-      price:
-        type: number
-      sku:
-        type: string
-      stock:
-        minimum: 0
-        type: integer
-      title:
-        type: string
-      track_inventory:
-        type: boolean
-      weight:
-        type: number
-    required:
-    - price
-    - weight
-    type: object
-  domain.GalleryMediaInput:
-    properties:
-      altText:
-        type: string
-      id:
-        type: string
-      position:
-        type: integer
-      type:
-        type: string
-      url:
-        type: string
-    required:
-    - id
-    - url
-    type: object
   domain.PaginatedCategories:
     properties:
       data:
@@ -230,7 +59,7 @@ definitions:
     properties:
       data:
         items:
-          $ref: '#/definitions/domain.Product'
+          $ref: '#/definitions/domain.ProductListItem'
         type: array
       page:
         type: integer
@@ -241,17 +70,16 @@ definitions:
       total_pages:
         type: integer
     type: object
-  domain.PositionUpdate:
+  domain.ProductCategory:
     properties:
       id:
-        type: string
-      position:
-        minimum: 0
         type: integer
-    required:
-    - id
+      name:
+        type: string
+      slug:
+        type: string
     type: object
-  domain.Product:
+  domain.ProductListItem:
     properties:
       category:
         $ref: '#/definitions/domain.ProductCategory'
@@ -288,15 +116,6 @@ definitions:
       vendor:
         type: string
     type: object
-  domain.ProductCategory:
-    properties:
-      id:
-        type: integer
-      name:
-        type: string
-      slug:
-        type: string
-    type: object
   domain.ProductMedia:
     properties:
       alt_text:
@@ -331,19 +150,6 @@ definitions:
         items:
           $ref: '#/definitions/domain.ProductOptionValue'
         type: array
-    type: object
-  domain.ProductOptionInput:
-    properties:
-      name:
-        type: string
-      values:
-        items:
-          type: string
-        minItems: 1
-        type: array
-    required:
-    - name
-    - values
     type: object
   domain.ProductOptionValue:
     properties:
@@ -382,36 +188,6 @@ definitions:
       url:
         type: string
     type: object
-  domain.ReorderMediaInput:
-    properties:
-      positions:
-        items:
-          $ref: '#/definitions/domain.PositionUpdate'
-        minItems: 1
-        type: array
-    required:
-    - positions
-    type: object
-  domain.ReorderOptionsInput:
-    properties:
-      positions:
-        items:
-          $ref: '#/definitions/domain.PositionUpdate'
-        minItems: 1
-        type: array
-    required:
-    - positions
-    type: object
-  domain.ReorderVariantsInput:
-    properties:
-      positions:
-        items:
-          $ref: '#/definitions/domain.PositionUpdate'
-        minItems: 1
-        type: array
-    required:
-    - positions
-    type: object
   domain.UpdateCategoryInput:
     properties:
       description:
@@ -425,66 +201,6 @@ definitions:
         type: string
     required:
     - name
-    type: object
-  domain.UpdateMediaInput:
-    properties:
-      altText:
-        type: string
-    type: object
-  domain.UpdateOptionInput:
-    properties:
-      name:
-        type: string
-    required:
-    - name
-    type: object
-  domain.UpdateOptionValueInput:
-    properties:
-      position:
-        minimum: 0
-        type: integer
-      value:
-        type: string
-    type: object
-  domain.UpdateProductInput:
-    properties:
-      categoryId:
-        type: integer
-      description:
-        type: string
-      handle:
-        type: string
-      status:
-        allOf:
-        - $ref: '#/definitions/domain.ProductStatus'
-        enum:
-        - draft
-        - active
-        - archived
-      title:
-        type: string
-      vendor:
-        type: string
-    type: object
-  domain.UpdateVariantInput:
-    properties:
-      barcode:
-        type: string
-      media:
-        items:
-          $ref: '#/definitions/domain.VariantMediaItemInput'
-        type: array
-      price:
-        type: number
-      sku:
-        type: string
-      stock:
-        minimum: 0
-        type: integer
-      title:
-        type: string
-      weight:
-        type: number
     type: object
   domain.Variant:
     properties:
@@ -514,7 +230,6 @@ definitions:
           Stock is the total available quantity across all inventory levels for
           this variant. It is computed (not stored) and only populated on the
           single-product detail path.
-          Stock decimal.Decimal `json:"stock" db:"stock"`
         type: integer
       title:
         type: string
@@ -523,13 +238,146 @@ definitions:
       weight:
         type: number
     type: object
-  domain.VariantInput:
+  domain.VariantMedia:
+    properties:
+      id:
+        type: string
+      position:
+        type: integer
+    type: object
+  dto.AttachVariantMediaInput:
+    properties:
+      media_id:
+        type: string
+    required:
+    - media_id
+    type: object
+  dto.BulkCreateMediaInput:
+    properties:
+      media:
+        items:
+          $ref: '#/definitions/dto.CreateMediaInput'
+        minItems: 1
+        type: array
+    required:
+    - media
+    type: object
+  dto.BulkCreateVariantsInput:
+    properties:
+      variants:
+        items:
+          $ref: '#/definitions/dto.CreateVariantInput'
+        minItems: 1
+        type: array
+    required:
+    - variants
+    type: object
+  dto.BulkDeleteVariantsInput:
+    properties:
+      ids:
+        items:
+          type: string
+        minItems: 1
+        type: array
+    required:
+    - ids
+    type: object
+  dto.BulkUpdateVariantsInput:
+    properties:
+      updates:
+        items:
+          $ref: '#/definitions/dto.VariantUpdateItem'
+        minItems: 1
+        type: array
+    required:
+    - updates
+    type: object
+  dto.CreateMediaInput:
+    properties:
+      altText:
+        type: string
+      position:
+        minimum: 0
+        type: integer
+      type:
+        enum:
+        - image
+        - video
+        type: string
+      url:
+        type: string
+    required:
+    - type
+    - url
+    type: object
+  dto.CreateOptionInput:
+    properties:
+      name:
+        type: string
+      values:
+        items:
+          type: string
+        minItems: 1
+        type: array
+    required:
+    - name
+    - values
+    type: object
+  dto.CreateOptionValueInput:
+    properties:
+      position:
+        minimum: 0
+        type: integer
+      value:
+        type: string
+    required:
+    - value
+    type: object
+  dto.CreateProductInput:
+    properties:
+      categoryId:
+        type: integer
+      description:
+        type: string
+      gallery:
+        items:
+          $ref: '#/definitions/dto.GalleryMediaInput'
+        type: array
+      handle:
+        type: string
+      options:
+        items:
+          $ref: '#/definitions/dto.ProductOptionInput'
+        type: array
+      status:
+        allOf:
+        - $ref: '#/definitions/domain.ProductStatus'
+        enum:
+        - draft
+        - active
+        - archived
+      title:
+        type: string
+      variants:
+        items:
+          $ref: '#/definitions/dto.VariantInput'
+        minItems: 1
+        type: array
+      vendor:
+        type: string
+    required:
+    - categoryId
+    - handle
+    - title
+    - variants
+    type: object
+  dto.CreateVariantInput:
     properties:
       barcode:
         type: string
       media:
         items:
-          $ref: '#/definitions/domain.VariantMediaInput'
+          $ref: '#/definitions/dto.VariantMediaItemInput'
         type: array
       options:
         additionalProperties:
@@ -552,14 +400,165 @@ definitions:
     - price
     - weight
     type: object
-  domain.VariantMedia:
+  dto.GalleryMediaInput:
     properties:
+      altText:
+        type: string
       id:
         type: string
       position:
         type: integer
+      type:
+        type: string
+      url:
+        type: string
+    required:
+    - id
+    - url
     type: object
-  domain.VariantMediaInput:
+  dto.PositionUpdate:
+    properties:
+      id:
+        type: string
+      position:
+        minimum: 0
+        type: integer
+    required:
+    - id
+    type: object
+  dto.ProductOptionInput:
+    properties:
+      name:
+        type: string
+      values:
+        items:
+          type: string
+        minItems: 1
+        type: array
+    required:
+    - name
+    - values
+    type: object
+  dto.ReorderMediaInput:
+    properties:
+      positions:
+        items:
+          $ref: '#/definitions/dto.PositionUpdate'
+        minItems: 1
+        type: array
+    required:
+    - positions
+    type: object
+  dto.ReorderOptionsInput:
+    properties:
+      positions:
+        items:
+          $ref: '#/definitions/dto.PositionUpdate'
+        minItems: 1
+        type: array
+    required:
+    - positions
+    type: object
+  dto.ReorderVariantsInput:
+    properties:
+      positions:
+        items:
+          $ref: '#/definitions/dto.PositionUpdate'
+        minItems: 1
+        type: array
+    required:
+    - positions
+    type: object
+  dto.UpdateMediaInput:
+    properties:
+      altText:
+        type: string
+    type: object
+  dto.UpdateOptionInput:
+    properties:
+      name:
+        type: string
+    required:
+    - name
+    type: object
+  dto.UpdateOptionValueInput:
+    properties:
+      position:
+        minimum: 0
+        type: integer
+      value:
+        type: string
+    type: object
+  dto.UpdateProductInput:
+    properties:
+      categoryId:
+        type: integer
+      description:
+        type: string
+      handle:
+        type: string
+      status:
+        allOf:
+        - $ref: '#/definitions/domain.ProductStatus'
+        enum:
+        - draft
+        - active
+        - archived
+      title:
+        type: string
+      vendor:
+        type: string
+    type: object
+  dto.UpdateVariantInput:
+    properties:
+      barcode:
+        type: string
+      media:
+        items:
+          $ref: '#/definitions/dto.VariantMediaItemInput'
+        type: array
+      price:
+        type: number
+      sku:
+        type: string
+      stock:
+        minimum: 0
+        type: integer
+      title:
+        type: string
+      weight:
+        type: number
+    type: object
+  dto.VariantInput:
+    properties:
+      barcode:
+        type: string
+      media:
+        items:
+          $ref: '#/definitions/dto.VariantMediaInput'
+        type: array
+      options:
+        additionalProperties:
+          type: string
+        type: object
+      price:
+        type: number
+      sku:
+        type: string
+      stock:
+        minimum: 0
+        type: integer
+      title:
+        type: string
+      track_inventory:
+        type: boolean
+      weight:
+        type: number
+    required:
+    - price
+    - weight
+    type: object
+  dto.VariantMediaInput:
     properties:
       id:
         type: string
@@ -568,7 +567,7 @@ definitions:
     required:
     - id
     type: object
-  domain.VariantMediaItemInput:
+  dto.VariantMediaItemInput:
     properties:
       altText:
         type: string
@@ -581,10 +580,10 @@ definitions:
       url:
         type: string
     type: object
-  domain.VariantUpdateItem:
+  dto.VariantUpdateItem:
     properties:
       fields:
-        $ref: '#/definitions/domain.UpdateVariantInput'
+        $ref: '#/definitions/dto.UpdateVariantInput'
       id:
         type: string
     required:
@@ -833,6 +832,16 @@ paths:
         in: query
         name: status
         type: string
+      - description: Minimum variant price (inclusive). Products must have a variant
+          priced >= minPrice
+        in: query
+        name: minPrice
+        type: number
+      - description: Maximum variant price (inclusive). Products must have a variant
+          priced <= maxPrice
+        in: query
+        name: maxPrice
+        type: number
       - description: Page number (1-indexed)
         in: query
         name: page
@@ -880,7 +889,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/domain.CreateProductInput'
+          $ref: '#/definitions/dto.CreateProductInput'
       produces:
       - application/json
       responses:
@@ -988,7 +997,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/domain.UpdateProductInput'
+          $ref: '#/definitions/dto.UpdateProductInput'
       produces:
       - application/json
       responses:
@@ -1036,7 +1045,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/domain.BulkCreateMediaInput'
+          $ref: '#/definitions/dto.BulkCreateMediaInput'
       produces:
       - application/json
       responses:
@@ -1123,7 +1132,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/domain.UpdateMediaInput'
+          $ref: '#/definitions/dto.UpdateMediaInput'
       produces:
       - application/json
       responses:
@@ -1166,7 +1175,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/domain.ReorderMediaInput'
+          $ref: '#/definitions/dto.ReorderMediaInput'
       produces:
       - application/json
       responses:
@@ -1209,7 +1218,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/domain.CreateOptionInput'
+          $ref: '#/definitions/dto.CreateOptionInput'
       produces:
       - application/json
       responses:
@@ -1301,7 +1310,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/domain.UpdateOptionInput'
+          $ref: '#/definitions/dto.UpdateOptionInput'
       produces:
       - application/json
       responses:
@@ -1349,7 +1358,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/domain.CreateOptionValueInput'
+          $ref: '#/definitions/dto.CreateOptionValueInput'
       produces:
       - application/json
       responses:
@@ -1446,7 +1455,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/domain.UpdateOptionValueInput'
+          $ref: '#/definitions/dto.UpdateOptionValueInput'
       produces:
       - application/json
       responses:
@@ -1489,7 +1498,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/domain.ReorderOptionsInput'
+          $ref: '#/definitions/dto.ReorderOptionsInput'
       produces:
       - application/json
       responses:
@@ -1608,7 +1617,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/domain.CreateVariantInput'
+          $ref: '#/definitions/dto.CreateVariantInput'
       produces:
       - application/json
       responses:
@@ -1656,7 +1665,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/domain.BulkUpdateVariantsInput'
+          $ref: '#/definitions/dto.BulkUpdateVariantsInput'
       produces:
       - application/json
       responses:
@@ -1703,7 +1712,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/domain.BulkCreateVariantsInput'
+          $ref: '#/definitions/dto.BulkCreateVariantsInput'
       produces:
       - application/json
       responses:
@@ -1751,7 +1760,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/domain.BulkDeleteVariantsInput'
+          $ref: '#/definitions/dto.BulkDeleteVariantsInput'
       produces:
       - application/json
       responses:
@@ -1794,7 +1803,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/domain.ReorderVariantsInput'
+          $ref: '#/definitions/dto.ReorderVariantsInput'
       produces:
       - application/json
       responses:
@@ -1872,7 +1881,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/domain.UpdateVariantInput'
+          $ref: '#/definitions/dto.UpdateVariantInput'
       produces:
       - application/json
       responses:
@@ -1920,7 +1929,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/domain.AttachVariantMediaInput'
+          $ref: '#/definitions/dto.AttachVariantMediaInput'
       produces:
       - application/json
       responses:
@@ -2004,7 +2013,7 @@ paths:
         name: body
         required: true
         schema:
-          $ref: '#/definitions/domain.ReorderMediaInput'
+          $ref: '#/definitions/dto.ReorderMediaInput'
       produces:
       - application/json
       responses:

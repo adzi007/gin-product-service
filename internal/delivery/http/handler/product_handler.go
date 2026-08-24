@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -107,6 +108,8 @@ func (h *ProductHandler) Create(c *gin.Context) {
 // @Param        search      query string false "Filter by partial (case-insensitive) title, handle or category name match"
 // @Param        category_id query int    false "Filter by category ID (0 means no filter)"
 // @Param        status      query string false "Filter by status. One of: draft, active, archived"
+// @Param        minPrice    query number false "Minimum variant price (inclusive). Products must have a variant priced >= minPrice"
+// @Param        maxPrice    query number false "Maximum variant price (inclusive). Products must have a variant priced <= maxPrice"
 // @Param        page        query int    false "Page number (1-indexed)"
 // @Param        per_page    query int    false "Items per page"
 // @Param        sort_by     query string false "Sort column. One of: title, created_at, category_name"
@@ -147,10 +150,27 @@ func (h *ProductHandler) Fetch(c *gin.Context) {
 		return
 	}
 
+	minPrice, err := parsePriceQueryParam(c, "minPrice")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+	maxPrice, err := parsePriceQueryParam(c, "maxPrice")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+	if minPrice != nil && maxPrice != nil && minPrice.GreaterThan(*maxPrice) {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", "invalid price range: minPrice must not be greater than maxPrice"))
+		return
+	}
+
 	params := domain.ListProductParams{
 		Search:     c.Query("search"),
 		CategoryID: categoryID,
 		Status:     status,
+		MinPrice:   minPrice,
+		MaxPrice:   maxPrice,
 		Page:       page,
 		PerPage:    perPage,
 		SortBy:     sortBy,
@@ -167,6 +187,26 @@ func (h *ProductHandler) Fetch(c *gin.Context) {
 		"status": "success",
 		"data":   data,
 	})
+}
+
+// parsePriceQueryParam parses an optional decimal query parameter used by the
+// price filter. An empty value means "not provided" and returns a nil pointer.
+// A non-empty value must parse as a valid non-negative decimal number; both
+// `decimal.NewFromString` failures (e.g. "abc", "NaN") and negative values are
+// rejected.
+func parsePriceQueryParam(c *gin.Context, name string) (*decimal.Decimal, error) {
+	raw := c.Query(name)
+	if raw == "" {
+		return nil, nil
+	}
+	value, err := decimal.NewFromString(raw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s: must be a valid non-negative number", name)
+	}
+	if value.IsNegative() {
+		return nil, fmt.Errorf("invalid %s: must not be negative", name)
+	}
+	return &value, nil
 }
 
 // GetByID godoc

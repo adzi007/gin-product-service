@@ -32,9 +32,11 @@ type ProductThumbnail struct {
 // fields mirror domain.ListCategoryParams in category.go — keep those field
 // names consistent.
 type ListProductParams struct {
-	Search     string // matches against title, handle and category name via ILIKE
-	CategoryID int    // product-specific: 0 means "no filter"
-	Status     string // product-specific: empty means "no filter"; whitelisted: "draft", "active", "archived"
+	Search     string           // matches against title, handle and category name via ILIKE
+	CategoryID int              // product-specific: 0 means "no filter"
+	Status     string           // product-specific: empty means "no filter"; whitelisted: "draft", "active", "archived"
+	MinPrice   *decimal.Decimal // optional: only include products with a variant price >= MinPrice (inclusive)
+	MaxPrice   *decimal.Decimal // optional: only include products with a variant price <= MaxPrice (inclusive)
 	Page       int
 	PerPage    int
 	SortBy     string // whitelisted: "title", "created_at", "category_name"

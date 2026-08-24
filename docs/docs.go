@@ -374,6 +374,18 @@ const docTemplate = `{
                         "in": "query"
                     },
                     {
+                        "type": "number",
+                        "description": "Minimum variant price (inclusive). Products must have a variant priced \u003e= minPrice",
+                        "name": "minPrice",
+                        "in": "query"
+                    },
+                    {
+                        "type": "number",
+                        "description": "Maximum variant price (inclusive). Products must have a variant priced \u003c= maxPrice",
+                        "name": "maxPrice",
+                        "in": "query"
+                    },
+                    {
                         "type": "integer",
                         "description": "Page number (1-indexed)",
                         "name": "page",
@@ -440,7 +452,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/domain.CreateProductInput"
+                            "$ref": "#/definitions/dto.CreateProductInput"
                         }
                     }
                 ],
@@ -594,7 +606,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/domain.UpdateProductInput"
+                            "$ref": "#/definitions/dto.UpdateProductInput"
                         }
                     }
                 ],
@@ -664,7 +676,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/domain.BulkCreateMediaInput"
+                            "$ref": "#/definitions/dto.BulkCreateMediaInput"
                         }
                     }
                 ],
@@ -727,7 +739,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/domain.ReorderMediaInput"
+                            "$ref": "#/definitions/dto.ReorderMediaInput"
                         }
                     }
                 ],
@@ -853,7 +865,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/domain.UpdateMediaInput"
+                            "$ref": "#/definitions/dto.UpdateMediaInput"
                         }
                     }
                 ],
@@ -916,7 +928,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/domain.CreateOptionInput"
+                            "$ref": "#/definitions/dto.CreateOptionInput"
                         }
                     }
                 ],
@@ -986,7 +998,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/domain.ReorderOptionsInput"
+                            "$ref": "#/definitions/dto.ReorderOptionsInput"
                         }
                     }
                 ],
@@ -1112,7 +1124,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/domain.UpdateOptionInput"
+                            "$ref": "#/definitions/dto.UpdateOptionInput"
                         }
                     }
                 ],
@@ -1182,7 +1194,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/domain.CreateOptionValueInput"
+                            "$ref": "#/definitions/dto.CreateOptionValueInput"
                         }
                     }
                 ],
@@ -1322,7 +1334,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/domain.UpdateOptionValueInput"
+                            "$ref": "#/definitions/dto.UpdateOptionValueInput"
                         }
                     }
                 ],
@@ -1494,7 +1506,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/domain.CreateVariantInput"
+                            "$ref": "#/definitions/dto.CreateVariantInput"
                         }
                     }
                 ],
@@ -1564,7 +1576,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/domain.BulkCreateVariantsInput"
+                            "$ref": "#/definitions/dto.BulkCreateVariantsInput"
                         }
                     }
                 ],
@@ -1632,7 +1644,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/domain.BulkUpdateVariantsInput"
+                            "$ref": "#/definitions/dto.BulkUpdateVariantsInput"
                         }
                     }
                 ],
@@ -1702,7 +1714,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/domain.BulkDeleteVariantsInput"
+                            "$ref": "#/definitions/dto.BulkDeleteVariantsInput"
                         }
                     }
                 ],
@@ -1765,7 +1777,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/domain.ReorderVariantsInput"
+                            "$ref": "#/definitions/dto.ReorderVariantsInput"
                         }
                     }
                 ],
@@ -1877,7 +1889,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/domain.UpdateVariantInput"
+                            "$ref": "#/definitions/dto.UpdateVariantInput"
                         }
                     }
                 ],
@@ -1947,7 +1959,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/domain.AttachVariantMediaInput"
+                            "$ref": "#/definitions/dto.AttachVariantMediaInput"
                         }
                     }
                 ],
@@ -2010,7 +2022,7 @@ const docTemplate = `{
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/domain.ReorderMediaInput"
+                            "$ref": "#/definitions/dto.ReorderMediaInput"
                         }
                     }
                 ],
@@ -2157,77 +2169,6 @@ const docTemplate = `{
         }
     },
     "definitions": {
-        "domain.AttachVariantMediaInput": {
-            "type": "object",
-            "required": [
-                "media_id"
-            ],
-            "properties": {
-                "media_id": {
-                    "type": "string"
-                }
-            }
-        },
-        "domain.BulkCreateMediaInput": {
-            "type": "object",
-            "required": [
-                "media"
-            ],
-            "properties": {
-                "media": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "$ref": "#/definitions/domain.CreateMediaInput"
-                    }
-                }
-            }
-        },
-        "domain.BulkCreateVariantsInput": {
-            "type": "object",
-            "required": [
-                "variants"
-            ],
-            "properties": {
-                "variants": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "$ref": "#/definitions/domain.CreateVariantInput"
-                    }
-                }
-            }
-        },
-        "domain.BulkDeleteVariantsInput": {
-            "type": "object",
-            "required": [
-                "ids"
-            ],
-            "properties": {
-                "ids": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "type": "string"
-                    }
-                }
-            }
-        },
-        "domain.BulkUpdateVariantsInput": {
-            "type": "object",
-            "required": [
-                "updates"
-            ],
-            "properties": {
-                "updates": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "$ref": "#/definitions/domain.VariantUpdateItem"
-                    }
-                }
-            }
-        },
         "domain.Category": {
             "type": "object",
             "properties": {
@@ -2288,190 +2229,6 @@ const docTemplate = `{
                 }
             }
         },
-        "domain.CreateMediaInput": {
-            "type": "object",
-            "required": [
-                "type",
-                "url"
-            ],
-            "properties": {
-                "altText": {
-                    "type": "string"
-                },
-                "position": {
-                    "type": "integer",
-                    "minimum": 0
-                },
-                "type": {
-                    "type": "string",
-                    "enum": [
-                        "image",
-                        "video"
-                    ]
-                },
-                "url": {
-                    "type": "string"
-                }
-            }
-        },
-        "domain.CreateOptionInput": {
-            "type": "object",
-            "required": [
-                "name",
-                "values"
-            ],
-            "properties": {
-                "name": {
-                    "type": "string"
-                },
-                "values": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "type": "string"
-                    }
-                }
-            }
-        },
-        "domain.CreateOptionValueInput": {
-            "type": "object",
-            "required": [
-                "value"
-            ],
-            "properties": {
-                "position": {
-                    "type": "integer",
-                    "minimum": 0
-                },
-                "value": {
-                    "type": "string"
-                }
-            }
-        },
-        "domain.CreateProductInput": {
-            "type": "object",
-            "required": [
-                "categoryId",
-                "handle",
-                "title",
-                "variants"
-            ],
-            "properties": {
-                "categoryId": {
-                    "type": "integer"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "gallery": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/domain.GalleryMediaInput"
-                    }
-                },
-                "handle": {
-                    "type": "string"
-                },
-                "options": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/domain.ProductOptionInput"
-                    }
-                },
-                "status": {
-                    "enum": [
-                        "draft",
-                        "active",
-                        "archived"
-                    ],
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/domain.ProductStatus"
-                        }
-                    ]
-                },
-                "title": {
-                    "type": "string"
-                },
-                "variants": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "$ref": "#/definitions/domain.VariantInput"
-                    }
-                },
-                "vendor": {
-                    "type": "string"
-                }
-            }
-        },
-        "domain.CreateVariantInput": {
-            "type": "object",
-            "required": [
-                "price",
-                "weight"
-            ],
-            "properties": {
-                "barcode": {
-                    "type": "string"
-                },
-                "media": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/domain.VariantMediaItemInput"
-                    }
-                },
-                "options": {
-                    "type": "object",
-                    "additionalProperties": {
-                        "type": "string"
-                    }
-                },
-                "price": {
-                    "type": "number"
-                },
-                "sku": {
-                    "type": "string"
-                },
-                "stock": {
-                    "type": "integer",
-                    "minimum": 0
-                },
-                "title": {
-                    "type": "string"
-                },
-                "track_inventory": {
-                    "type": "boolean"
-                },
-                "weight": {
-                    "type": "number"
-                }
-            }
-        },
-        "domain.GalleryMediaInput": {
-            "type": "object",
-            "required": [
-                "id",
-                "url"
-            ],
-            "properties": {
-                "altText": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "position": {
-                    "type": "integer"
-                },
-                "type": {
-                    "type": "string"
-                },
-                "url": {
-                    "type": "string"
-                }
-            }
-        },
         "domain.PaginatedCategories": {
             "type": "object",
             "properties": {
@@ -2501,7 +2258,7 @@ const docTemplate = `{
                 "data": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/domain.Product"
+                        "$ref": "#/definitions/domain.ProductListItem"
                     }
                 },
                 "page": {
@@ -2518,22 +2275,21 @@ const docTemplate = `{
                 }
             }
         },
-        "domain.PositionUpdate": {
+        "domain.ProductCategory": {
             "type": "object",
-            "required": [
-                "id"
-            ],
             "properties": {
                 "id": {
+                    "type": "integer"
+                },
+                "name": {
                     "type": "string"
                 },
-                "position": {
-                    "type": "integer",
-                    "minimum": 0
+                "slug": {
+                    "type": "string"
                 }
             }
         },
-        "domain.Product": {
+        "domain.ProductListItem": {
             "type": "object",
             "properties": {
                 "category": {
@@ -2589,20 +2345,6 @@ const docTemplate = `{
                 }
             }
         },
-        "domain.ProductCategory": {
-            "type": "object",
-            "properties": {
-                "id": {
-                    "type": "integer"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "slug": {
-                    "type": "string"
-                }
-            }
-        },
         "domain.ProductMedia": {
             "type": "object",
             "properties": {
@@ -2652,25 +2394,6 @@ const docTemplate = `{
                     "type": "array",
                     "items": {
                         "$ref": "#/definitions/domain.ProductOptionValue"
-                    }
-                }
-            }
-        },
-        "domain.ProductOptionInput": {
-            "type": "object",
-            "required": [
-                "name",
-                "values"
-            ],
-            "properties": {
-                "name": {
-                    "type": "string"
-                },
-                "values": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "type": "string"
                     }
                 }
             }
@@ -2730,51 +2453,6 @@ const docTemplate = `{
                 }
             }
         },
-        "domain.ReorderMediaInput": {
-            "type": "object",
-            "required": [
-                "positions"
-            ],
-            "properties": {
-                "positions": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "$ref": "#/definitions/domain.PositionUpdate"
-                    }
-                }
-            }
-        },
-        "domain.ReorderOptionsInput": {
-            "type": "object",
-            "required": [
-                "positions"
-            ],
-            "properties": {
-                "positions": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "$ref": "#/definitions/domain.PositionUpdate"
-                    }
-                }
-            }
-        },
-        "domain.ReorderVariantsInput": {
-            "type": "object",
-            "required": [
-                "positions"
-            ],
-            "properties": {
-                "positions": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "$ref": "#/definitions/domain.PositionUpdate"
-                    }
-                }
-            }
-        },
         "domain.UpdateCategoryInput": {
             "type": "object",
             "required": [
@@ -2792,99 +2470,6 @@ const docTemplate = `{
                 },
                 "thumbnail": {
                     "type": "string"
-                }
-            }
-        },
-        "domain.UpdateMediaInput": {
-            "type": "object",
-            "properties": {
-                "altText": {
-                    "type": "string"
-                }
-            }
-        },
-        "domain.UpdateOptionInput": {
-            "type": "object",
-            "required": [
-                "name"
-            ],
-            "properties": {
-                "name": {
-                    "type": "string"
-                }
-            }
-        },
-        "domain.UpdateOptionValueInput": {
-            "type": "object",
-            "properties": {
-                "position": {
-                    "type": "integer",
-                    "minimum": 0
-                },
-                "value": {
-                    "type": "string"
-                }
-            }
-        },
-        "domain.UpdateProductInput": {
-            "type": "object",
-            "properties": {
-                "categoryId": {
-                    "type": "integer"
-                },
-                "description": {
-                    "type": "string"
-                },
-                "handle": {
-                    "type": "string"
-                },
-                "status": {
-                    "enum": [
-                        "draft",
-                        "active",
-                        "archived"
-                    ],
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/domain.ProductStatus"
-                        }
-                    ]
-                },
-                "title": {
-                    "type": "string"
-                },
-                "vendor": {
-                    "type": "string"
-                }
-            }
-        },
-        "domain.UpdateVariantInput": {
-            "type": "object",
-            "properties": {
-                "barcode": {
-                    "type": "string"
-                },
-                "media": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/domain.VariantMediaItemInput"
-                    }
-                },
-                "price": {
-                    "type": "number"
-                },
-                "sku": {
-                    "type": "string"
-                },
-                "stock": {
-                    "type": "integer",
-                    "minimum": 0
-                },
-                "title": {
-                    "type": "string"
-                },
-                "weight": {
-                    "type": "number"
                 }
             }
         },
@@ -2923,7 +2508,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "stock": {
-                    "description": "Stock is the total available quantity across all inventory levels for\nthis variant. It is computed (not stored) and only populated on the\nsingle-product detail path.\nStock decimal.Decimal ` + "`" + `json:\"stock\" db:\"stock\"` + "`" + `",
+                    "description": "Stock is the total available quantity across all inventory levels for\nthis variant. It is computed (not stored) and only populated on the\nsingle-product detail path.",
                     "type": "integer"
                 },
                 "title": {
@@ -2937,7 +2522,206 @@ const docTemplate = `{
                 }
             }
         },
-        "domain.VariantInput": {
+        "domain.VariantMedia": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "position": {
+                    "type": "integer"
+                }
+            }
+        },
+        "dto.AttachVariantMediaInput": {
+            "type": "object",
+            "required": [
+                "media_id"
+            ],
+            "properties": {
+                "media_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.BulkCreateMediaInput": {
+            "type": "object",
+            "required": [
+                "media"
+            ],
+            "properties": {
+                "media": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/dto.CreateMediaInput"
+                    }
+                }
+            }
+        },
+        "dto.BulkCreateVariantsInput": {
+            "type": "object",
+            "required": [
+                "variants"
+            ],
+            "properties": {
+                "variants": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/dto.CreateVariantInput"
+                    }
+                }
+            }
+        },
+        "dto.BulkDeleteVariantsInput": {
+            "type": "object",
+            "required": [
+                "ids"
+            ],
+            "properties": {
+                "ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "dto.BulkUpdateVariantsInput": {
+            "type": "object",
+            "required": [
+                "updates"
+            ],
+            "properties": {
+                "updates": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/dto.VariantUpdateItem"
+                    }
+                }
+            }
+        },
+        "dto.CreateMediaInput": {
+            "type": "object",
+            "required": [
+                "type",
+                "url"
+            ],
+            "properties": {
+                "altText": {
+                    "type": "string"
+                },
+                "position": {
+                    "type": "integer",
+                    "minimum": 0
+                },
+                "type": {
+                    "type": "string",
+                    "enum": [
+                        "image",
+                        "video"
+                    ]
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.CreateOptionInput": {
+            "type": "object",
+            "required": [
+                "name",
+                "values"
+            ],
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "values": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "dto.CreateOptionValueInput": {
+            "type": "object",
+            "required": [
+                "value"
+            ],
+            "properties": {
+                "position": {
+                    "type": "integer",
+                    "minimum": 0
+                },
+                "value": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.CreateProductInput": {
+            "type": "object",
+            "required": [
+                "categoryId",
+                "handle",
+                "title",
+                "variants"
+            ],
+            "properties": {
+                "categoryId": {
+                    "type": "integer"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "gallery": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/dto.GalleryMediaInput"
+                    }
+                },
+                "handle": {
+                    "type": "string"
+                },
+                "options": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/dto.ProductOptionInput"
+                    }
+                },
+                "status": {
+                    "enum": [
+                        "draft",
+                        "active",
+                        "archived"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/domain.ProductStatus"
+                        }
+                    ]
+                },
+                "title": {
+                    "type": "string"
+                },
+                "variants": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/dto.VariantInput"
+                    }
+                },
+                "vendor": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.CreateVariantInput": {
             "type": "object",
             "required": [
                 "price",
@@ -2950,7 +2734,7 @@ const docTemplate = `{
                 "media": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/domain.VariantMediaInput"
+                        "$ref": "#/definitions/dto.VariantMediaItemInput"
                     }
                 },
                 "options": {
@@ -2980,18 +2764,246 @@ const docTemplate = `{
                 }
             }
         },
-        "domain.VariantMedia": {
+        "dto.GalleryMediaInput": {
             "type": "object",
+            "required": [
+                "id",
+                "url"
+            ],
             "properties": {
+                "altText": {
+                    "type": "string"
+                },
                 "id": {
                     "type": "string"
                 },
                 "position": {
                     "type": "integer"
+                },
+                "type": {
+                    "type": "string"
+                },
+                "url": {
+                    "type": "string"
                 }
             }
         },
-        "domain.VariantMediaInput": {
+        "dto.PositionUpdate": {
+            "type": "object",
+            "required": [
+                "id"
+            ],
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "position": {
+                    "type": "integer",
+                    "minimum": 0
+                }
+            }
+        },
+        "dto.ProductOptionInput": {
+            "type": "object",
+            "required": [
+                "name",
+                "values"
+            ],
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "values": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "dto.ReorderMediaInput": {
+            "type": "object",
+            "required": [
+                "positions"
+            ],
+            "properties": {
+                "positions": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/dto.PositionUpdate"
+                    }
+                }
+            }
+        },
+        "dto.ReorderOptionsInput": {
+            "type": "object",
+            "required": [
+                "positions"
+            ],
+            "properties": {
+                "positions": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/dto.PositionUpdate"
+                    }
+                }
+            }
+        },
+        "dto.ReorderVariantsInput": {
+            "type": "object",
+            "required": [
+                "positions"
+            ],
+            "properties": {
+                "positions": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/dto.PositionUpdate"
+                    }
+                }
+            }
+        },
+        "dto.UpdateMediaInput": {
+            "type": "object",
+            "properties": {
+                "altText": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.UpdateOptionInput": {
+            "type": "object",
+            "required": [
+                "name"
+            ],
+            "properties": {
+                "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.UpdateOptionValueInput": {
+            "type": "object",
+            "properties": {
+                "position": {
+                    "type": "integer",
+                    "minimum": 0
+                },
+                "value": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.UpdateProductInput": {
+            "type": "object",
+            "properties": {
+                "categoryId": {
+                    "type": "integer"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "handle": {
+                    "type": "string"
+                },
+                "status": {
+                    "enum": [
+                        "draft",
+                        "active",
+                        "archived"
+                    ],
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/domain.ProductStatus"
+                        }
+                    ]
+                },
+                "title": {
+                    "type": "string"
+                },
+                "vendor": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.UpdateVariantInput": {
+            "type": "object",
+            "properties": {
+                "barcode": {
+                    "type": "string"
+                },
+                "media": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/dto.VariantMediaItemInput"
+                    }
+                },
+                "price": {
+                    "type": "number"
+                },
+                "sku": {
+                    "type": "string"
+                },
+                "stock": {
+                    "type": "integer",
+                    "minimum": 0
+                },
+                "title": {
+                    "type": "string"
+                },
+                "weight": {
+                    "type": "number"
+                }
+            }
+        },
+        "dto.VariantInput": {
+            "type": "object",
+            "required": [
+                "price",
+                "weight"
+            ],
+            "properties": {
+                "barcode": {
+                    "type": "string"
+                },
+                "media": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/dto.VariantMediaInput"
+                    }
+                },
+                "options": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "price": {
+                    "type": "number"
+                },
+                "sku": {
+                    "type": "string"
+                },
+                "stock": {
+                    "type": "integer",
+                    "minimum": 0
+                },
+                "title": {
+                    "type": "string"
+                },
+                "track_inventory": {
+                    "type": "boolean"
+                },
+                "weight": {
+                    "type": "number"
+                }
+            }
+        },
+        "dto.VariantMediaInput": {
             "type": "object",
             "required": [
                 "id"
@@ -3005,7 +3017,7 @@ const docTemplate = `{
                 }
             }
         },
-        "domain.VariantMediaItemInput": {
+        "dto.VariantMediaItemInput": {
             "type": "object",
             "properties": {
                 "altText": {
@@ -3025,7 +3037,7 @@ const docTemplate = `{
                 }
             }
         },
-        "domain.VariantUpdateItem": {
+        "dto.VariantUpdateItem": {
             "type": "object",
             "required": [
                 "fields",
@@ -3033,7 +3045,7 @@ const docTemplate = `{
             ],
             "properties": {
                 "fields": {
-                    "$ref": "#/definitions/domain.UpdateVariantInput"
+                    "$ref": "#/definitions/dto.UpdateVariantInput"
                 },
                 "id": {
                     "type": "string"

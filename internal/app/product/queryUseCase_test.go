@@ -556,6 +556,46 @@ func TestQueryProductUseCase_FindAll_RejectsInvalidStatus(t *testing.T) {
 	}
 }
 
+func TestQueryProductUseCase_FindAll_PassesPriceFiltersThrough(t *testing.T) {
+	repo := &fakeProductRepo{findAllData: []domain.ProductListItem{{}}}
+	uc := NewProductQueryUseCase(repo)
+
+	minPrice := decimal.RequireFromString("100000")
+	maxPrice := decimal.RequireFromString("500000")
+
+	_, err := uc.FindAll(context.Background(), domain.ListProductParams{
+		MinPrice: &minPrice,
+		MaxPrice: &maxPrice,
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	p := repo.findAllParams
+	if p.MinPrice == nil || !p.MinPrice.Equal(minPrice) {
+		t.Errorf("expected MinPrice %s, got %v", minPrice, p.MinPrice)
+	}
+	if p.MaxPrice == nil || !p.MaxPrice.Equal(maxPrice) {
+		t.Errorf("expected MaxPrice %s, got %v", maxPrice, p.MaxPrice)
+	}
+}
+
+func TestQueryProductUseCase_FindAll_NoPriceFiltersPassedAsNil(t *testing.T) {
+	repo := &fakeProductRepo{findAllData: []domain.ProductListItem{{}}}
+	uc := NewProductQueryUseCase(repo)
+
+	if _, err := uc.FindAll(context.Background(), domain.ListProductParams{}); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if repo.findAllParams.MinPrice != nil {
+		t.Errorf("expected nil MinPrice, got %v", repo.findAllParams.MinPrice)
+	}
+	if repo.findAllParams.MaxPrice != nil {
+		t.Errorf("expected nil MaxPrice, got %v", repo.findAllParams.MaxPrice)
+	}
+}
+
 func TestProductInsertUseCase_Create_DefaultsStatusToDraft(t *testing.T) {
 	repo := &fakeProductRepo{}
 	uc := NewProductInsertUseCase(repo)

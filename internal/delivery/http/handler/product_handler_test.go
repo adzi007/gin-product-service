@@ -198,6 +198,98 @@ func TestProductHandler_Fetch_RejectsInvalidStatus(t *testing.T) {
 	}
 }
 
+// decPtr returns a pointer to a decimal.Decimal for optional filter fields.
+func decPtr(d decimal.Decimal) *decimal.Decimal { return &d }
+
+// decEqualPtr compares two optional decimals, treating two nils as equal.
+func decEqualPtr(got, want *decimal.Decimal) bool {
+	if got == nil || want == nil {
+		return got == nil && want == nil
+	}
+	return got.Equal(*want)
+}
+
+func TestProductHandler_Fetch_ParsesPriceFilters(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name         string
+		query        string
+		wantMinPrice *decimal.Decimal
+		wantMaxPrice *decimal.Decimal
+	}{
+		{name: "no price parameters", query: "/products"},
+		{name: "minPrice only", query: "/products?minPrice=100000", wantMinPrice: decPtr(decimal.RequireFromString("100000"))},
+		{name: "maxPrice only", query: "/products?maxPrice=500000", wantMaxPrice: decPtr(decimal.RequireFromString("500000"))},
+		{name: "both parameters", query: "/products?minPrice=100000&maxPrice=500000",
+			wantMinPrice: decPtr(decimal.RequireFromString("100000")), wantMaxPrice: decPtr(decimal.RequireFromString("500000"))},
+		{name: "decimal values", query: "/products?minPrice=99.99", wantMinPrice: decPtr(decimal.RequireFromString("99.99"))},
+		{name: "zero minPrice accepted", query: "/products?minPrice=0", wantMinPrice: decPtr(decimal.RequireFromString("0"))},
+		{name: "equal boundaries accepted", query: "/products?minPrice=100000&maxPrice=100000",
+			wantMinPrice: decPtr(decimal.RequireFromString("100000")), wantMaxPrice: decPtr(decimal.RequireFromString("100000"))},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			queryUC := &fakeQueryProductUseCase{
+				findAllResult: domain.PaginatedProducts{Data: []domain.ProductListItem{}},
+			}
+			h := NewProductHandler(nil, queryUC, nil, nil, nil, nil, nil)
+
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodGet, tt.query, nil)
+
+			h.Fetch(c)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+
+			p := queryUC.findAllParams
+			if !decEqualPtr(p.MinPrice, tt.wantMinPrice) {
+				t.Errorf("expected MinPrice %v, got %v", tt.wantMinPrice, p.MinPrice)
+			}
+			if !decEqualPtr(p.MaxPrice, tt.wantMaxPrice) {
+				t.Errorf("expected MaxPrice %v, got %v", tt.wantMaxPrice, p.MaxPrice)
+			}
+		})
+	}
+}
+
+func TestProductHandler_Fetch_RejectsInvalidPriceFilters(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{name: "invalid minPrice", query: "/products?minPrice=abc"},
+		{name: "invalid maxPrice", query: "/products?maxPrice=abc"},
+		{name: "non-numeric minPrice", query: "/products?minPrice=NaN"},
+		{name: "negative minPrice", query: "/products?minPrice=-100"},
+		{name: "negative maxPrice", query: "/products?maxPrice=-100"},
+		{name: "minPrice greater than maxPrice", query: "/products?minPrice=500000&maxPrice=100000"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			queryUC := &fakeQueryProductUseCase{}
+			h := NewProductHandler(nil, queryUC, nil, nil, nil, nil, nil)
+
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodGet, tt.query, nil)
+
+			h.Fetch(c)
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d", w.Code)
+			}
+		})
+	}
+}
+
 // fakeVariantUseCase is a minimal VariantUseCase fake for handler tests.
 type fakeVariantUseCase struct {
 	createErr    error

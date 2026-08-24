@@ -4,7 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-A Go/Gin microservice for product & inventory management (Shopify/Odoo-inspired), part of a larger e-commerce system. Currently only the `category` module and infra health checks are implemented; `product`, `variant`, `inventory`, and `stock movement` modules described in [PRD.md](PRD.md) are not yet built. Treat PRD.md as the target design spec, not the current state — always verify against actual code in `internal/` before assuming an endpoint/entity exists.
+A Go/Gin microservice for product & inventory management (Shopify/Odoo-inspired), part of a larger e-commerce system. Currently only the `category` module and infra health checks are implemented; `product`, `variant`, `inventory`, and `stock movement` modules are not yet built.
+
+## Development Workflow: Spec-Driven Development
+
+Work is driven by specs in `specs/*.md`, not PRD.md. Each task/feature gets its own spec file describing the requirements, contracts, and acceptance criteria for that unit of work. Do not read or reference PRD.md — it is superseded by the specs directory. Always verify against actual code in `internal/` before assuming an endpoint/entity exists, since specs describe target state, not necessarily current state.
 
 ## Commands
 
@@ -48,7 +52,7 @@ delivery/http (handler, router) → app/<module> (use cases) → domain (interfa
 - **`internal/infrastructure/metrics`**: Prometheus metrics; scraped at `/metrics` via `promhttp.Handler()`, registered directly in `gin_server.go` rather than the router.
 - **`cmd/server`**: `AppServer` interface (`server.go`) implemented by `ginServer` (`gin_server.go`), which owns the `gin.Engine`, builds the `wire.Container`, sets up graceful shutdown on SIGINT/SIGTERM with a 15s timeout, and closes the DB pool on exit.
 
-### Conventions carried over from the PRD (apply to new modules even though not yet implemented)
+### Conventions for new modules (apply even though not yet implemented)
 
 - IDs for new domain entities beyond `Category` (which uses `int`) should be UUIDv7 (`github.com/google/uuid`), generated in the use case layer before calling the repository.
 - Use `github.com/shopspring/decimal` for any monetary or quantity field — never `float64`.
