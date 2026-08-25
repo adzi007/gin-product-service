@@ -589,6 +589,11 @@ If any item cannot be reserved, **nothing should be committed**.
 
 # 8. Reservation Request
 
+The caller does not supply a location. The inventory service chooses the
+location to reserve from for each item (see
+`specs/remove-location-from-reservation.md`); each reservation row reports the
+`location_id` that was actually used.
+
 ```json
 {
   "order_id": "uuid",
@@ -596,12 +601,10 @@ If any item cannot be reserved, **nothing should be committed**.
   "items": [
     {
       "variant_id": "uuid",
-      "location_id": "uuid",
       "quantity": 2
     },
     {
       "variant_id": "uuid",
-      "location_id": "uuid",
       "quantity": 1
     }
   ]
@@ -639,7 +642,6 @@ Each item:
 
 ```text
 variant_id   required
-location_id  required
 quantity     integer > 0
 ```
 
@@ -648,7 +650,7 @@ The implementation must verify:
 ```text
 variant exists
 inventory_item exists
-inventory_level exists
+inventory_level exists (for at least one location; the location is chosen by the server)
 ```
 
 ---
@@ -658,7 +660,13 @@ inventory_level exists
 For every requested item:
 
 1. Resolve `inventory_item_id` from `variant_id`.
-2. Lock the relevant `inventory_levels` row using `FOR UPDATE`.
+2. Choose the location to reserve from and lock the `inventory_levels` row
+   using `SELECT ... FOR UPDATE` in one statement. Single-location fulfillment:
+   exactly one location is picked per item — the default location if it has
+   enough `available_qty`, otherwise the location with the highest
+   `available_qty`, tie-broken by `location_id ASC` (see
+   `specs/remove-location-from-reservation.md`). If no single location covers
+   the quantity, the reservation fails with `ERR_INSUFFICIENT_STOCK`.
 3. Check:
 
 ```text
@@ -687,7 +695,7 @@ BEGIN
 
 for each item:
     resolve inventory_item_id
-    lock inventory_level
+    select + lock inventory_level (best location, FOR UPDATE)
 
     if available_qty < quantity:
         ROLLBACK
@@ -1104,16 +1112,20 @@ Unexpected database or infrastructure failure.
 
 When locking multiple inventory levels in one transaction, the implementation must use a deterministic order.
 
-Example:
+Reservation creation locks one level per item (the location is chosen by the server at lock time, see `specs/remove-location-from-reservation.md`), so requested items are sorted by:
 
 ```text
-sort requested inventory levels by:
+inventory_item_id ASC
+```
 
+and locked in that order. Within an item, the choice of location is deterministic (`location_id ASC` tie-break).
+
+Reservation completion, cancellation, and expiration already know the `location_id` from the stored reservation row and order by:
+
+```text
 inventory_item_id ASC
 location_id ASC
 ```
-
-Then acquire locks in that order.
 
 This reduces the possibility of deadlocks when two concurrent requests reserve/transfer the same inventory levels in a different order.
 

@@ -59,11 +59,11 @@ type Reservation struct {
 }
 
 // ReservationItemInput is one line item of a reservation request
-// (spec Section 8).
+// (spec Section 8). Location is not supplied by the caller — the server picks
+// the location to reserve from (spec: remove-location-from-reservation.md).
 type ReservationItemInput struct {
-	VariantID  uuid.UUID `json:"variant_id"`
-	LocationID uuid.UUID `json:"location_id"`
-	Quantity   int       `json:"quantity"`
+	VariantID uuid.UUID `json:"variant_id"`
+	Quantity  int       `json:"quantity"`
 }
 
 // CreateReservationInput is the request payload for

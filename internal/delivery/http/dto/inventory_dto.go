@@ -1,6 +1,8 @@
 package dto
 
 import (
+	"encoding/json"
+	"strings"
 	"time"
 
 	"gin-product-service/internal/domain"
@@ -8,16 +10,66 @@ import (
 	"github.com/google/uuid"
 )
 
+// NullableUUID wraps *uuid.UUID to handle empty strings `""` as nil during JSON binding.
+type NullableUUID struct {
+	*uuid.UUID
+}
+
+// UnmarshalJSON handles converting JSON strings, empty strings, and null into *uuid.UUID.
+func (nu *NullableUUID) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		// If it's explicit null, json.Unmarshal returns nil and s remains ""
+		if string(b) == "null" {
+			nu.UUID = nil
+			return nil
+		}
+		return err
+	}
+
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		nu.UUID = nil
+		return nil
+	}
+
+	parsed, err := uuid.Parse(trimmed)
+	if err != nil {
+		return err
+	}
+
+	nu.UUID = &parsed
+	return nil
+}
+
+// MarshalJSON ensures the type marshals cleanly back to JSON.
+func (nu NullableUUID) MarshalJSON() ([]byte, error) {
+	if nu.UUID == nil {
+		return []byte("null"), nil
+	}
+	return json.Marshal(nu.UUID.String())
+}
+
 // CreateStockMoveRequest is the request body for POST /inventory/stock-moves
 // (spec Section 4.1).
+//
+//	type CreateStockMoveRequest struct {
+//		VariantID      uuid.UUID            `json:"variant_id" binding:"required" validate:"required"`
+//		MoveType       domain.StockMoveType `json:"move_type" binding:"required" validate:"required,oneof=IN OUT TRANSFER ADJUST"`
+//		Quantity       int                  `json:"quantity" binding:"required" validate:"required,gt=0"`
+//		FromLocationID *uuid.UUID           `json:"from_location_id" validate:"omitempty"`
+//		ToLocationID   *uuid.UUID           `json:"to_location_id" validate:"omitempty"`
+//		Reason         *string              `json:"reason"`
+//		CreatedBy      *uuid.UUID           `json:"created_by" validate:"omitempty"`
+//	}
 type CreateStockMoveRequest struct {
-	VariantID      uuid.UUID            `json:"variant_id" binding:"required" validate:"required"`
-	MoveType       domain.StockMoveType `json:"move_type" binding:"required" validate:"required,oneof=IN OUT TRANSFER ADJUST"`
-	Quantity       int                  `json:"quantity" binding:"required" validate:"required,gt=0"`
-	FromLocationID *uuid.UUID           `json:"from_location_id" validate:"omitempty"`
-	ToLocationID   *uuid.UUID           `json:"to_location_id" validate:"omitempty"`
-	Reason         *string              `json:"reason"`
-	CreatedBy      *uuid.UUID           `json:"created_by" validate:"omitempty"`
+	VariantID      uuid.UUID            `json:"variant_id" binding:"required"`
+	MoveType       domain.StockMoveType `json:"move_type" binding:"required,oneof=IN OUT TRANSFER ADJUST"`
+	Quantity       int                  `json:"quantity" binding:"required,gt=0"`
+	FromLocationID NullableUUID         `json:"from_location_id" binding:"omitempty"`
+	ToLocationID   NullableUUID         `json:"to_location_id" binding:"omitempty"`
+	Reason         *string              `json:"reason" binding:"omitempty"`
+	CreatedBy      NullableUUID         `json:"created_by" binding:"omitempty"`
 }
 
 func (r CreateStockMoveRequest) ToDomain() domain.CreateStockMoveInput {
@@ -25,26 +77,25 @@ func (r CreateStockMoveRequest) ToDomain() domain.CreateStockMoveInput {
 		VariantID:      r.VariantID,
 		MoveType:       r.MoveType,
 		Quantity:       r.Quantity,
-		FromLocationID: r.FromLocationID,
-		ToLocationID:   r.ToLocationID,
+		FromLocationID: r.FromLocationID.UUID,
+		ToLocationID:   r.ToLocationID.UUID,
 		Reason:         r.Reason,
-		CreatedBy:      r.CreatedBy,
+		CreatedBy:      r.CreatedBy.UUID,
 	}
 }
 
 // ReservationItemRequest is one line item of a reservation request
-// (spec Section 8).
+// (spec Section 8). The caller does not supply a location — the server picks
+// the location to reserve from.
 type ReservationItemRequest struct {
-	VariantID  uuid.UUID `json:"variant_id" binding:"required" validate:"required"`
-	LocationID uuid.UUID `json:"location_id" binding:"required" validate:"required"`
-	Quantity   int       `json:"quantity" binding:"required" validate:"required,gt=0"`
+	VariantID uuid.UUID `json:"variant_id" binding:"required" validate:"required"`
+	Quantity  int       `json:"quantity" binding:"required" validate:"required,gt=0"`
 }
 
 func (r ReservationItemRequest) ToDomain() domain.ReservationItemInput {
 	return domain.ReservationItemInput{
-		VariantID:  r.VariantID,
-		LocationID: r.LocationID,
-		Quantity:   r.Quantity,
+		VariantID: r.VariantID,
+		Quantity:  r.Quantity,
 	}
 }
 

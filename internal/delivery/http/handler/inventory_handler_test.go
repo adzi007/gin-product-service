@@ -183,7 +183,7 @@ func TestCreateReservation_Success(t *testing.T) {
 	}
 	r := newInventoryTestRouter(nil, resUC)
 
-	body := `{"order_id":"` + orderID.String() + `","items":[{"variant_id":"` + variantID.String() + `","location_id":"` + loc.String() + `","quantity":2}]}`
+	body := `{"order_id":"` + orderID.String() + `","items":[{"variant_id":"` + variantID.String() + `","quantity":2}]}`
 	w := doRequest(t, r, http.MethodPost, "/api/v1/inventory/reservations", body)
 
 	if w.Code != http.StatusCreated {
@@ -200,6 +200,10 @@ func TestCreateReservation_Success(t *testing.T) {
 	first := reservations[0].(map[string]any)
 	if first["reservation_id"] != reservationID.String() {
 		t.Fatalf("reservation_id = %v, want %s", first["reservation_id"], reservationID.String())
+	}
+	// The response still reports the server-assigned location.
+	if first["location_id"] != loc.String() {
+		t.Fatalf("location_id = %v, want %s", first["location_id"], loc.String())
 	}
 }
 
@@ -224,7 +228,7 @@ func TestCreateReservation_ConflictInsufficient(t *testing.T) {
 	}
 	r := newInventoryTestRouter(nil, resUC)
 
-	body := `{"order_id":"` + uuid.New().String() + `","items":[{"variant_id":"` + uuid.New().String() + `","location_id":"` + uuid.New().String() + `","quantity":2}]}`
+	body := `{"order_id":"` + uuid.New().String() + `","items":[{"variant_id":"` + uuid.New().String() + `","quantity":2}]}`
 	w := doRequest(t, r, http.MethodPost, "/api/v1/inventory/reservations", body)
 
 	if w.Code != http.StatusConflict {

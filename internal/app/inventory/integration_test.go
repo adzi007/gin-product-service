@@ -100,9 +100,13 @@ type inventoryFixture struct {
 	productID  uuid.UUID
 	variantID  uuid.UUID
 	itemID     uuid.UUID
-	locA       uuid.UUID
-	locB       uuid.UUID
-	orderIDs   []uuid.UUID
+	// variantB/itemB is a second, independent variant/item used to reserve
+	// multiple distinct items in one reservation batch.
+	variantB uuid.UUID
+	itemB    uuid.UUID
+	locA     uuid.UUID
+	locB     uuid.UUID
+	orderIDs []uuid.UUID
 }
 
 func newInventoryFixture(t *testing.T) *inventoryFixture {
@@ -137,6 +141,19 @@ func newInventoryFixture(t *testing.T) *inventoryFixture {
 		t.Fatalf("insert inventory item: %v", err)
 	}
 
+	f.variantB = uuid.Must(uuid.NewV7())
+	if _, err := db.GetDb().Exec(ctx,
+		`INSERT INTO variants (id, product_id, title, price, weight, options) VALUES ($1, $2, $3, 0, 0, '[]')`,
+		f.variantB, f.productID, "itest variant B"); err != nil {
+		t.Fatalf("insert variant B: %v", err)
+	}
+	f.itemB = uuid.Must(uuid.NewV7())
+	if _, err := db.GetDb().Exec(ctx,
+		`INSERT INTO inventory_items (id, variant_id, track_inventory) VALUES ($1, $2, true)`,
+		f.itemB, f.variantB); err != nil {
+		t.Fatalf("insert inventory item B: %v", err)
+	}
+
 	f.locA = uuid.Must(uuid.NewV7())
 	f.locB = uuid.Must(uuid.NewV7())
 	if _, err := db.GetDb().Exec(ctx,
@@ -158,23 +175,35 @@ func (f *inventoryFixture) useOrder(ids ...uuid.UUID) {
 // upserting so tests can re-run against a dirty database.
 func (f *inventoryFixture) setLevel(t *testing.T, locationID uuid.UUID, available, reserved int) {
 	t.Helper()
+	f.setLevelFor(t, f.itemID, locationID, available, reserved)
+}
+
+// setLevelFor sets the inventory level for an arbitrary item at a location,
+// upserting so tests can re-run against a dirty database.
+func (f *inventoryFixture) setLevelFor(t *testing.T, itemID, locationID uuid.UUID, available, reserved int) {
+	t.Helper()
 	if _, err := f.pool.Exec(context.Background(), `
 		INSERT INTO inventory_levels (id, inventory_item_id, location_id, available_qty, reserved_qty)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (inventory_item_id, location_id) DO UPDATE
 		SET available_qty = EXCLUDED.available_qty, reserved_qty = EXCLUDED.reserved_qty`,
-		uuid.Must(uuid.NewV7()), f.itemID, locationID, available, reserved); err != nil {
+		uuid.Must(uuid.NewV7()), itemID, locationID, available, reserved); err != nil {
 		t.Fatalf("set level: %v", err)
 	}
 }
 
 func (f *inventoryFixture) getLevel(t *testing.T, locationID uuid.UUID) (available, reserved int) {
 	t.Helper()
+	return f.getLevelFor(t, f.itemID, locationID)
+}
+
+func (f *inventoryFixture) getLevelFor(t *testing.T, itemID, locationID uuid.UUID) (available, reserved int) {
+	t.Helper()
 	err := f.pool.QueryRow(context.Background(), `
 		SELECT COALESCE(available_qty, 0), COALESCE(reserved_qty, 0)
 		FROM inventory_levels
 		WHERE inventory_item_id = $1 AND location_id = $2`,
-		f.itemID, locationID).Scan(&available, &reserved)
+		itemID, locationID).Scan(&available, &reserved)
 	if err != nil {
 		t.Fatalf("get level: %v", err)
 	}
@@ -184,11 +213,11 @@ func (f *inventoryFixture) getLevel(t *testing.T, locationID uuid.UUID) (availab
 func (f *inventoryFixture) cleanup() {
 	ctx := context.Background()
 	_, _ = f.pool.Exec(ctx, `DELETE FROM idempotency_keys WHERE order_id = ANY($1)`, f.orderIDs)
-	_, _ = f.pool.Exec(ctx, `DELETE FROM reservations WHERE inventory_item_id = $1`, f.itemID)
-	_, _ = f.pool.Exec(ctx, `DELETE FROM stock_moves WHERE inventory_item_id = $1`, f.itemID)
-	_, _ = f.pool.Exec(ctx, `DELETE FROM inventory_levels WHERE inventory_item_id = $1`, f.itemID)
-	_, _ = f.pool.Exec(ctx, `DELETE FROM inventory_items WHERE id = $1`, f.itemID)
-	_, _ = f.pool.Exec(ctx, `DELETE FROM variants WHERE id = $1`, f.variantID)
+	_, _ = f.pool.Exec(ctx, `DELETE FROM reservations WHERE inventory_item_id = ANY($1)`, []uuid.UUID{f.itemID, f.itemB})
+	_, _ = f.pool.Exec(ctx, `DELETE FROM stock_moves WHERE inventory_item_id = ANY($1)`, []uuid.UUID{f.itemID, f.itemB})
+	_, _ = f.pool.Exec(ctx, `DELETE FROM inventory_levels WHERE inventory_item_id = ANY($1)`, []uuid.UUID{f.itemID, f.itemB})
+	_, _ = f.pool.Exec(ctx, `DELETE FROM inventory_items WHERE id = ANY($1)`, []uuid.UUID{f.itemID, f.itemB})
+	_, _ = f.pool.Exec(ctx, `DELETE FROM variants WHERE id = ANY($1)`, []uuid.UUID{f.variantID, f.variantB})
 	_, _ = f.pool.Exec(ctx, `DELETE FROM products WHERE id = $1`, f.productID)
 	_, _ = f.pool.Exec(ctx, `DELETE FROM category WHERE id = $1`, f.categoryID)
 	_, _ = f.pool.Exec(ctx, `DELETE FROM locations WHERE id IN ($1, $2)`, f.locA, f.locB)
@@ -242,8 +271,8 @@ func TestIntegration_StockMoves(t *testing.T) {
 
 func TestIntegration_ReservationLifecycle(t *testing.T) {
 	f := newInventoryFixture(t)
-	f.setLevel(t, f.locA, 10, 0)
-	f.setLevel(t, f.locB, 5, 0)
+	f.setLevel(t, f.locA, 10, 0)            // item @ A
+	f.setLevelFor(t, f.itemB, f.locB, 5, 0) // itemB @ B
 
 	uc := NewReservationUseCase(newIntegrationRepo(f))
 	ctx := context.Background()
@@ -252,12 +281,13 @@ func TestIntegration_ReservationLifecycle(t *testing.T) {
 	order2 := uuid.New()
 	f.useOrder(order1, order2)
 
-	// Reserve order1: 3 at A + 2 at B.
+	// Reserve order1: 3 of item (at A) + 2 of itemB (at B). The server picks
+	// the location for each item automatically.
 	res, err := uc.Create(ctx, domain.CreateReservationInput{
 		OrderID: order1,
 		Items: []domain.ReservationItemInput{
-			{VariantID: f.variantID, LocationID: f.locA, Quantity: 3},
-			{VariantID: f.variantID, LocationID: f.locB, Quantity: 2},
+			{VariantID: f.variantID, Quantity: 3},
+			{VariantID: f.variantB, Quantity: 2},
 		},
 	})
 	if err != nil {
@@ -269,7 +299,7 @@ func TestIntegration_ReservationLifecycle(t *testing.T) {
 	if a, r := f.getLevel(t, f.locA); a != 7 || r != 3 {
 		t.Fatalf("A = %d/%d, want 7/3", a, r)
 	}
-	if a, r := f.getLevel(t, f.locB); a != 3 || r != 2 {
+	if a, r := f.getLevelFor(t, f.itemB, f.locB); a != 3 || r != 2 {
 		t.Fatalf("B = %d/%d, want 3/2", a, r)
 	}
 
@@ -292,10 +322,10 @@ func TestIntegration_ReservationLifecycle(t *testing.T) {
 		t.Fatalf("after double complete A = %d/%d, want 7/0", a, r)
 	}
 
-	// Reserve order2: 2 at A, then cancel (returns stock).
+	// Reserve order2: 2 of item (at A), then cancel (returns stock).
 	if _, err := uc.Create(ctx, domain.CreateReservationInput{
 		OrderID: order2,
-		Items:   []domain.ReservationItemInput{{VariantID: f.variantID, LocationID: f.locA, Quantity: 2}},
+		Items:   []domain.ReservationItemInput{{VariantID: f.variantID, Quantity: 2}},
 	}); err != nil {
 		t.Fatalf("reserve order2: %v", err)
 	}
@@ -323,8 +353,8 @@ func TestIntegration_ReservationLifecycle(t *testing.T) {
 
 func TestIntegration_ReservationOneItemInsufficientRollsBack(t *testing.T) {
 	f := newInventoryFixture(t)
-	f.setLevel(t, f.locA, 10, 0)
-	f.setLevel(t, f.locB, 1, 0)
+	f.setLevel(t, f.locA, 10, 0)            // item @ A
+	f.setLevelFor(t, f.itemB, f.locB, 1, 0) // itemB @ B
 
 	uc := NewReservationUseCase(newIntegrationRepo(f))
 	ctx := context.Background()
@@ -334,8 +364,8 @@ func TestIntegration_ReservationOneItemInsufficientRollsBack(t *testing.T) {
 	_, err := uc.Create(ctx, domain.CreateReservationInput{
 		OrderID: order,
 		Items: []domain.ReservationItemInput{
-			{VariantID: f.variantID, LocationID: f.locA, Quantity: 3},
-			{VariantID: f.variantID, LocationID: f.locB, Quantity: 2}, // B only has 1
+			{VariantID: f.variantID, Quantity: 3},
+			{VariantID: f.variantB, Quantity: 2}, // itemB only has 1
 		},
 	})
 	if err != domain.ErrInsufficientStock {
@@ -345,7 +375,7 @@ func TestIntegration_ReservationOneItemInsufficientRollsBack(t *testing.T) {
 	if a, r := f.getLevel(t, f.locA); a != 10 || r != 0 {
 		t.Fatalf("A must be untouched: %d/%d", a, r)
 	}
-	if a, r := f.getLevel(t, f.locB); a != 1 || r != 0 {
+	if a, r := f.getLevelFor(t, f.itemB, f.locB); a != 1 || r != 0 {
 		t.Fatalf("B must be untouched: %d/%d", a, r)
 	}
 	var count int
@@ -369,7 +399,7 @@ func TestIntegration_ReservationIdempotentRetry(t *testing.T) {
 
 	input := domain.CreateReservationInput{
 		OrderID: order,
-		Items:   []domain.ReservationItemInput{{VariantID: f.variantID, LocationID: f.locA, Quantity: 3}},
+		Items:   []domain.ReservationItemInput{{VariantID: f.variantID, Quantity: 3}},
 	}
 
 	first, err := uc.Create(ctx, input)
@@ -388,6 +418,51 @@ func TestIntegration_ReservationIdempotentRetry(t *testing.T) {
 	}
 	if a, r := f.getLevel(t, f.locA); a != 7 || r != 3 {
 		t.Fatalf("after retry A = %d/%d, want 7/3 (no double reserve)", a, r)
+	}
+}
+
+// TestIntegration_ReservationPicksDefaultLocation verifies the location
+// selection rule against a real database: when a location is flagged
+// is_default and has enough stock, it is used even when another location has
+// more stock (spec: remove-location-from-reservation.md Section 2).
+func TestIntegration_ReservationPicksDefaultLocation(t *testing.T) {
+	f := newInventoryFixture(t)
+	// Set is_default explicitly on both locations (never NULL) so the ORDER BY
+	// boolean expression in LockInventoryLevelByItem ranks true before false.
+	if _, err := f.pool.Exec(context.Background(),
+		`UPDATE locations SET is_default = true WHERE id = $1`, f.locA); err != nil {
+		t.Fatalf("mark A default: %v", err)
+	}
+	if _, err := f.pool.Exec(context.Background(),
+		`UPDATE locations SET is_default = false WHERE id = $1`, f.locB); err != nil {
+		t.Fatalf("mark B non-default: %v", err)
+	}
+	f.setLevel(t, f.locA, 5, 0)  // default, enough for qty 2
+	f.setLevel(t, f.locB, 10, 0) // more stock, but not default
+
+	uc := NewReservationUseCase(newIntegrationRepo(f))
+	ctx := context.Background()
+	order := uuid.New()
+	f.useOrder(order)
+
+	res, err := uc.Create(ctx, domain.CreateReservationInput{
+		OrderID: order,
+		Items:   []domain.ReservationItemInput{{VariantID: f.variantID, Quantity: 2}},
+	})
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	if len(res.Reservations) != 1 {
+		t.Fatalf("reservations = %d, want 1", len(res.Reservations))
+	}
+	if res.Reservations[0].LocationID != f.locA {
+		t.Fatalf("location = %v, want default %v", res.Reservations[0].LocationID, f.locA)
+	}
+	if a, r := f.getLevel(t, f.locA); a != 3 || r != 2 {
+		t.Fatalf("A = %d/%d, want 3/2", a, r)
+	}
+	if a, r := f.getLevel(t, f.locB); a != 10 || r != 0 {
+		t.Fatalf("B must be untouched: %d/%d", a, r)
 	}
 }
 
@@ -415,7 +490,7 @@ func TestIntegration_ConcurrentReservation(t *testing.T) {
 			defer wg.Done()
 			_, err := uc.Create(ctx, domain.CreateReservationInput{
 				OrderID: order,
-				Items:   []domain.ReservationItemInput{{VariantID: f.variantID, LocationID: f.locA, Quantity: 7}},
+				Items:   []domain.ReservationItemInput{{VariantID: f.variantID, Quantity: 7}},
 			})
 			results[i].err = err
 		}(i, order)

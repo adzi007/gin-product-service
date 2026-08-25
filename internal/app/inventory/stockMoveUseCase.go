@@ -2,6 +2,7 @@ package inventory
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"gin-product-service/internal/domain"
@@ -43,14 +44,18 @@ func (uc *stockMoveUc) Create(ctx context.Context, input domain.CreateStockMoveI
 		case domain.StockMoveIn:
 			toLoc := *input.ToLocationID
 			if err := uc.requireLocation(ctx, tx, toLoc); err != nil {
+				fmt.Println("err validation 1")
 				return err
 			}
+			fmt.Println("itemID >>>> ", itemID)
 			level, err := uc.repo.LockInventoryLevel(ctx, tx, itemID, toLoc)
 			if err != nil {
+				fmt.Println("err validation 2")
 				return err
 			}
 			level.AvailableQty += domain.Quantity(input.Quantity)
 			if err := uc.repo.UpdateInventoryLevel(ctx, tx, level); err != nil {
+				fmt.Println("err validation 3")
 				return err
 			}
 
@@ -81,36 +86,36 @@ func (uc *stockMoveUc) Create(ctx context.Context, input domain.CreateStockMoveI
 			}
 			// Lock both level rows in deterministic location order (spec
 			// Section 22) to avoid deadlocks when transfers race.
-			first, second := fromLoc, toLoc
-			if second.String() < first.String() {
-				first, second = second, first
-			}
-			levelA, err := uc.repo.LockInventoryLevel(ctx, tx, itemID, first)
-			if err != nil {
-				return err
-			}
-			levelB, err := uc.repo.LockInventoryLevel(ctx, tx, itemID, second)
-			if err != nil {
-				return err
-			}
-			// Identify source (from) and destination (to) regardless of lock order.
-			var src, dst *domain.InventoryLevel
-			if levelA.LocationID == fromLoc {
-				src, dst = &levelA, &levelB
-			} else {
-				src, dst = &levelB, &levelA
-			}
-			if src.AvailableQty < domain.Quantity(input.Quantity) {
-				return domain.ErrInsufficientStock
-			}
-			src.AvailableQty -= domain.Quantity(input.Quantity)
-			dst.AvailableQty += domain.Quantity(input.Quantity)
-			if err := uc.repo.UpdateInventoryLevel(ctx, tx, levelA); err != nil {
-				return err
-			}
-			if err := uc.repo.UpdateInventoryLevel(ctx, tx, levelB); err != nil {
-				return err
-			}
+			// first, second := fromLoc, toLoc
+			// if second.String() < first.String() {
+			// 	first, second = second, first
+			// }
+			// levelA, err := uc.repo.LockInventoryLevel(ctx, tx, itemID, first)
+			// if err != nil {
+			// 	return err
+			// }
+			// levelB, err := uc.repo.LockInventoryLevel(ctx, tx, itemID, second)
+			// if err != nil {
+			// 	return err
+			// }
+			// // Identify source (from) and destination (to) regardless of lock order.
+			// var src, dst *domain.InventoryLevel
+			// if levelA.LocationID == fromLoc {
+			// 	src, dst = &levelA, &levelB
+			// } else {
+			// 	src, dst = &levelB, &levelA
+			// }
+			// if src.AvailableQty < domain.Quantity(input.Quantity) {
+			// 	return domain.ErrInsufficientStock
+			// }
+			// src.AvailableQty -= domain.Quantity(input.Quantity)
+			// dst.AvailableQty += domain.Quantity(input.Quantity)
+			// if err := uc.repo.UpdateInventoryLevel(ctx, tx, levelA); err != nil {
+			// 	return err
+			// }
+			// if err := uc.repo.UpdateInventoryLevel(ctx, tx, levelB); err != nil {
+			// 	return err
+			// }
 
 		case domain.StockMoveAdjust:
 			toLoc := *input.ToLocationID
@@ -168,36 +173,39 @@ func (uc *stockMoveUc) requireLocation(ctx context.Context, tx domain.Tx, locati
 // from spec Section 4.2.
 func validateStockMoveInput(input domain.CreateStockMoveInput) error {
 	if input.VariantID == uuid.Nil {
-		return domain.ErrInvalidStockMoveInput
+		return domain.ErrVariantIDRequired
 	}
 	if input.Quantity <= 0 {
-		return domain.ErrInvalidStockMoveInput
+		return domain.ErrInvalidQuantity
 	}
 
 	switch input.MoveType {
 	case domain.StockMoveIn:
 		if input.ToLocationID == nil {
-			return domain.ErrInvalidStockMoveInput
+			return domain.ErrToLocationRequired
 		}
 	case domain.StockMoveOut:
 		if input.FromLocationID == nil {
-			return domain.ErrInvalidStockMoveInput
+			return domain.ErrFromLocationRequired
 		}
 	case domain.StockMoveTransfer:
-		if input.FromLocationID == nil || input.ToLocationID == nil {
-			return domain.ErrInvalidStockMoveInput
+		if input.FromLocationID == nil {
+			return domain.ErrFromLocationRequired
+		}
+		if input.ToLocationID == nil {
+			return domain.ErrToLocationRequired
 		}
 		if *input.FromLocationID == *input.ToLocationID {
 			return domain.ErrFromToLocationSame
 		}
 	case domain.StockMoveAdjust:
 		if input.ToLocationID == nil {
-			return domain.ErrInvalidStockMoveInput
+			return domain.ErrToLocationRequired
 		}
 	default:
 		// Unsupported move type (RESERVE/UNRESERVE are not API-exposed,
 		// spec Section 2.4).
-		return domain.ErrInvalidStockMoveInput
+		return domain.ErrInvalidStockMoveType
 	}
 	return nil
 }

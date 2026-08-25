@@ -123,6 +123,19 @@ var (
 	// ErrFromToLocationSame is returned when a TRANSFER references the same
 	// from and to location.
 	ErrFromToLocationSame = errors.New("from and to location must be different")
+
+	// Domain Business Validation Errors
+	ErrVariantIDRequired = errors.New("variant ID is required")
+	// ErrInvalidQuantity       = errors.New("quantity must be greater than zero")
+	ErrFromLocationRequired = errors.New("from_location_id is required for OUT and TRANSFER moves")
+	ErrToLocationRequired   = errors.New("to_location_id is required for IN, TRANSFER, and ADJUST moves")
+	// ErrFromToLocationSame    = errors.New("from and to location must be different")
+	ErrInvalidStockMoveType = errors.New("unsupported or invalid stock move type")
+
+	// Domain State Errors
+	// ErrInventoryItemNotFound  = errors.New("inventory item not found")
+	// ErrLocationNotFound       = errors.New("location not found")
+	// ErrInventoryLevelNotFound = errors.New("inventory level not found")
 )
 
 // Tx is the transaction handle passed to transaction-scoped repository methods.
@@ -177,6 +190,14 @@ type InventoryRepository interface {
 	// item/location pair (SELECT ... FOR UPDATE, spec Section 3.3). It returns
 	// ErrInventoryLevelNotFound when no level row exists.
 	LockInventoryLevel(ctx context.Context, tx Tx, inventoryItemID, locationID uuid.UUID) (InventoryLevel, error)
+
+	// LockInventoryLevelByItem locks and returns the single inventory level to
+	// reserve from for an item when no location was supplied by the caller
+	// (spec: remove-location-from-reservation.md). Selection prefers the
+	// is_default location if it has enough stock, otherwise the location with
+	// the highest available_qty, tie-broken by location_id ASC. Returns
+	// ErrInventoryLevelNotFound when the item has no inventory_levels rows.
+	LockInventoryLevelByItem(ctx context.Context, tx Tx, inventoryItemID uuid.UUID, requiredQty Quantity) (InventoryLevel, error)
 
 	// UpdateInventoryLevel persists a modified inventory level.
 	UpdateInventoryLevel(ctx context.Context, tx Tx, level InventoryLevel) error

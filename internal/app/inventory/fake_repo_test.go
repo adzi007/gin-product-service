@@ -2,6 +2,7 @@ package inventory
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -26,9 +27,13 @@ type fakeInventoryRepo struct {
 
 	itemByVariant map[uuid.UUID]uuid.UUID
 	locations     map[uuid.UUID]bool
-	levels        map[levelKey]domain.InventoryLevel
-	moves         []domain.StockMove
-	reservations  []domain.Reservation
+	// defaultLocations tracks which locations have is_default = true, used by
+	// LockInventoryLevelByItem's selection rule (spec:
+	// remove-location-from-reservation.md).
+	defaultLocations map[uuid.UUID]bool
+	levels           map[levelKey]domain.InventoryLevel
+	moves            []domain.StockMove
+	reservations     []domain.Reservation
 
 	// idempotencyKeys mirrors the idempotency_keys table: order_id -> claimed.
 	idempotencyKeys map[uuid.UUID]bool
@@ -41,10 +46,11 @@ type fakeInventoryRepo struct {
 
 func newFakeInventoryRepo() *fakeInventoryRepo {
 	return &fakeInventoryRepo{
-		itemByVariant:   map[uuid.UUID]uuid.UUID{},
-		locations:       map[uuid.UUID]bool{},
-		levels:          map[levelKey]domain.InventoryLevel{},
-		idempotencyKeys: map[uuid.UUID]bool{},
+		itemByVariant:    map[uuid.UUID]uuid.UUID{},
+		locations:        map[uuid.UUID]bool{},
+		defaultLocations: map[uuid.UUID]bool{},
+		levels:           map[levelKey]domain.InventoryLevel{},
+		idempotencyKeys:  map[uuid.UUID]bool{},
 	}
 }
 
@@ -54,6 +60,11 @@ func (f *fakeInventoryRepo) addVariant(variantID, itemID uuid.UUID) {
 
 func (f *fakeInventoryRepo) addLocation(id uuid.UUID) {
 	f.locations[id] = true
+}
+
+func (f *fakeInventoryRepo) addDefaultLocation(id uuid.UUID) {
+	f.locations[id] = true
+	f.defaultLocations[id] = true
 }
 
 func (f *fakeInventoryRepo) addLevel(itemID, locationID uuid.UUID, available, reserved int) {
@@ -100,6 +111,38 @@ func (f *fakeInventoryRepo) LockInventoryLevel(ctx context.Context, tx domain.Tx
 		return domain.InventoryLevel{}, domain.ErrInventoryLevelNotFound
 	}
 	return l, nil
+}
+
+// LockInventoryLevelByItem mimics the repository selection rule: prefer the
+// is_default location with enough available_qty, else the highest
+// available_qty, tie-broken by location_id ASC. Returns
+// ErrInventoryLevelNotFound when the item has no levels.
+func (f *fakeInventoryRepo) LockInventoryLevelByItem(ctx context.Context, tx domain.Tx, itemID uuid.UUID, requiredQty domain.Quantity) (domain.InventoryLevel, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	var candidates []domain.InventoryLevel
+	for key, lvl := range f.levels {
+		if key.itemID == itemID {
+			candidates = append(candidates, lvl)
+		}
+	}
+	if len(candidates) == 0 {
+		return domain.InventoryLevel{}, domain.ErrInventoryLevelNotFound
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		iDefault := f.defaultLocations[candidates[i].LocationID] && candidates[i].AvailableQty >= requiredQty
+		jDefault := f.defaultLocations[candidates[j].LocationID] && candidates[j].AvailableQty >= requiredQty
+		if iDefault != jDefault {
+			return iDefault
+		}
+		if candidates[i].AvailableQty != candidates[j].AvailableQty {
+			return candidates[i].AvailableQty > candidates[j].AvailableQty
+		}
+		return candidates[i].LocationID.String() < candidates[j].LocationID.String()
+	})
+	return candidates[0], nil
 }
 
 func (f *fakeInventoryRepo) UpdateInventoryLevel(ctx context.Context, tx domain.Tx, level domain.InventoryLevel) error {

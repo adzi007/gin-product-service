@@ -57,8 +57,8 @@ func TestReservation_CreateMultiItem(t *testing.T) {
 	result, err := uc.Create(context.Background(), domain.CreateReservationInput{
 		OrderID: orderID,
 		Items: []domain.ReservationItemInput{
-			{VariantID: va, LocationID: la, Quantity: 3},
-			{VariantID: vb, LocationID: lb, Quantity: 2},
+			{VariantID: va, Quantity: 3},
+			{VariantID: vb, Quantity: 2},
 		},
 	})
 	if err != nil {
@@ -109,8 +109,8 @@ func TestReservation_CreateOneItemInsufficientRollsBackAll(t *testing.T) {
 	_, err := uc.Create(context.Background(), domain.CreateReservationInput{
 		OrderID: orderID,
 		Items: []domain.ReservationItemInput{
-			{VariantID: va, LocationID: la, Quantity: 3},
-			{VariantID: vb, LocationID: lb, Quantity: 2}, // B only has 1
+			{VariantID: va, Quantity: 3},
+			{VariantID: vb, Quantity: 2}, // B only has 1
 		},
 	})
 	if err != domain.ErrInsufficientStock {
@@ -140,7 +140,7 @@ func TestReservation_CreateIdempotent(t *testing.T) {
 	uc := NewReservationUseCase(repo)
 	input := domain.CreateReservationInput{
 		OrderID: orderID,
-		Items:   []domain.ReservationItemInput{{VariantID: va, LocationID: la, Quantity: 3}},
+		Items:   []domain.ReservationItemInput{{VariantID: va, Quantity: 3}},
 	}
 
 	first, err := uc.Create(context.Background(), input)
@@ -284,16 +284,15 @@ func TestReservation_Validation(t *testing.T) {
 	repo := newFakeInventoryRepo()
 	uc := NewReservationUseCase(repo)
 
-	items := []domain.ReservationItemInput{{VariantID: uuid.New(), LocationID: uuid.New(), Quantity: 1}}
+	items := []domain.ReservationItemInput{{VariantID: uuid.New(), Quantity: 1}}
 	cases := []struct {
 		name  string
 		input domain.CreateReservationInput
 	}{
 		{"nil order", domain.CreateReservationInput{Items: items}},
 		{"empty items", domain.CreateReservationInput{OrderID: uuid.New()}},
-		{"nil variant", domain.CreateReservationInput{OrderID: uuid.New(), Items: []domain.ReservationItemInput{{LocationID: uuid.New(), Quantity: 1}}}},
-		{"nil location", domain.CreateReservationInput{OrderID: uuid.New(), Items: []domain.ReservationItemInput{{VariantID: uuid.New(), Quantity: 1}}}},
-		{"zero quantity", domain.CreateReservationInput{OrderID: uuid.New(), Items: []domain.ReservationItemInput{{VariantID: uuid.New(), LocationID: uuid.New(), Quantity: 0}}}},
+		{"nil variant", domain.CreateReservationInput{OrderID: uuid.New(), Items: []domain.ReservationItemInput{{Quantity: 1}}}},
+		{"zero quantity", domain.CreateReservationInput{OrderID: uuid.New(), Items: []domain.ReservationItemInput{{VariantID: uuid.New(), Quantity: 0}}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -301,5 +300,178 @@ func TestReservation_Validation(t *testing.T) {
 				t.Fatalf("got %v, want ErrInvalidReservationInput", err)
 			}
 		})
+	}
+}
+
+// setupMultiLocationItem creates a variant/item with inventory levels at two
+// locations and returns the ids.
+func setupMultiLocationItem(repo *fakeInventoryRepo, defaultLoc *uuid.UUID, qtyByLoc map[uuid.UUID]int) (variantID, itemID uuid.UUID) {
+	variantID, itemID = uuid.New(), uuid.New()
+	repo.addVariant(variantID, itemID)
+	for loc, qty := range qtyByLoc {
+		if defaultLoc != nil && loc == *defaultLoc {
+			repo.addDefaultLocation(loc)
+		} else {
+			repo.addLocation(loc)
+		}
+		repo.addLevel(itemID, loc, qty, 0)
+	}
+	return
+}
+
+// TestReservation_CreatePicksDefaultLocationWithEnoughStock verifies the
+// selection rule prefers the default location even when another location has
+// more stock (spec: remove-location-from-reservation.md Section 2).
+func TestReservation_CreatePicksDefaultLocationWithEnoughStock(t *testing.T) {
+	repo := newFakeInventoryRepo()
+	orderID := uuid.New()
+	defaultLoc, otherLoc := uuid.New(), uuid.New()
+	variantID, itemID := setupMultiLocationItem(repo, &defaultLoc, map[uuid.UUID]int{defaultLoc: 5, otherLoc: 10})
+
+	uc := NewReservationUseCase(repo)
+	result, err := uc.Create(context.Background(), domain.CreateReservationInput{
+		OrderID: orderID,
+		Items:   []domain.ReservationItemInput{{VariantID: variantID, Quantity: 2}},
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if len(result.Reservations) != 1 {
+		t.Fatalf("expected 1 reservation, got %d", len(result.Reservations))
+	}
+	if result.Reservations[0].LocationID != defaultLoc {
+		t.Fatalf("location = %v, want default %v", result.Reservations[0].LocationID, defaultLoc)
+	}
+	def, _ := repo.level(itemID, defaultLoc)
+	if def.AvailableQty.Int() != 3 || def.ReservedQty.Int() != 2 {
+		t.Fatalf("default: available=%d reserved=%d, want 3/2", def.AvailableQty.Int(), def.ReservedQty.Int())
+	}
+	other, _ := repo.level(itemID, otherLoc)
+	if other.AvailableQty.Int() != 10 || other.ReservedQty.Int() != 0 {
+		t.Fatalf("other must be untouched: available=%d reserved=%d", other.AvailableQty.Int(), other.ReservedQty.Int())
+	}
+}
+
+// TestReservation_CreatePicksHighestAvailableWhenNoDefault verifies that with
+// no default location, the highest available_qty location wins.
+func TestReservation_CreatePicksHighestAvailableWhenNoDefault(t *testing.T) {
+	repo := newFakeInventoryRepo()
+	orderID := uuid.New()
+	lowLoc, highLoc := uuid.New(), uuid.New()
+	variantID, itemID := setupMultiLocationItem(repo, nil, map[uuid.UUID]int{lowLoc: 3, highLoc: 8})
+
+	uc := NewReservationUseCase(repo)
+	result, err := uc.Create(context.Background(), domain.CreateReservationInput{
+		OrderID: orderID,
+		Items:   []domain.ReservationItemInput{{VariantID: variantID, Quantity: 4}},
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if len(result.Reservations) != 1 {
+		t.Fatalf("expected 1 reservation, got %d", len(result.Reservations))
+	}
+	if result.Reservations[0].LocationID != highLoc {
+		t.Fatalf("location = %v, want highest-available %v", result.Reservations[0].LocationID, highLoc)
+	}
+	high, _ := repo.level(itemID, highLoc)
+	if high.AvailableQty.Int() != 4 || high.ReservedQty.Int() != 4 {
+		t.Fatalf("high: available=%d reserved=%d, want 4/4", high.AvailableQty.Int(), high.ReservedQty.Int())
+	}
+}
+
+// TestReservation_CreateDefaultLacksStockFallsBack verifies that when the
+// default location lacks enough stock, the highest available_qty location is
+// used instead.
+func TestReservation_CreateDefaultLacksStockFallsBack(t *testing.T) {
+	repo := newFakeInventoryRepo()
+	orderID := uuid.New()
+	defaultLoc, otherLoc := uuid.New(), uuid.New()
+	variantID, itemID := setupMultiLocationItem(repo, &defaultLoc, map[uuid.UUID]int{defaultLoc: 2, otherLoc: 8})
+
+	uc := NewReservationUseCase(repo)
+	result, err := uc.Create(context.Background(), domain.CreateReservationInput{
+		OrderID: orderID,
+		Items:   []domain.ReservationItemInput{{VariantID: variantID, Quantity: 5}},
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if result.Reservations[0].LocationID != otherLoc {
+		t.Fatalf("location = %v, want %v", result.Reservations[0].LocationID, otherLoc)
+	}
+	other, _ := repo.level(itemID, otherLoc)
+	if other.AvailableQty.Int() != 3 || other.ReservedQty.Int() != 5 {
+		t.Fatalf("other: available=%d reserved=%d, want 3/5", other.AvailableQty.Int(), other.ReservedQty.Int())
+	}
+}
+
+// TestReservation_CreateTieBreaksByLocationID verifies deterministic selection
+// between two locations with equal available_qty.
+func TestReservation_CreateTieBreaksByLocationID(t *testing.T) {
+	repo := newFakeInventoryRepo()
+	orderID := uuid.New()
+	locA, locB := uuid.New(), uuid.New()
+	if locB.String() < locA.String() {
+		locA, locB = locB, locA
+	}
+	variantID, _ := setupMultiLocationItem(repo, nil, map[uuid.UUID]int{locA: 5, locB: 5})
+
+	uc := NewReservationUseCase(repo)
+	result, err := uc.Create(context.Background(), domain.CreateReservationInput{
+		OrderID: orderID,
+		Items:   []domain.ReservationItemInput{{VariantID: variantID, Quantity: 1}},
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if result.Reservations[0].LocationID != locA {
+		t.Fatalf("location = %v, want lower location_id %v", result.Reservations[0].LocationID, locA)
+	}
+}
+
+// TestReservation_CreateNoSingleLocationEnoughStockFails verifies that when no
+// single location covers the requested quantity (even though the sum across
+// locations would), the reservation fails with ErrInsufficientStock and nothing
+// is committed (spec Section 4).
+func TestReservation_CreateNoSingleLocationEnoughStockFails(t *testing.T) {
+	repo := newFakeInventoryRepo()
+	orderID := uuid.New()
+	locA, locB := uuid.New(), uuid.New()
+	variantID, itemID := setupMultiLocationItem(repo, nil, map[uuid.UUID]int{locA: 3, locB: 3})
+
+	uc := NewReservationUseCase(repo)
+	_, err := uc.Create(context.Background(), domain.CreateReservationInput{
+		OrderID: orderID,
+		Items:   []domain.ReservationItemInput{{VariantID: variantID, Quantity: 5}},
+	})
+	if err != domain.ErrInsufficientStock {
+		t.Fatalf("got %v, want ErrInsufficientStock", err)
+	}
+	if len(repo.reservations) != 0 {
+		t.Fatalf("expected no reservation rows, got %d", len(repo.reservations))
+	}
+	if a, _ := repo.level(itemID, locA); a.AvailableQty.Int() != 3 || a.ReservedQty.Int() != 0 {
+		t.Fatalf("A must be untouched: available=%d reserved=%d", a.AvailableQty.Int(), a.ReservedQty.Int())
+	}
+	if b, _ := repo.level(itemID, locB); b.AvailableQty.Int() != 3 || b.ReservedQty.Int() != 0 {
+		t.Fatalf("B must be untouched: available=%d reserved=%d", b.AvailableQty.Int(), b.ReservedQty.Int())
+	}
+}
+
+// TestReservation_CreateNoLevelsReturnsNotFound verifies ErrInventoryLevelNotFound
+// when the item has no inventory_levels rows at all.
+func TestReservation_CreateNoLevelsReturnsNotFound(t *testing.T) {
+	repo := newFakeInventoryRepo()
+	variantID := uuid.New()
+	repo.addVariant(variantID, uuid.New())
+
+	uc := NewReservationUseCase(repo)
+	_, err := uc.Create(context.Background(), domain.CreateReservationInput{
+		OrderID: uuid.New(),
+		Items:   []domain.ReservationItemInput{{VariantID: variantID, Quantity: 1}},
+	})
+	if err != domain.ErrInventoryLevelNotFound {
+		t.Fatalf("got %v, want ErrInventoryLevelNotFound", err)
 	}
 }

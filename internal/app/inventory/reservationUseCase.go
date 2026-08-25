@@ -56,13 +56,13 @@ func (uc *reservationUc) Create(ctx context.Context, input domain.CreateReservat
 
 		now := time.Now().UTC()
 
-		// Pass 1a: resolve every item and verify every location before taking
-		// any lock, so a bad variant/location fails without touching state.
+		// Pass 1a: resolve every item before taking any lock, so a bad variant
+		// fails without touching state. No location is resolved here — the
+		// server picks the location during locking (Pass 1b).
 		type resolvedItem struct {
-			variantID  uuid.UUID
-			itemID     uuid.UUID
-			locationID uuid.UUID
-			quantity   int
+			variantID uuid.UUID
+			itemID    uuid.UUID
+			quantity  int
 		}
 		resolved := make([]resolvedItem, 0, len(input.Items))
 		for _, item := range input.Items {
@@ -70,29 +70,19 @@ func (uc *reservationUc) Create(ctx context.Context, input domain.CreateReservat
 			if err != nil {
 				return err
 			}
-			exists, err := uc.repo.LocationExists(ctx, tx, item.LocationID)
-			if err != nil {
-				return err
-			}
-			if !exists {
-				return domain.ErrLocationNotFound
-			}
 			resolved = append(resolved, resolvedItem{
-				variantID:  item.VariantID,
-				itemID:     itemID,
-				locationID: item.LocationID,
-				quantity:   item.Quantity,
+				variantID: item.VariantID,
+				itemID:    itemID,
+				quantity:  item.Quantity,
 			})
 		}
 
-		// Pass 1b: lock all inventory levels in deterministic
-		// (inventory_item_id, location_id) order (spec Section 22) to avoid
-		// deadlocks between concurrent reservations.
+		// Pass 1b: lock all inventory levels in deterministic inventory_item_id
+		// order (spec Section 22) to avoid deadlocks between concurrent
+		// reservations. The location is chosen by the repository (one lock per
+		// item), so there is no location to tie-break on at this point.
 		sort.Slice(resolved, func(i, j int) bool {
-			if resolved[i].itemID != resolved[j].itemID {
-				return resolved[i].itemID.String() < resolved[j].itemID.String()
-			}
-			return resolved[i].locationID.String() < resolved[j].locationID.String()
+			return resolved[i].itemID.String() < resolved[j].itemID.String()
 		})
 
 		type lockedItem struct {
@@ -101,7 +91,7 @@ func (uc *reservationUc) Create(ctx context.Context, input domain.CreateReservat
 		}
 		locked := make([]lockedItem, 0, len(resolved))
 		for _, r := range resolved {
-			level, err := uc.repo.LockInventoryLevel(ctx, tx, r.itemID, r.locationID)
+			level, err := uc.repo.LockInventoryLevelByItem(ctx, tx, r.itemID, domain.Quantity(r.quantity))
 			if err != nil {
 				return err
 			}
@@ -110,7 +100,7 @@ func (uc *reservationUc) Create(ctx context.Context, input domain.CreateReservat
 					ID:              uuid.Must(uuid.NewV7()),
 					InventoryItemID: r.itemID,
 					VariantID:       r.variantID,
-					LocationID:      r.locationID,
+					LocationID:      level.LocationID,
 					OrderID:         &input.OrderID,
 					Quantity:        domain.Quantity(r.quantity),
 					ReservedAt:      now,
@@ -302,7 +292,7 @@ func validateReservationInput(input domain.CreateReservationInput) error {
 		return domain.ErrInvalidReservationInput
 	}
 	for _, item := range input.Items {
-		if item.VariantID == uuid.Nil || item.LocationID == uuid.Nil || item.Quantity <= 0 {
+		if item.VariantID == uuid.Nil || item.Quantity <= 0 {
 			return domain.ErrInvalidReservationInput
 		}
 	}

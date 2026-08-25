@@ -346,7 +346,7 @@ const docTemplate = `{
         },
         "/inventory/reservations": {
             "post": {
-                "description": "Reserve multiple variants for an order atomically; retrying the same order_id returns the existing reservations (idempotent)",
+                "description": "Reserve multiple variants for an order atomically; retrying the same order_id returns the existing reservations (idempotent). The location to reserve from is chosen automatically for each item.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3013,10 +3013,10 @@ const docTemplate = `{
             ],
             "properties": {
                 "created_by": {
-                    "type": "string"
+                    "$ref": "#/definitions/dto.NullableUUID"
                 },
                 "from_location_id": {
-                    "type": "string"
+                    "$ref": "#/definitions/dto.NullableUUID"
                 },
                 "move_type": {
                     "enum": [
@@ -3038,7 +3038,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "to_location_id": {
-                    "type": "string"
+                    "$ref": "#/definitions/dto.NullableUUID"
                 },
                 "variant_id": {
                     "type": "string"
@@ -3108,6 +3108,14 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "url": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.NullableUUID": {
+            "type": "object",
+            "properties": {
+                "uuid.UUID": {
                     "type": "string"
                 }
             }
@@ -3194,14 +3202,10 @@ const docTemplate = `{
         "dto.ReservationItemRequest": {
             "type": "object",
             "required": [
-                "location_id",
                 "quantity",
                 "variant_id"
             ],
             "properties": {
-                "location_id": {
-                    "type": "string"
-                },
                 "quantity": {
                     "type": "integer"
                 },

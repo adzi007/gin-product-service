@@ -169,11 +169,11 @@ func (r *productRepo) Create(ctx context.Context, params domain.CreateProductPar
 	// 7. inventory_levels (initial level for the item/location pair).
 	for _, level := range params.InventoryLevels {
 		_, err = tx.Exec(ctx, `
-			INSERT INTO inventory_levels (id, inventory_item_id, location_id, available_qty, reserved_qty)
+			INSERT INTO inventory_levels (id, inventory_item_id, available_qty, reserved_qty)
 			VALUES ($1, $2, $3, $4, $5)`,
 			pgUUID(level.ID),
 			pgUUID(level.InventoryItemID),
-			pgUUID(locationID),
+			// pgUUID(locationID),
 			level.AvailableQty.Int(),
 			level.ReservedQty.Int(),
 		)
@@ -1403,11 +1403,11 @@ func (r *productRepo) CreateVariantsWithStock(ctx context.Context, params domain
 	// 5. inventory_levels (initial level for the item/location pair).
 	for _, level := range params.InventoryLevels {
 		_, err = tx.Exec(ctx, `
-			INSERT INTO inventory_levels (id, inventory_item_id, location_id, available_qty, reserved_qty)
+			INSERT INTO inventory_levels (id, inventory_item_id, available_qty, reserved_qty)
 			VALUES ($1, $2, $3, $4, $5)`,
 			pgUUID(level.ID),
 			pgUUID(level.InventoryItemID),
-			pgUUID(locationID),
+			// pgUUID(locationID),
 			level.AvailableQty.Int(),
 			level.ReservedQty.Int(),
 		)
@@ -1479,12 +1479,20 @@ func (r *productRepo) AdjustVariantStock(ctx context.Context, variantID uuid.UUI
 
 	// Current available quantity (0 when no level row exists yet).
 	var currentQty int
+	// err = tx.QueryRow(ctx, `
+	// 	SELECT available_qty
+	// 	FROM inventory_levels
+	// 	WHERE inventory_item_id = $1 AND location_id = $2`,
+	// 	pgUUID(itemID), pgUUID(locationID),
+	// ).Scan(&currentQty)
+
 	err = tx.QueryRow(ctx, `
 		SELECT available_qty
 		FROM inventory_levels
-		WHERE inventory_item_id = $1 AND location_id = $2`,
-		pgUUID(itemID), pgUUID(locationID),
+		WHERE inventory_item_id = $1`,
+		pgUUID(itemID),
 	).Scan(&currentQty)
+
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return domain.InventoryLevel{}, err
 	}

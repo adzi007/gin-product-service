@@ -405,9 +405,9 @@ definitions:
   dto.CreateStockMoveRequest:
     properties:
       created_by:
-        type: string
+        $ref: '#/definitions/dto.NullableUUID'
       from_location_id:
-        type: string
+        $ref: '#/definitions/dto.NullableUUID'
       move_type:
         allOf:
         - $ref: '#/definitions/domain.StockMoveType'
@@ -421,7 +421,7 @@ definitions:
       reason:
         type: string
       to_location_id:
-        type: string
+        $ref: '#/definitions/dto.NullableUUID'
       variant_id:
         type: string
     required:
@@ -473,6 +473,11 @@ definitions:
     required:
     - id
     - url
+    type: object
+  dto.NullableUUID:
+    properties:
+      uuid.UUID:
+        type: string
     type: object
   dto.PositionUpdate:
     properties:
@@ -529,14 +534,11 @@ definitions:
     type: object
   dto.ReservationItemRequest:
     properties:
-      location_id:
-        type: string
       quantity:
         type: integer
       variant_id:
         type: string
     required:
-    - location_id
     - quantity
     - variant_id
     type: object
@@ -891,7 +893,8 @@ paths:
       consumes:
       - application/json
       description: Reserve multiple variants for an order atomically; retrying the
-        same order_id returns the existing reservations (idempotent)
+        same order_id returns the existing reservations (idempotent). The location
+        to reserve from is chosen automatically for each item.
       parameters:
       - description: Reservations to create
         in: body

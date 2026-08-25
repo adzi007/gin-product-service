@@ -1,11 +1,12 @@
 package handler
 
 import (
-	"fmt"
+	"errors"
 	"net/http"
 
 	"gin-product-service/internal/delivery/http/dto"
 	"gin-product-service/internal/domain"
+	"gin-product-service/internal/utils"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
@@ -47,14 +48,19 @@ func (h *InventoryHandler) CreateStockMove(c *gin.Context) {
 
 	var req dto.CreateStockMoveRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		fmt.Println("errorrr heee >>>>>>>>>>>>>>>>> xxxxx")
-		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+
+		msg, details := utils.ParseBindingError(err)
+		status, code := mapProductError(err)
+
+		c.JSON(status, errorBadRequestResponse(code, msg, details))
 		return
+
+		// c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		// return
 	}
 	if err := validate.Struct(req); err != nil {
 		if fieldErrs, ok := err.(validator.ValidationErrors); ok {
 
-			fmt.Println("errorrr heee >>>>>>>>>>>>>>>>>")
 			c.JSON(http.StatusBadRequest, gin.H{
 				"status":  "error",
 				"code":    "ERR_VALIDATION",
@@ -82,7 +88,7 @@ func (h *InventoryHandler) CreateStockMove(c *gin.Context) {
 
 // CreateReservation godoc
 // @Summary      Create reservations for an order
-// @Description  Reserve multiple variants for an order atomically; retrying the same order_id returns the existing reservations (idempotent)
+// @Description  Reserve multiple variants for an order atomically; retrying the same order_id returns the existing reservations (idempotent). The location to reserve from is chosen automatically for each item.
 // @Tags         inventory
 // @Accept       json
 // @Produce      json
@@ -205,34 +211,55 @@ func validationDetails(fieldErrs validator.ValidationErrors) []string {
 	return details
 }
 
+func errorBadRequestResponse(code, message string, details []utils.CustomFieldError) gin.H {
+	return gin.H{
+		"status":  "error",
+		"code":    code,
+		"message": message,
+		"details": details,
+	}
+}
+
 // mapInventoryError maps domain errors to HTTP status codes per spec
 // Section 21 (400/404/409/500).
 func mapInventoryError(err error) (int, string) {
-	switch err {
-	case domain.ErrInvalidStockMoveInput,
-		domain.ErrInvalidReservationInput,
-		domain.ErrInvalidQuantity:
+	switch {
+	// 400 Bad Request: Business Validation Errors
+	case errors.Is(err, domain.ErrInvalidStockMoveInput),
+		errors.Is(err, domain.ErrInvalidReservationInput),
+		errors.Is(err, domain.ErrInvalidQuantity),
+		errors.Is(err, domain.ErrVariantIDRequired),
+		errors.Is(err, domain.ErrToLocationRequired),
+		errors.Is(err, domain.ErrFromLocationRequired),
+		errors.Is(err, domain.ErrInvalidStockMoveType):
 		return http.StatusBadRequest, "ERR_VALIDATION"
-	case domain.ErrFromToLocationSame:
+
+	case errors.Is(err, domain.ErrFromToLocationSame):
 		return http.StatusBadRequest, "ERR_SAME_LOCATION"
-	case domain.ErrVariantNotFound:
+
+	// 404 Not Found
+	case errors.Is(err, domain.ErrVariantNotFound):
 		return http.StatusNotFound, "ERR_VARIANT_NOT_FOUND"
-	case domain.ErrInventoryItemNotFound:
+	case errors.Is(err, domain.ErrInventoryItemNotFound):
 		return http.StatusNotFound, "ERR_INVENTORY_ITEM_NOT_FOUND"
-	case domain.ErrLocationNotFound:
+	case errors.Is(err, domain.ErrLocationNotFound):
 		return http.StatusNotFound, "ERR_LOCATION_NOT_FOUND"
-	case domain.ErrInventoryLevelNotFound:
+	case errors.Is(err, domain.ErrInventoryLevelNotFound):
 		return http.StatusNotFound, "ERR_INVENTORY_LEVEL_NOT_FOUND"
-	case domain.ErrReservationNotFound:
+	case errors.Is(err, domain.ErrReservationNotFound):
 		return http.StatusNotFound, "ERR_RESERVATION_NOT_FOUND"
-	case domain.ErrInsufficientStock:
+
+	// 409 Conflict
+	case errors.Is(err, domain.ErrInsufficientStock):
 		return http.StatusConflict, "ERR_INSUFFICIENT_STOCK"
-	case domain.ErrReservationAlreadyCompleted:
+	case errors.Is(err, domain.ErrReservationAlreadyCompleted):
 		return http.StatusConflict, "ERR_RESERVATION_ALREADY_COMPLETED"
-	case domain.ErrReservationAlreadyCancelled:
+	case errors.Is(err, domain.ErrReservationAlreadyCancelled):
 		return http.StatusConflict, "ERR_RESERVATION_ALREADY_CANCELLED"
-	case domain.ErrDuplicateActiveReservation:
+	case errors.Is(err, domain.ErrDuplicateActiveReservation):
 		return http.StatusConflict, "ERR_DUPLICATE_ACTIVE_RESERVATION"
+
+	// 500 Internal Server Error
 	default:
 		return http.StatusInternalServerError, "ERR_INTERNAL"
 	}

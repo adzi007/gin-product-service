@@ -115,7 +115,53 @@ func (r *inventoryRepo) LockInventoryLevel(ctx context.Context, tx pgx.Tx, inven
 		FROM inventory_levels
 		WHERE inventory_item_id = $1 AND location_id = $2
 		FOR UPDATE`,
-		pgUUID(inventoryItemID), pgUUID(locationID),
+		pgUUID(inventoryItemID),
+		pgUUID(locationID),
+	)
+	if err != nil {
+		return domain.InventoryLevel{}, err
+	}
+	defer rows.Close()
+
+	level, err := pgx.CollectOneRow(rows, pgx.RowToStructByName[model.InventoryLevel])
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.InventoryLevel{}, domain.ErrInventoryLevelNotFound
+		}
+		return domain.InventoryLevel{}, err
+	}
+	return level.ToDomain(), nil
+}
+
+// LockInventoryLevelByItem locks and returns the single inventory level to
+// reserve from for an item when no location was supplied by the caller (spec:
+// remove-location-from-reservation.md). The SELECT both picks the best location
+// and locks it in one statement, so the choice and the lock are atomic.
+// Selection order: default location with enough stock, else highest
+// available_qty, tie-broken by location_id ASC. Returns
+// ErrInventoryLevelNotFound when the item has no inventory_levels rows at all.
+func (r *inventoryRepo) LockInventoryLevelByItem(ctx context.Context, tx pgx.Tx, inventoryItemID uuid.UUID, requiredQty domain.Quantity) (domain.InventoryLevel, error) {
+	defer metrics.ObserveDB("inventory", "lock_inventory_level_by_item")(time.Now())
+
+	rows, err := tx.Query(ctx, `
+		SELECT
+			il.id,
+			il.inventory_item_id,
+			il.location_id,
+			COALESCE(il.available_qty, 0) AS available_qty,
+			COALESCE(il.reserved_qty, 0) AS reserved_qty,
+			COALESCE(il.updated_at, now()) AS updated_at
+		FROM inventory_levels il
+		JOIN locations l ON l.id = il.location_id
+		WHERE il.inventory_item_id = $1
+		ORDER BY
+			(l.is_default AND il.available_qty >= $2) DESC,
+			il.available_qty DESC,
+			il.location_id ASC
+		LIMIT 1
+		FOR UPDATE OF il`,
+		pgUUID(inventoryItemID),
+		requiredQty.Int(),
 	)
 	if err != nil {
 		return domain.InventoryLevel{}, err

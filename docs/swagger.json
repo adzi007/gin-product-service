@@ -340,7 +340,7 @@
         },
         "/inventory/reservations": {
             "post": {
-                "description": "Reserve multiple variants for an order atomically; retrying the same order_id returns the existing reservations (idempotent)",
+                "description": "Reserve multiple variants for an order atomically; retrying the same order_id returns the existing reservations (idempotent). The location to reserve from is chosen automatically for each item.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3007,10 +3007,10 @@
             ],
             "properties": {
                 "created_by": {
-                    "type": "string"
+                    "$ref": "#/definitions/dto.NullableUUID"
                 },
                 "from_location_id": {
-                    "type": "string"
+                    "$ref": "#/definitions/dto.NullableUUID"
                 },
                 "move_type": {
                     "enum": [
@@ -3032,7 +3032,7 @@
                     "type": "string"
                 },
                 "to_location_id": {
-                    "type": "string"
+                    "$ref": "#/definitions/dto.NullableUUID"
                 },
                 "variant_id": {
                     "type": "string"
@@ -3102,6 +3102,14 @@
                     "type": "string"
                 },
                 "url": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.NullableUUID": {
+            "type": "object",
+            "properties": {
+                "uuid.UUID": {
                     "type": "string"
                 }
             }
@@ -3188,14 +3196,10 @@
         "dto.ReservationItemRequest": {
             "type": "object",
             "required": [
-                "location_id",
                 "quantity",
                 "variant_id"
             ],
             "properties": {
-                "location_id": {
-                    "type": "string"
-                },
                 "quantity": {
                     "type": "integer"
                 },
