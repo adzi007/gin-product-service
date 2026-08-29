@@ -39,7 +39,8 @@ func (s *ginServer) Start() {
 
 	c := wire.NewContainer(s.db)
 	router := apphttp.NewAppRouter(s.app)
-	router.SetupRouter(c.CategoryHandler, c.ProductHandler, c.InfraCheckerUseCase)
+	jwtSecret := os.Getenv("API_JWT_SECRET")
+	router.SetupRouter(c.CategoryHandler, c.ProductHandler, c.InfraCheckerUseCase, c.ReviewHandler, jwtSecret)
 
 	// expose Prometheus scrape endpoint
 	s.app.GET("/metrics", gin.WrapH(promhttp.Handler()))

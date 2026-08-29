@@ -371,6 +371,23 @@ definitions:
     - title
     - variants
     type: object
+  dto.CreateReviewRequest:
+    properties:
+      comment:
+        maxLength: 5000
+        type: string
+      rating:
+        maximum: 5
+        minimum: 1
+        type: integer
+      title:
+        maxLength: 150
+        type: string
+      variant_id:
+        type: string
+    required:
+    - rating
+    type: object
   dto.CreateVariantInput:
     properties:
       barcode:
@@ -416,6 +433,17 @@ definitions:
     - id
     - url
     type: object
+  dto.PaginationResponse:
+    properties:
+      limit:
+        type: integer
+      page:
+        type: integer
+      total_items:
+        type: integer
+      total_pages:
+        type: integer
+    type: object
   dto.PositionUpdate:
     properties:
       id:
@@ -438,6 +466,19 @@ definitions:
     required:
     - name
     - values
+    type: object
+  dto.RatingSummaryResponse:
+    properties:
+      average_rating:
+        type: number
+      product_id:
+        type: string
+      rating_breakdown:
+        additionalProperties:
+          type: integer
+        type: object
+      total_reviews:
+        type: integer
     type: object
   dto.ReorderMediaInput:
     properties:
@@ -468,6 +509,64 @@ definitions:
         type: array
     required:
     - positions
+    type: object
+  dto.ReviewListItemResponse:
+    properties:
+      comment:
+        type: string
+      created_at:
+        type: string
+      id:
+        type: string
+      product_id:
+        type: string
+      rating:
+        type: integer
+      title:
+        type: string
+      updated_at:
+        type: string
+      user:
+        $ref: '#/definitions/dto.ReviewUserResponse'
+      variant_id:
+        type: string
+    type: object
+  dto.ReviewListResponse:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/dto.ReviewListItemResponse'
+        type: array
+      pagination:
+        $ref: '#/definitions/dto.PaginationResponse'
+    type: object
+  dto.ReviewResponse:
+    properties:
+      comment:
+        type: string
+      created_at:
+        type: string
+      id:
+        type: string
+      product_id:
+        type: string
+      rating:
+        type: integer
+      title:
+        type: string
+      updated_at:
+        type: string
+      user_id:
+        type: string
+      variant_id:
+        type: string
+    type: object
+  dto.ReviewUserResponse:
+    properties:
+      display_name:
+        type: string
+      id:
+        type: string
     type: object
   dto.UpdateMediaInput:
     properties:
@@ -509,6 +608,19 @@ definitions:
       vendor:
         type: string
     type: object
+  dto.UpdateReviewRequest:
+    properties:
+      comment:
+        maxLength: 5000
+        type: string
+      rating:
+        maximum: 5
+        minimum: 1
+        type: integer
+      title:
+        maxLength: 150
+        type: string
+    type: object
   dto.UpdateVariantInput:
     properties:
       barcode:
@@ -528,6 +640,43 @@ definitions:
         type: string
       weight:
         type: number
+    type: object
+  dto.UserReviewListItemResponse:
+    properties:
+      comment:
+        type: string
+      created_at:
+        type: string
+      id:
+        type: string
+      product:
+        $ref: '#/definitions/dto.UserReviewProductResponse'
+      rating:
+        type: integer
+      title:
+        type: string
+      updated_at:
+        type: string
+      variant_id:
+        type: string
+    type: object
+  dto.UserReviewListResponse:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/dto.UserReviewListItemResponse'
+        type: array
+      pagination:
+        $ref: '#/definitions/dto.PaginationResponse'
+    type: object
+  dto.UserReviewProductResponse:
+    properties:
+      id:
+        type: string
+      name:
+        type: string
+      thumbnail_url:
+        type: string
     type: object
   dto.VariantInput:
     properties:
@@ -1601,6 +1750,135 @@ paths:
       summary: Restore an archived product
       tags:
       - products
+  /products/{id}/reviews:
+    get:
+      description: Get a paginated, filterable, sortable list of reviews for a product
+      parameters:
+      - description: Product UUID
+        in: path
+        name: id
+        type: string
+      - description: Page number (1-indexed)
+        in: query
+        name: page
+        type: integer
+      - description: Page size (max 100)
+        in: query
+        name: limit
+        type: integer
+      - description: Filter to a specific star rating (1-5)
+        in: query
+        name: rating
+        type: integer
+      - description: Accepted but not filtered (no purchase history data)
+        in: query
+        name: verified_only
+        type: boolean
+      - description: Only reviews with a non-empty comment
+        in: query
+        name: has_comment
+        type: boolean
+      - description: 'Sort: newest, oldest, highest_rating, lowest_rating'
+        in: query
+        name: sort
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.ReviewListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List reviews for a product
+      tags:
+      - reviews
+    post:
+      consumes:
+      - application/json
+      description: Create a review for a product, optionally tied to a purchased variant.
+        Requires authentication.
+      parameters:
+      - description: Product UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Review to create
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/dto.CreateReviewRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/dto.ReviewResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Create a review for a product
+      tags:
+      - reviews
+  /products/{id}/reviews/summary:
+    get:
+      description: Get the aggregate rating stats (average, total, breakdown) for
+        a product
+      parameters:
+      - description: Product UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.RatingSummaryResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get a product's rating summary
+      tags:
+      - reviews
   /products/{id}/variants:
     post:
       consumes:
@@ -1830,6 +2108,161 @@ paths:
       summary: Reorder product variants
       tags:
       - products
+  /reviews/{reviewId}:
+    delete:
+      description: Delete a review. Only the author can delete it. Requires authentication.
+      parameters:
+      - description: Review UUID
+        in: path
+        name: reviewId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Delete your own review
+      tags:
+      - reviews
+    get:
+      description: Get a single review by id (same shape as the list item)
+      parameters:
+      - description: Review UUID
+        in: path
+        name: reviewId
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.ReviewListItemResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get a single review
+      tags:
+      - reviews
+    patch:
+      consumes:
+      - application/json
+      description: Update a review's rating/title/comment. Only the author can edit
+        it. Requires authentication.
+      parameters:
+      - description: Review UUID
+        in: path
+        name: reviewId
+        required: true
+        type: string
+      - description: Fields to update
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/dto.UpdateReviewRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.ReviewResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Update your own review
+      tags:
+      - reviews
+  /users/me/reviews:
+    get:
+      description: Get a paginated list of the authenticated user's reviews. Requires
+        authentication.
+      parameters:
+      - description: Page number (1-indexed)
+        in: query
+        name: page
+        type: integer
+      - description: Page size (max 100)
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.UserReviewListResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties: true
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: List the current user's reviews
+      tags:
+      - reviews
   /variants/{id}:
     delete:
       description: Delete a variant (soft-delete if it has history, hard-delete otherwise)

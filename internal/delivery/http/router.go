@@ -3,6 +3,7 @@ package http
 import (
 	_ "gin-product-service/docs"
 	"gin-product-service/internal/delivery/http/handler"
+	"gin-product-service/internal/delivery/http/middleware"
 	"gin-product-service/internal/domain"
 	"net/http"
 
@@ -21,7 +22,7 @@ func NewAppRouter(app *gin.Engine) router {
 	}
 }
 
-func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler, productHandler *handler.ProductHandler, infraCheckerUseCase domain.InfraCheckUseCase) *gin.Engine {
+func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler, productHandler *handler.ProductHandler, infraCheckerUseCase domain.InfraCheckUseCase, reviewHandler *handler.ReviewHandler, jwtSecret string) *gin.Engine {
 
 	r := router.appServer
 
@@ -89,6 +90,22 @@ func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler, prod
 			products.PATCH("/:id/media/reorder", productHandler.ReorderMedia)
 			products.PATCH("/:id/media/:media_id", productHandler.UpdateMedia)
 			products.DELETE("/:id/media/:media_id", productHandler.DeleteMedia)
+
+			products.GET("/:id/reviews", reviewHandler.Fetch)
+			products.GET("/:id/reviews/summary", reviewHandler.Summary)
+			products.POST("/:id/reviews", middleware.RequireAuth(jwtSecret), reviewHandler.Create)
+		}
+
+		reviews := v1.Group("/reviews")
+		{
+			reviews.GET("/:reviewId", reviewHandler.GetByID)
+			reviews.PATCH("/:reviewId", middleware.RequireAuth(jwtSecret), reviewHandler.Update)
+			reviews.DELETE("/:reviewId", middleware.RequireAuth(jwtSecret), reviewHandler.Delete)
+		}
+
+		users := v1.Group("/users")
+		{
+			users.GET("/me/reviews", middleware.RequireAuth(jwtSecret), reviewHandler.FetchMine)
 		}
 
 		variants := v1.Group("/variants")

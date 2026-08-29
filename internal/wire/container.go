@@ -4,6 +4,7 @@ import (
 	"gin-product-service/internal/app/category"
 	"gin-product-service/internal/app/infrachecker"
 	"gin-product-service/internal/app/product"
+	"gin-product-service/internal/app/review"
 	"gin-product-service/internal/delivery/http/handler"
 	"gin-product-service/internal/domain"
 	"gin-product-service/internal/infrastructure/database"
@@ -13,6 +14,7 @@ import (
 type Container struct {
 	CategoryHandler     *handler.CategoryHandler
 	ProductHandler      *handler.ProductHandler
+	ReviewHandler       *handler.ReviewHandler
 	InfraCheckerUseCase domain.InfraCheckUseCase
 }
 
@@ -39,9 +41,19 @@ func NewContainer(db database.Database) *Container {
 	healthRepo := repository.NewHealthRepo(db)
 	infraCheckerUC := infrachecker.NewInfraCheckerUseCase(healthRepo)
 
+	// review module
+	reviewRepo := repository.NewReviewRepo(db)
+	reviewInsertUC := review.NewReviewInsertUseCase(reviewRepo)
+	reviewQueryUC := review.NewReviewQueryUseCase(reviewRepo)
+	reviewUpdateUC := review.NewReviewUpdateUseCase(reviewRepo)
+	reviewDeleteUC := review.NewReviewDeleteUseCase(reviewRepo)
+	reviewSummaryUC := review.NewReviewSummaryUseCase(reviewRepo)
+	reviewHandler := handler.NewReviewHandler(reviewInsertUC, reviewQueryUC, reviewUpdateUC, reviewDeleteUC, reviewSummaryUC)
+
 	return &Container{
 		CategoryHandler:     categoryHandler,
 		ProductHandler:      productHandler,
+		ReviewHandler:       reviewHandler,
 		InfraCheckerUseCase: infraCheckerUC,
 	}
 }

@@ -1,127 +1,247 @@
-# Task: Implement Inventory & Reservation Service
+# Issue: Implement Product Reviews & Ratings API
 
-**Spec:** [specs/inventory-reservation.md](specs/inventory-reservation.md) — read the full spec before starting. This issue breaks it into ordered, checkable steps that follow this repo's existing Clean Architecture conventions (see `CLAUDE.md`).
+Spec: [specs/reviews-api-spec.md](specs/reviews-api-spec.md)
 
-## Before you start
+## Scope decisions (read this before coding)
 
-- Read `CLAUDE.md` in the repo root — it documents the layering (`delivery/http → app/<module> → domain ← infrastructure`) and module-wiring conventions. Every step below must follow it.
-- Look at the `category` module (`internal/domain/category.go`, `internal/app/category/*.go`, `internal/infrastructure/repository/categoryRepo.go`, `internal/delivery/http/handler/category_handler.go`) as the reference pattern for interfaces, use cases, repos, and handlers.
-- Some scaffolding already exists — do not recreate it, extend it:
-  - `internal/domain/inventory.go` already defines `StockMoveType`, `Quantity` (non-negative int wrapper with `NewQuantity`), `InventoryItem`, `InventoryLevel` (with a `Reserve` method), and `StockMove`. There is no `Reservation` type yet, and no repository/use-case interfaces.
-  - `internal/infrastructure/repository/model/inventory_model.go` has a DB model + `ToDomain()` for `InventoryLevel` only.
-  - `migrations/0002_add_inventory_levels_unique.sql` already adds a unique index on `(inventory_item_id, location_id)`. The base tables (`inventory_items`, `locations`, `inventory_levels`, `stock_moves`, `reservations`) are assumed to already exist in the database per the spec's schema (Section 2) — verify this against the actual DB before writing migrations for anything new (e.g. constraints, indexes needed for idempotency).
-  - `internal/domain/product.go` references `StockMoves []StockMove` on some struct — check for accidental coupling before adding new fields there.
+These decisions were made to keep this issue shippable without new external
+service dependencies. Follow them unless you hit something that makes them
+impossible — if so, stop and ask rather than improvising.
 
-Work through the steps **in order**. Each step should be a separate commit. Run `go build ./...` and `go test ./...` after each step before moving to the next.
+1. **No external service calls.** The spec references hydrating
+   `user.display_name` from a "User/Auth Service" and `verified_only`
+   filtering from purchase history. Neither exists in this repo.
+   - `display_name` is **denormalized at write time**: capture the `name`
+     claim from the JWT when a review is created (and re-save it on update,
+     in case the name changed), and store it directly on the
+     `product_reviews` row. No live hydration call is needed for listing.
+   - `verified_only` query param: **accept it, but always treat it as a
+     no-op** (do not filter) until purchase-history data exists. Document
+     this in a code comment on the handler/use case, and mention it in the
+     PR description.
+   - Section 7's `product.name` / `thumbnail_url` hydration is **not**
+     external — the `products` and gallery tables already live in this
+     service. Join/query them directly from the reviews repo.
+2. **`display_name` on the entity.** The spec's canonical Review JSON
+   doesn't list `display_name`, but the proposed DBML schema stores it. Keep
+   it as a domain field on `Review`, populated from the JWT at write time.
+   Do not add a separate hydration path for it.
+3. **No admin/moderation override.** The JWT payload has no role claim, so
+   section 6 (Delete) and section 5 (Update) enforce **author-only** access.
+   Do not build moderation/admin-delete — that's explicitly called out in
+   the spec's "Notes" section as a future extension.
+4. **JWT library:** use `github.com/golang-jwt/jwt/v5`.
+5. **IDs:** per `CLAUDE.md` convention, generate the review `id` as a UUIDv7
+   in the use case layer (`github.com/google/uuid`), not via Postgres
+   `gen_random_uuid()`. Adjust the DBML default accordingly when writing the
+   migration (see Step 1).
+6. **`average_rating`:** use `github.com/shopspring/decimal`, not `float64`,
+   per repo convention.
+
+If anything else in the spec is ambiguous once you're implementing, stop and
+ask instead of guessing.
 
 ---
 
-## Step 0 — Verify current DB schema
+## Step 1 — Migration
 
-1. Connect to the dev database (see `.env` / `DATABASE_URL`) and confirm the tables in spec Section 2 (`inventory_items`, `locations`, `inventory_levels`, `stock_moves`, `reservations`) exist with the columns listed there. If any are missing, write a migration under `migrations/` to create them (idempotent, `IF NOT EXISTS`, following the style of the existing two migration files).
-2. Add the `CHECK` constraints from spec Section 23 (`available_qty >= 0`, `reserved_qty >= 0`, `quantity > 0`) if not already present, via a new migration.
-3. Add a unique constraint/index to support idempotent reservation creation (spec Section 26) — e.g. a unique index on `reservations(order_id)` if the business rule is "one reservation batch per order", or an `idempotency_keys` table if you want a generic key. Pick the simplest option that satisfies "same order_id retried must not double-reserve" and document the choice in the migration file comment.
+Create `migrations/0003_create_product_reviews.sql` based on the proposed
+DBML, with these adjustments:
 
-**Do not proceed past this step with assumptions about column names** — read the actual schema.
+- Drop the `default: gen_random_uuid()` on `id` — the app supplies a UUIDv7.
+- `user_id` and `display_name` have no FK (no local `users` table); leave
+  them as plain `uuid` / `text` columns with `not null`.
+  - Note: the DBML in the spec request has `display_name uuid` — this is a
+    copy-paste bug from `user_id`. It must be `text`, not `uuid`.
+- Add `rating` check constraint: `CHECK (rating BETWEEN 1 AND 5)`.
+- Keep the two indexes as specified:
+  - `idx_reviews_product_date` on `(product_id, created_at)`
+  - `uq_user_product_review` unique on `(user_id, product_id)`
+- FKs: `product_id` → `products.id` `ON DELETE CASCADE`,
+  `variant_id` → `variants.id` `ON DELETE SET NULL` (nullable column).
+- Add a trigger or rely on application code to bump `updated_at` — check
+  how existing tables in this repo handle `updated_at` (e.g. `products`)
+  and follow the same pattern for consistency.
 
-## Step 1 — Domain layer (`internal/domain/`)
+Verify column names/types against the **actual** `products` and `variants`
+tables (check existing migrations / `internal/domain/product.go` and
+`variant.go`) before assuming the FK types match — don't just trust the
+spec's uuid assumption blindly.
 
-Extend `internal/domain/inventory.go` (or add a new `internal/domain/reservation.go` if that keeps the file readable):
+---
 
-1. Add `ReservationStatus` type with `ACTIVE`, `COMPLETED`, `CANCELLED`, `EXPIRED` constants (spec 2.5).
-2. Add a `Reservation` struct matching the `reservations` table (spec 2.5): `ID`, `InventoryItemID`, `LocationID`, `OrderID`, `Quantity`, `ReservedAt`, `ExpiresAt`, `Status`, `ReleasedAt`.
-3. Add a `Location` struct matching spec 2.2, if not present.
-4. Add domain errors: `ErrVariantNotFound`, `ErrInventoryItemNotFound`, `ErrLocationNotFound`, `ErrInventoryLevelNotFound`, `ErrReservationNotFound`, `ErrReservationAlreadyCompleted`, `ErrReservationAlreadyCancelled`, `ErrDuplicateActiveReservation`, `ErrFromToLocationSame` — these map to the HTTP status table in spec Section 21 (404/409/400). Reuse `ErrInsufficientStock` and `ErrInvalidQuantity` already defined.
-5. Add request/response input structs for each of the 4 APIs, mirroring the JSON shapes in spec Sections 4.1, 8, 12, 15 (e.g. `CreateStockMoveInput`, `CreateReservationInput`, `ReservationItemInput`).
-6. Define the use case interfaces (one per API, following the `InsertCategoryUseCase`/`QueryCategoryUseCase` split pattern):
-   - `StockMoveUseCase` — `Create(ctx, CreateStockMoveInput) (StockMove, error)`
-   - `ReservationUseCase` — `Create(ctx, CreateReservationInput) (order-level result, error)`, `Complete(ctx, orderID uuid.UUID) (result, error)`, `Cancel(ctx, orderID uuid.UUID) (result, error)`
-   - Optionally `ReservationExpiryUseCase` — `ExpireDue(ctx) (int, error)` for Step 5's background worker.
-7. Define the repository interface(s) the use cases depend on, e.g. `InventoryRepository`:
-   - `ResolveInventoryItemIDByVariant(ctx, variantID) (uuid.UUID, error)`
-   - `LockInventoryLevel(ctx, tx, inventoryItemID, locationID) (InventoryLevel, error)` — must be callable within a caller-supplied transaction (see Step 3 on how this repo does transactions; if there's no existing transaction abstraction, add one — check `internal/infrastructure/database/database.go` for what's there before inventing a new pattern).
-   - `UpdateInventoryLevel(ctx, tx, level InventoryLevel) error`
-   - `InsertStockMove(ctx, tx, move StockMove) error`
-   - `InsertReservation(ctx, tx, r Reservation) error`
-   - `FindActiveReservationsByOrderID(ctx, tx, orderID) ([]Reservation, error)`
-   - `FindReservationsByOrderID(ctx, tx, orderID) ([]Reservation, error)` (for idempotent complete/cancel checks)
-   - `UpdateReservationStatus(ctx, tx, reservationID, status, releasedAt) error`
-   - `FindDueActiveReservations(ctx, tx, now) ([]Reservation, error)` (for expiry)
+## Step 2 — Domain layer (`internal/domain/review.go`)
 
-Keep interfaces minimal — add methods as the use cases in Step 3 actually need them, don't speculate beyond the spec.
+Define, in one new file:
 
-## Step 2 — Transaction support
+- `Review` struct with `db:"..."` tags matching the migration:
+  `ID, ProductID, VariantID (*uuid.UUID), UserID, DisplayName, Rating, Title (*string), Comment (*string), CreatedAt, UpdatedAt`.
+- `ReviewFilter` struct for list query params: `Page, Limit, Rating *int, HasComment *bool, Sort string` (`verified_only` accepted but not filtered — see scope decision #1).
+- `RatingSummary` struct: `ProductID uuid.UUID`, `AverageRating decimal.Decimal`, `TotalReviews int`, `RatingBreakdown map[int]int`.
+- Repository interface `ReviewRepository` with methods your use cases will need, e.g.:
+  - `Insert(ctx, review *Review) error`
+  - `FindByID(ctx, id uuid.UUID) (*Review, error)`
+  - `FindByProduct(ctx, productID uuid.UUID, filter ReviewFilter) ([]Review, int, error)` (int = total count for pagination)
+  - `FindByUser(ctx, userID uuid.UUID, page, limit int) ([]Review, int, error)` — should join `products` (+ gallery) for section 7's hydrated `product` object; consider whether this belongs on `ReviewRepository` or needs a small joined struct (`ReviewWithProduct`) — decide and document.
+  - `Update(ctx, review *Review) error`
+  - `Delete(ctx, id uuid.UUID) error`
+  - `GetSummary(ctx, productID uuid.UUID) (*RatingSummary, error)`
+  - `VariantBelongsToProduct(ctx, variantID, productID uuid.UUID) (bool, error)` — used for the 404 validation rule on create.
+- Use case interfaces (mirror the `category` module's split style —
+  `QueryReviewUseCase`, `InsertReviewUseCase`, `UpdateReviewUseCase`,
+  `DeleteReviewUseCase`, or combine if that's cleaner — match whatever
+  granularity the `product` module already uses for its use cases, since
+  reviews has a similar CRUD+list+summary shape).
 
-Check `internal/infrastructure/database/database.go` and `postgres.go` for whether a `BeginTx`/transaction-scoped executor already exists (the `Database` interface wraps `*pgxpool.Pool`).
+---
 
-- If it doesn't, add a minimal way for a repository method to run multiple statements in one `pgx.Tx` — e.g. a `Database.WithTx(ctx, func(tx pgx.Tx) error) error` helper, or expose `Pool().Begin(ctx)` and let the repository manage `tx.Commit()`/`tx.Rollback()`.
-- This is required by spec Section 3.2 — every multi-statement operation (stock move, reservation create/complete/cancel) must be one transaction.
-- All locking (`SELECT ... FOR UPDATE`) must happen using the transaction handle, not the pool directly, or the lock is meaningless.
+## Step 3 — JWT Auth middleware
 
-## Step 3 — Repository layer (`internal/infrastructure/repository/inventoryRepo.go`)
+Create `internal/delivery/http/middleware/auth.go`.
 
-Follow `categoryRepo.go` / `productRepo.go` conventions: `pgx.CollectRows` + `pgx.RowToStructByName`, and wrap every method with `metrics.ObserveDB("inventory", "<operation>")(time.Now())`.
+- Add `API_JWT_SECRET` to `.env.example` and read it via `os.Getenv` (there
+  is no central config package yet — follow the existing pattern of reading
+  env vars where needed, e.g. as done for `APP_ENV` in `cmd/main.go`).
+- Middleware function `RequireAuth(secret string) gin.HandlerFunc`:
+  1. Read `Authorization` header, expect `Bearer <token>`; if missing/malformed → `401`.
+  2. Parse and verify the JWT using `golang-jwt/jwt/v5` with `HS256` and the secret. Reject on `iat`/`exp` failure or bad signature → `401`.
+  3. Extract `sub` claim as the user ID; parse as `uuid.UUID` → `401` if invalid.
+  4. Extract `name` and `email` claims.
+  5. Store `user_id`, `name`, `email` in the Gin context (`c.Set(...)`) using constants (e.g. `middleware.ContextUserIDKey`) so handlers can retrieve them without magic strings.
+  6. Call `c.Next()`.
+- Use the **standard error shape** from the spec (`{"error": {"code": ..., "message": ..., "details": {}}}`) for the 401 response body, with a code like `UNAUTHENTICATED`.
+- Write a helper in the same package, e.g. `GetUserID(c *gin.Context) (uuid.UUID, bool)`, `GetUserName(c *gin.Context) (string, bool)`, for handlers to use.
 
-Implement each interface method from Step 1. Key correctness points from the spec — do not skip these:
+Add `github.com/golang-jwt/jwt/v5` to `go.mod` via `go get`.
 
-- **Resolve variant → inventory_item_id** internally (spec 3.1) — never accept `inventory_item_id` from a handler input.
-- **Row locking** (spec 3.3): every read-before-write on `inventory_levels` uses `SELECT ... FOR UPDATE`.
-- **Deterministic lock ordering** (spec 22): when a single operation locks multiple `inventory_levels` rows (TRANSFER between two locations, multi-item reservation), sort the target rows by `(inventory_item_id, location_id)` before acquiring locks, to avoid deadlocks.
-- Add corresponding DB models in `internal/infrastructure/repository/model/inventory_model.go` (e.g. `Reservation`, `Location`, `StockMove` DB structs with `db:"..."` tags and `ToDomain()` methods) — extend the existing file, don't duplicate `InventoryLevel`.
+---
 
-## Step 4 — Use case layer (`internal/app/inventory/`)
+## Step 4 — Repository (`internal/infrastructure/repository/reviewRepo.go`)
 
-Create one file per operation (matches `internal/app/category/insertUseCase.go` style):
+Follow the `category`/`product` repo conventions:
+- Use `pgx.CollectRows` + `pgx.RowToStructByName`.
+- Wrap every method with `metrics.ObserveDB("review", "<operation>")(time.Now())`.
+- Pagination: `LIMIT`/`OFFSET` plus a `COUNT(*)` query (or a window function) for `total_items`.
+- Sorting: implement `newest` (default, uses `idx_reviews_product_date` DESC), `oldest` (same index ASC), `highest_rating`, `lowest_rating` — whitelist the sort param against a fixed map, never interpolate raw user input into `ORDER BY`.
+- `GetSummary`: aggregate query — `COUNT(*)`, `AVG(rating)`, and a `GROUP BY rating` count for the breakdown (1–5, fill in zeros for missing ratings).
+- `FindByUser`: join `products` (and whatever gallery table/position-1 lookup exists — check `internal/domain/product.go` / media tables) to populate the "My Reviews" product summary.
+- Enforce the `uq_user_product_review` conflict as a Postgres `23505` error mapped to a domain-level `ErrReviewAlreadyExists` sentinel error, so the use case/handler can map it to `409`.
 
-1. `stockMoveUseCase.go` — implements spec Sections 4–6:
-   - Validate per move type (4.2): `IN` needs `to_location_id`, `OUT` needs `from_location_id` + sufficient stock, `TRANSFER` needs both + different + sufficient stock at source, `ADJUST` computes `difference = requested - current` and sets `available_qty` to the requested value directly.
-   - Generate the `StockMove.ID` as UUIDv7 here (per `CLAUDE.md` convention), not in the repo.
-   - Wrap the whole operation in one transaction (Step 2's helper).
-2. `reservationUseCase.go`:
-   - `Create` — implements spec Sections 9–11: validate all items up front, then for every item in a single transaction: resolve inventory item, lock level (in deterministic order across all items first — see spec 22), check `available_qty >= quantity`, decrement available/increment reserved, insert `Reservation` row (UUIDv7 IDs). If any item fails, the whole transaction rolls back — no partial reservations (spec 9/10). Handle the idempotency requirement (spec 9, 26): if an active reservation set already exists for `order_id`, return the existing result instead of creating a duplicate — decide and implement based on the unique constraint added in Step 0.3.
-   - `Complete` — implements spec Sections 12–14: find `ACTIVE` reservations for `order_id`, lock reservation + inventory level rows, decrement `reserved_qty` only (never touch `available_qty`), set `status = COMPLETED`, `released_at = now()`. If no active reservations exist, check whether the order was already completed (return success, idempotent) vs. never existed (404/409). If any single item is missing from the query, that's fine — the query only returns what's ACTIVE.
-   - `Cancel` — implements spec Sections 15–17: same lock pattern, but restores `available_qty += quantity` as well as decrementing `reserved_qty`, sets `status = CANCELLED`.
-   - Idempotency for `Complete`/`Cancel`: calling twice on an already-`COMPLETED`/`CANCELLED` order must be a no-op returning the current state, not an error and not a double-mutation (spec 12, 13, 15, 16).
-3. (Optional, spec Section 18) `reservationExpiryUseCase.go` — `ExpireDue`: find `ACTIVE` reservations where `expires_at < now()`, apply the same state transition as `Cancel` (restore available, decrement reserved, `status = EXPIRED`). This will be invoked by a scheduled job in Step 6, not by an HTTP handler.
+---
 
-Constructors return domain interface types (`domain.ReservationUseCase`, etc.), not concrete structs — match `NewCategoryInsertUseCase(...) domain.InsertCategoryUseCase`.
+## Step 5 — Use cases (`internal/app/review/`)
 
-## Step 5 — HTTP delivery layer
+One file per operation, matching the `category` module's layout
+(`insertUseCase.go`, `queryUseCase.go`, `updateUseCase.go`, `deleteUseCase.go`, plus a `summaryUseCase.go`):
 
-1. Add DTOs in `internal/delivery/http/dto/inventory_dto.go` for request/response bodies (spec 4.1/6, 8/11, 14, 17) — separate from domain types per this repo's existing pattern (see `product_dto.go`).
-2. Add `internal/delivery/http/handler/inventory_handler.go` with:
-   - `POST /v1/inventory/stock-moves`
-   - `POST /v1/inventory/reservations`
-   - `PUT /v1/inventory/reservations/:orderId/complete`
-   - `PUT /v1/inventory/reservations/:orderId/cancel`
-3. Map domain errors to HTTP status codes per spec Section 21 (400/404/409/500). Check how `category_handler.go` / `product_handler.go` currently map errors (likely a shared error-to-status helper) and reuse it rather than inventing a new pattern.
-4. Register the routes in `internal/delivery/http/router.go` under `/api/v1` (check whether the spec's literal paths `/v1/inventory/...` should be nested under the existing `/api/v1` group or added as-is — match whatever convention the existing routes use, note the discrepancy if the spec's paths don't already start with `/api`).
-5. Wire the new handler into `internal/wire/container.go` (repo → use cases → handler, following the `category`/`product` blocks already there) and thread it through `cmd/server/gin_server.go`'s `SetupRouter` call.
-6. Add Swagger annotations matching the existing handlers' style, then regenerate docs: `swag init -g cmd/main.go -o docs --parseInternal` (run from repo root).
+- **Insert**: generate UUIDv7 id, validate `rating` 1–5 and string lengths (title ≤150, comment ≤5000) — validator tags on the DTO are fine for this, business-level checks (variant belongs to product, product exists) belong here. Set `DisplayName` from the JWT `name` claim passed in from the handler. Map `uq_user_product_review` conflict → `409`.
+- **Query (list by product)**: apply filter/pagination/sort, compute `total_pages`.
+- **Query (single)**: 404 if not found.
+- **Query (by user)**: for section 7.
+- **Update**: load review, verify `review.UserID == callerUserID` → else `403`; apply provided fields, bump `updated_at`.
+- **Delete**: same ownership check → `403`.
+- **Summary**: wraps `GetSummary`.
 
-## Step 6 — Reservation expiration worker (spec Section 18)
+Constructors return domain interface types, not concrete structs (per `CLAUDE.md`).
 
-Implement as a background goroutine or scheduled ticker (check `cmd/main.go` / `cmd/server/gin_server.go` for how the server starts background work, if anything, before inventing a new pattern) that periodically calls `ReservationExpiryUseCase.ExpireDue`. Make sure it shuts down cleanly with the existing SIGINT/SIGTERM graceful shutdown (`gin_server.go` already has a 15s shutdown timeout — the worker must respect the same shutdown signal, not leak a goroutine).
+---
 
-## Step 7 — Tests (spec Section 27 items 13–15, Section 28)
+## Step 6 — DTOs (`internal/delivery/http/dto/review.go`)
 
-Write these as you go per layer, not all at the end:
+Mirror the JSON shapes exactly as specified in
+[specs/reviews-api-spec.md](specs/reviews-api-spec.md):
+- `CreateReviewRequest`, `UpdateReviewRequest` (validator tags: `required`, `min=1,max=5` for rating, `max=150`/`max=5000` for strings).
+- `ReviewResponse` (section 1 / "Common Object Reference" shape).
+- `ReviewListItemResponse` (section 2 shape, with nested `user{id,display_name}`).
+- `RatingSummaryResponse` (section 3).
+- `UserReviewListItemResponse` (section 7, nested `product{id,name,thumbnail_url}`).
+- `PaginationResponse{page,limit,total_items,total_pages}`.
+- `ErrorResponse` matching the "Standard Error Shape".
 
-- **Use case unit tests** (`internal/app/inventory/*_test.go`), mocking the repository interface: cover every scenario in spec Section 28 — IN, OUT, OUT-insufficient, TRANSFER, ADJUST increase/decrease, multi-item reservation success, one-item-insufficient (full rollback, no partial state), completion (incl. double-completion no-op), cancellation (incl. double-cancellation no-op).
-- **Repository/integration tests** for transaction and locking behavior — needs a real or test Postgres instance (check if `productRepo_test.go` already sets up a test DB connection/container; reuse that setup). Must include the concurrent-reservation scenario from spec Section 28: two goroutines racing to reserve more stock than available combined — assert exactly one succeeds and final `available_qty` never goes negative.
-- **HTTP handler tests** (`internal/delivery/http/handler/inventory_handler_test.go`) for success and each error status (400/404/409), following `product_handler_test.go`'s pattern (likely uses `httptest` + a mocked use case).
+Add mapping functions from domain → DTO (`ToReviewResponse(domain.Review) ReviewResponse`, etc.) in this file or a sibling `mapper.go`, following whatever the `product` module already does for its DTOs.
 
-Run `go test ./...` and confirm everything passes before considering the task done.
+---
 
-## Definition of done
+## Step 7 — Handler (`internal/delivery/http/handler/reviewHandler.go`)
 
-- [ ] Schema verified/migrated (Step 0)
-- [ ] Domain types, errors, and interfaces added (Step 1)
-- [ ] Transaction support in place (Step 2)
-- [ ] Repository implemented with row locking + deterministic lock ordering (Step 3)
-- [ ] All 4 use cases implemented and idempotent where required (Step 4)
-- [ ] All 4 endpoints wired end-to-end through `router.go` and `wire/container.go` (Step 5)
-- [ ] Expiration worker implemented and shuts down cleanly (Step 6)
-- [ ] Unit, repository, and handler tests all passing, covering every scenario in spec Section 28 (Step 7)
-- [ ] `go build ./...` and `go test ./...` pass with no failures
-- [ ] Swagger docs regenerated
+`ReviewHandler` struct holding the use cases, constructor `NewReviewHandler(...)`. One method per endpoint:
+
+| Method | Route | Notes |
+|---|---|---|
+| `Create` | `POST /products/:id/reviews` | needs auth |
+| `Fetch` | `GET /products/:id/reviews` | public |
+| `Summary` | `GET /products/:id/reviews/summary` | public |
+| `GetByID` | `GET /reviews/:reviewId` | public |
+| `Update` | `PATCH /reviews/:reviewId` | needs auth + ownership |
+| `Delete` | `DELETE /reviews/:reviewId` | needs auth + ownership |
+| `FetchMine` | `GET /users/me/reviews` | needs auth |
+
+- Pull `user_id`/`name` out of the Gin context via the middleware helpers from Step 3 — never trust a body-supplied `user_id`.
+- Map domain errors to HTTP statuses per the spec's error tables (400/401/403/404/409).
+- Add Swagger annotations (`@Summary`, `@Router`, etc.) following the existing handlers' style so `swag init` picks them up.
+
+---
+
+## Step 8 — Router (`internal/delivery/http/router.go`)
+
+Add to `SetupRouter`'s signature: `reviewHandler *handler.ReviewHandler` and the JWT secret (or a pre-built `gin.HandlerFunc` for auth — decide based on how `gin_server.go` constructs things).
+
+Register routes, applying `middleware.RequireAuth(secret)` only to the write endpoints:
+
+```go
+products.GET("/:id/reviews", reviewHandler.Fetch)
+products.GET("/:id/reviews/summary", reviewHandler.Summary)
+products.POST("/:id/reviews", middleware.RequireAuth(secret), reviewHandler.Create)
+
+reviews := v1.Group("/reviews")
+{
+    reviews.GET("/:reviewId", reviewHandler.GetByID)
+    reviews.PATCH("/:reviewId", middleware.RequireAuth(secret), reviewHandler.Update)
+    reviews.DELETE("/:reviewId", middleware.RequireAuth(secret), reviewHandler.Delete)
+}
+
+users := v1.Group("/users")
+{
+    users.GET("/me/reviews", middleware.RequireAuth(secret), reviewHandler.FetchMine)
+}
+```
+
+Watch for route conflicts with the existing `products.GET("/:id", ...)` — Gin's router should be fine here since `/reviews` is a distinct static segment after `:id`, but double check with existing tests in `router_routes_test.go`.
+
+---
+
+## Step 9 — Wire container (`internal/wire/container.go`)
+
+Add the `review` module wiring, same pattern as `category`/`product`:
+
+```go
+reviewRepo := repository.NewReviewRepo(db)
+reviewInsertUC := review.NewReviewInsertUseCase(reviewRepo)
+reviewQueryUC := review.NewReviewQueryUseCase(reviewRepo)
+reviewUpdateUC := review.NewReviewUpdateUseCase(reviewRepo)
+reviewDeleteUC := review.NewReviewDeleteUseCase(reviewRepo)
+reviewSummaryUC := review.NewReviewSummaryUseCase(reviewRepo)
+reviewHandler := handler.NewReviewHandler(reviewInsertUC, reviewQueryUC, reviewUpdateUC, reviewDeleteUC, reviewSummaryUC)
+```
+
+Add `ReviewHandler` to the `Container` struct. Thread the JWT secret through `NewContainer` or read it separately in `cmd/server/gin_server.go` — check how `gin_server.go` currently builds `SetupRouter`'s args and follow the same wiring style.
+
+---
+
+## Step 10 — Tests
+
+- Unit tests for each use case (mirror `internal/app/infrachecker`'s test style: fake/mock the repository interface).
+- Middleware test: valid token → context populated; expired token → 401; malformed header → 401; bad signature → 401.
+- At minimum, cover: create success, duplicate review conflict (409), update by non-owner (403), variant not belonging to product (404).
+
+---
+
+## Step 11 — Docs
+
+Run `swag init -g cmd/main.go -o docs --parseInternal` from the repo root after adding handler annotations, and commit the regenerated `docs/` output.
+
+---
+
+## Out of scope (explicitly, per spec's own "Notes" section)
+
+Do not build: helpful votes, moderation/reporting workflow, seller responses, review media/images, or verified-purchase filtering. These need schema additions not covered by this issue.
