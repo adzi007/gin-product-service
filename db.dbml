@@ -164,6 +164,25 @@ Table variant_media {
   }
 }
 
+Table product_reviews {
+  id uuid [pk, default: `gen_random_uuid()`]
+  product_id uuid [not null]
+  variant_id uuid [note: 'Optional: reference to specific variant purchased']
+  user_id uuid [not null, note: 'Reference to User/Auth Service ID']
+  display_name varchar(100)
+  rating int [not null, note: 'Allowed values: 1 to 5']
+  title text [note: 'Short review summary headline']
+  comment text
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+
+  Indexes {
+    (product_id, created_at) [name: 'idx_reviews_product_date']
+    (user_id, product_id) [unique, name: 'uq_user_product_review']
+  }
+}
+
+
 //////////////////////////////////////////////////////////////
 // Relationships (for visualization)
 //////////////////////////////////////////////////////////////
@@ -186,3 +205,5 @@ Ref: "stock_moves"."id" < "stock_moves"."from_location_id"
 Ref: product_media.product_id > products.id
 Ref: variant_media.variant_id > variants.id
 Ref: variant_media.media_id > product_media.id
+Ref: product_reviews.product_id > products.id [delete: cascade]
+Ref: product_reviews.variant_id > variants.id [delete: set null]
