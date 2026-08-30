@@ -112,8 +112,9 @@ func (h *ProductHandler) Create(c *gin.Context) {
 // @Param        maxPrice    query number false "Maximum variant price (inclusive). Products must have a variant priced <= maxPrice"
 // @Param        page        query int    false "Page number (1-indexed)"
 // @Param        per_page    query int    false "Items per page"
-// @Param        sort_by     query string false "Sort column. One of: title, created_at, category_name"
+// @Param        sort_by     query string false "Sort column. One of: title, created_at, category_name, price, popularity"
 // @Param        sort_dir    query string false "Sort direction. One of: asc, desc"
+// @Param        rating      query string false "Comma-separated list of rounded average ratings to filter by, e.g. rating=3,4,5. Each value must be 1-5."
 // @Success      200      {object} domain.PaginatedProducts
 // @Failure      400      {object} map[string]any
 // @Failure      500      {object} map[string]any
@@ -136,8 +137,8 @@ func (h *ProductHandler) Fetch(c *gin.Context) {
 	if sortBy == "" {
 		sortBy = "created_at"
 	}
-	if sortBy != "title" && sortBy != "created_at" && sortBy != "category_name" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid sort_by: must be one of title, created_at, category_name"})
+	if sortBy != "title" && sortBy != "created_at" && sortBy != "category_name" && sortBy != "price" && sortBy != "popularity" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid sort_by: must be one of title, created_at, category_name, price, popularity"})
 		return
 	}
 
@@ -165,12 +166,19 @@ func (h *ProductHandler) Fetch(c *gin.Context) {
 		return
 	}
 
+	ratings, err := parseRatingsQueryParam(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, errorResponse("ERR_VALIDATION", err.Error()))
+		return
+	}
+
 	params := domain.ListProductParams{
 		Search:     c.Query("search"),
 		CategoryID: categoryID,
 		Status:     status,
 		MinPrice:   minPrice,
 		MaxPrice:   maxPrice,
+		Ratings:    ratings,
 		Page:       page,
 		PerPage:    perPage,
 		SortBy:     sortBy,
@@ -207,6 +215,37 @@ func parsePriceQueryParam(c *gin.Context, name string) (*decimal.Decimal, error)
 		return nil, fmt.Errorf("invalid %s: must not be negative", name)
 	}
 	return &value, nil
+}
+
+// parseRatingsQueryParam parses the optional comma-separated `rating` query
+// parameter used by the rating filter. An empty value means "no filter" and
+// returns nil. Each value must parse as an integer in 1..5; any non-numeric or
+// out-of-range value rejects the whole request. Values are deduplicated before
+// returning.
+func parseRatingsQueryParam(c *gin.Context) ([]int, error) {
+	raw := strings.TrimSpace(c.Query("rating"))
+	if raw == "" {
+		return nil, nil
+	}
+
+	seen := map[int]struct{}{}
+	ratings := []int{}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		value, err := strconv.Atoi(part)
+		if err != nil || value < 1 || value > 5 {
+			return nil, fmt.Errorf("invalid rating: each value must be an integer between 1 and 5")
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		ratings = append(ratings, value)
+	}
+	return ratings, nil
 }
 
 // GetByID godoc

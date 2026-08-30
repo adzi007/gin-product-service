@@ -18,6 +18,14 @@ type ProductPrices struct {
 	MaxPrice   decimal.Decimal `json:"maxPrice"`
 }
 
+// ProductRating holds the denormalized rating aggregate (average and count)
+// exposed on product list responses. Both values are maintained by triggers on
+// product_reviews and read directly from products.rating_avg/rating_count.
+type ProductRating struct {
+	Average decimal.Decimal `json:"average"`
+	Count   int             `json:"count"`
+}
+
 // ProductThumbnail is the primary media image exposed on product list
 // responses. It mirrors the Type/AltText fields of ProductMedia, sourced from
 // the product_media row with position = 1.
@@ -37,9 +45,10 @@ type ListProductParams struct {
 	Status     string           // product-specific: empty means "no filter"; whitelisted: "draft", "active", "archived"
 	MinPrice   *decimal.Decimal // optional: only include products with a variant price >= MinPrice (inclusive)
 	MaxPrice   *decimal.Decimal // optional: only include products with a variant price <= MaxPrice (inclusive)
+	Ratings    []int            // optional; empty/nil means "no filter". Set-membership on ROUND(rating_avg). Values 1-5, validated at handler layer.
 	Page       int
 	PerPage    int
-	SortBy     string // whitelisted: "title", "created_at", "category_name"
+	SortBy     string // whitelisted: "title", "created_at", "category_name", "price", "popularity"
 	SortDir    string // "asc" | "desc"
 }
 
@@ -61,6 +70,7 @@ type ProductListItem struct {
 	Product
 	Category  ProductCategory   `json:"category"`
 	Prices    ProductPrices     `json:"prices"`
+	Rating    ProductRating     `json:"rating"`
 	Thumbnail *ProductThumbnail `json:"thumbnail"`
 }
 

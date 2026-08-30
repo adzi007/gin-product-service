@@ -71,7 +71,7 @@ func TestBuildListConditions_MinPriceOnly(t *testing.T) {
 	})
 
 	assertConditionsArgs(t, conditions, args, argIdx, []string{
-		"price_stats.max_price >= $1",
+		"products.price_max >= $1",
 	})
 	if got := numericToDecimal(args[0].(pgtype.Numeric)); !got.Equal(minPrice) {
 		t.Errorf("expected arg 100000, got %s", got)
@@ -85,7 +85,7 @@ func TestBuildListConditions_MaxPriceOnly(t *testing.T) {
 	})
 
 	assertConditionsArgs(t, conditions, args, argIdx, []string{
-		"price_stats.min_price <= $1",
+		"products.price_min <= $1",
 	})
 	if got := numericToDecimal(args[0].(pgtype.Numeric)); !got.Equal(maxPrice) {
 		t.Errorf("expected arg 500000, got %s", got)
@@ -101,8 +101,8 @@ func TestBuildListConditions_BothPrices(t *testing.T) {
 	})
 
 	assertConditionsArgs(t, conditions, args, argIdx, []string{
-		"price_stats.max_price >= $1",
-		"price_stats.min_price <= $2",
+		"products.price_max >= $1",
+		"products.price_min <= $2",
 	})
 	if got := numericToDecimal(args[0].(pgtype.Numeric)); !got.Equal(minPrice) {
 		t.Errorf("expected args[0] 100000, got %s", got)
@@ -119,7 +119,7 @@ func TestBuildListConditions_DecimalPrecisionPreserved(t *testing.T) {
 	})
 
 	assertConditionsArgs(t, conditions, args, argIdx, []string{
-		"price_stats.max_price >= $1",
+		"products.price_max >= $1",
 	})
 	if got := numericToDecimal(args[0].(pgtype.Numeric)); !got.Equal(minPrice) {
 		t.Errorf("expected arg 99.99, got %s", got)
@@ -160,8 +160,8 @@ func TestBuildListConditions_CombinedFilters(t *testing.T) {
 		"(products.title ILIKE $1 OR products.handle ILIKE $1 OR category.name ILIKE $1)",
 		"products.category_id = $2",
 		"products.status = $3",
-		"price_stats.max_price >= $4",
-		"price_stats.min_price <= $5",
+		"products.price_max >= $4",
+		"products.price_min <= $5",
 	})
 	if got := numericToDecimal(args[3].(pgtype.Numeric)); !got.Equal(minPrice) {
 		t.Errorf("expected args[3] 100000, got %s", got)
@@ -171,12 +171,49 @@ func TestBuildListConditions_CombinedFilters(t *testing.T) {
 	}
 }
 
-func TestPriceStatsJoinDefinesColumnsUsedByConditions(t *testing.T) {
-	// The WHERE conditions reference price_stats.max_price / price_stats.min_price;
-	// the LATERAL join must expose those aliases or the query fails at runtime.
-	for _, want := range []string{"price_stats", "min_price", "max_price"} {
-		if !strings.Contains(priceStatsJoin, want) {
-			t.Errorf("priceStatsJoin must reference %q so the price conditions resolve:\n%s", want, priceStatsJoin)
-		}
+func TestBuildListConditions_RatingsFilter(t *testing.T) {
+	conditions, args, argIdx := buildListConditions(domain.ListProductParams{
+		Ratings: []int{3},
+	})
+
+	assertConditionsArgs(t, conditions, args, argIdx, []string{
+		"ROUND(products.rating_avg) = ANY($1)",
+	})
+	if got, ok := args[0].([]int32); !ok || len(got) != 1 || got[0] != 3 {
+		t.Errorf("expected ratings arg []int32{3}, got %#v", args[0])
 	}
+}
+
+func TestBuildListConditions_MultipleRatings(t *testing.T) {
+	conditions, args, argIdx := buildListConditions(domain.ListProductParams{
+		Ratings: []int{3, 4, 5},
+	})
+
+	assertConditionsArgs(t, conditions, args, argIdx, []string{
+		"ROUND(products.rating_avg) = ANY($1)",
+	})
+	got, ok := args[0].([]int32)
+	if !ok || len(got) != 3 || got[0] != 3 || got[1] != 4 || got[2] != 5 {
+		t.Errorf("expected ratings arg []int32{3,4,5}, got %#v", args[0])
+	}
+}
+
+func TestBuildListConditions_NoRatingsProducesNoCondition(t *testing.T) {
+	conditions, args, argIdx := buildListConditions(domain.ListProductParams{
+		Ratings: nil,
+	})
+
+	assertConditionsArgs(t, conditions, args, argIdx, nil)
+}
+
+func TestBuildListConditions_CombinedSearchAndRatings(t *testing.T) {
+	conditions, args, argIdx := buildListConditions(domain.ListProductParams{
+		Search:  "shirt",
+		Ratings: []int{4, 5},
+	})
+
+	assertConditionsArgs(t, conditions, args, argIdx, []string{
+		"(products.title ILIKE $1 OR products.handle ILIKE $1 OR category.name ILIKE $1)",
+		"ROUND(products.rating_avg) = ANY($2)",
+	})
 }

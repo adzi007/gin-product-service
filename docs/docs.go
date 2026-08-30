@@ -399,7 +399,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Sort column. One of: title, created_at, category_name",
+                        "description": "Sort column. One of: title, created_at, category_name, price, popularity",
                         "name": "sort_by",
                         "in": "query"
                     },
@@ -407,6 +407,12 @@ const docTemplate = `{
                         "type": "string",
                         "description": "Sort direction. One of: asc, desc",
                         "name": "sort_dir",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Comma-separated list of rounded average ratings to filter by, e.g. rating=3,4,5. Each value must be 1-5.",
+                        "name": "rating",
                         "in": "query"
                     }
                 ],
@@ -2734,6 +2740,9 @@ const docTemplate = `{
                 "prices": {
                     "$ref": "#/definitions/domain.ProductPrices"
                 },
+                "rating": {
+                    "$ref": "#/definitions/domain.ProductRating"
+                },
                 "status": {
                     "$ref": "#/definitions/domain.ProductStatus"
                 },
@@ -2835,6 +2844,17 @@ const docTemplate = `{
                 },
                 "startPrice": {
                     "type": "number"
+                }
+            }
+        },
+        "domain.ProductRating": {
+            "type": "object",
+            "properties": {
+                "average": {
+                    "type": "number"
+                },
+                "count": {
+                    "type": "integer"
                 }
             }
         },

@@ -453,3 +453,121 @@ func TestProductHandler_AttachVariantMedia_InvalidVariantID(t *testing.T) {
 		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+func TestProductHandler_Fetch_ParsesRatingsFilter(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name        string
+		query       string
+		wantRatings []int
+	}{
+		{name: "single rating", query: "/products?rating=4", wantRatings: []int{4}},
+		{name: "multiple ratings", query: "/products?rating=3,4,5", wantRatings: []int{3, 4, 5}},
+		{name: "spaces and duplicates deduped", query: "/products?rating=%203,%204%20,3", wantRatings: []int{3, 4}},
+		{name: "empty rating", query: "/products?rating=", wantRatings: nil},
+		{name: "no rating param", query: "/products", wantRatings: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			queryUC := &fakeQueryProductUseCase{
+				findAllResult: domain.PaginatedProducts{Data: []domain.ProductListItem{}},
+			}
+			h := NewProductHandler(nil, queryUC, nil, nil, nil, nil, nil)
+
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodGet, tt.query, nil)
+
+			h.Fetch(c)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+
+			got := queryUC.findAllParams.Ratings
+			if len(got) != len(tt.wantRatings) {
+				t.Fatalf("expected ratings %v, got %v", tt.wantRatings, got)
+			}
+			for i := range tt.wantRatings {
+				if got[i] != tt.wantRatings[i] {
+					t.Errorf("rating[%d] = %d, want %d", i, got[i], tt.wantRatings[i])
+				}
+			}
+		})
+	}
+}
+
+func TestProductHandler_Fetch_RejectsInvalidRatings(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{name: "zero rating", query: "/products?rating=0"},
+		{name: "rating above five", query: "/products?rating=6"},
+		{name: "negative rating", query: "/products?rating=-1"},
+		{name: "non-numeric rating", query: "/products?rating=abc"},
+		{name: "mixed valid and invalid", query: "/products?rating=3,7,abc"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			queryUC := &fakeQueryProductUseCase{}
+			h := NewProductHandler(nil, queryUC, nil, nil, nil, nil, nil)
+
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodGet, tt.query, nil)
+
+			h.Fetch(c)
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d", w.Code)
+			}
+		})
+	}
+}
+
+func TestProductHandler_Fetch_AcceptsPriceAndPopularitySort(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	for _, sort := range []string{"price", "popularity"} {
+		queryUC := &fakeQueryProductUseCase{
+			findAllResult: domain.PaginatedProducts{Data: []domain.ProductListItem{}},
+		}
+		h := NewProductHandler(nil, queryUC, nil, nil, nil, nil, nil)
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/products?sort_by="+sort, nil)
+
+		h.Fetch(c)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("expected 200 for sort_by=%s, got %d: %s", sort, w.Code, w.Body.String())
+		}
+		if queryUC.findAllParams.SortBy != sort {
+			t.Errorf("expected SortBy %s, got %q", sort, queryUC.findAllParams.SortBy)
+		}
+	}
+}
+
+func TestProductHandler_Fetch_RejectsUnknownSort(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	queryUC := &fakeQueryProductUseCase{}
+	h := NewProductHandler(nil, queryUC, nil, nil, nil, nil, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/products?sort_by=foo", nil)
+
+	h.Fetch(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+}

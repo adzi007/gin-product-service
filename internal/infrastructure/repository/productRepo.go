@@ -208,23 +208,15 @@ func (r *productRepo) Create(ctx context.Context, params domain.CreateProductPar
 	return product, nil
 }
 
-// priceStatsJoin supplies each product's min/max variant price range as a
-// single-row LATERAL join. It is shared by FindAll's count and data queries so
-// the WHERE clause can reference price_stats.* columns.
-const priceStatsJoin = `LEFT JOIN LATERAL (
-		SELECT MIN(v.price) AS min_price, MAX(v.price) AS max_price
-		FROM variants v
-		WHERE v.product_id = products.id AND v.is_deleted = false
-	) price_stats ON true`
-
 // buildListConditions assembles the WHERE conditions (with $N placeholders),
 // their bound arguments, and the total number of bound arguments for the
-// product list query. Price filtering reuses the same price_stats join as the
-// SELECT: minPrice only keeps products whose highest variant price is >=
-// minPrice, maxPrice only keeps products whose lowest variant price is <=
-// maxPrice, and both together keep products whose price range overlaps the
-// requested window (inclusive on both ends). Sorting remains whitelisted by
-// the caller.
+// product list query. Price filtering reads the denormalized
+// products.price_min/price_max columns directly: minPrice only keeps products
+// whose highest variant price is >= minPrice, maxPrice only keeps products
+// whose lowest variant price is <= maxPrice, and both together keep products
+// whose price range overlaps the requested window (inclusive on both ends).
+// The rating filter is a set-membership test on ROUND(products.rating_avg).
+// Sorting remains whitelisted by the caller.
 func buildListConditions(params domain.ListProductParams) ([]string, []interface{}, int) {
 	conditions := []string{}
 	args := []interface{}{}
@@ -254,13 +246,23 @@ func buildListConditions(params domain.ListProductParams) ([]string, []interface
 	if params.MinPrice != nil {
 		argIdx++
 		args = append(args, pgNumeric(*params.MinPrice))
-		conditions = append(conditions, fmt.Sprintf("price_stats.max_price >= $%d", argIdx))
+		conditions = append(conditions, fmt.Sprintf("products.price_max >= $%d", argIdx))
 	}
 
 	if params.MaxPrice != nil {
 		argIdx++
 		args = append(args, pgNumeric(*params.MaxPrice))
-		conditions = append(conditions, fmt.Sprintf("price_stats.min_price <= $%d", argIdx))
+		conditions = append(conditions, fmt.Sprintf("products.price_min <= $%d", argIdx))
+	}
+
+	if len(params.Ratings) > 0 {
+		argIdx++
+		ratings32 := make([]int32, len(params.Ratings))
+		for i, r := range params.Ratings {
+			ratings32[i] = int32(r)
+		}
+		args = append(args, ratings32)
+		conditions = append(conditions, fmt.Sprintf("ROUND(products.rating_avg) = ANY($%d)", argIdx))
 	}
 
 	return conditions, args, argIdx
@@ -281,10 +283,10 @@ func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductPara
 		where = " WHERE " + strings.Join(conditions, " AND ")
 	}
 
-	// total count matching filters (before pagination). The category and
-	// price_stats joins are required because the search and price conditions
-	// reference category.name and price_stats.* respectively.
-	countQuery := "SELECT COUNT(*) FROM products LEFT JOIN category ON products.category_id = category.id " + priceStatsJoin + where
+	// total count matching filters (before pagination). The category join is
+	// required because the search condition references category.name; the price
+	// and rating conditions reference denormalized products.* columns directly.
+	countQuery := "SELECT COUNT(*) FROM products LEFT JOIN category ON products.category_id = category.id " + where
 	var total int
 	if err := r.db.GetDb().QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, err
@@ -292,16 +294,25 @@ func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductPara
 
 	// whitelist ORDER BY (only allow-list values, never raw user input)
 	sortBy := "products.created_at"
-	if params.SortBy == "title" {
+	switch params.SortBy {
+	case "title":
 		sortBy = "products.title"
-	} else if params.SortBy == "category_name" {
+	case "category_name":
 		sortBy = "category.name"
+	case "price":
+		sortBy = "products.price_min"
+	case "popularity":
+		sortBy = "products.rating_count"
 	}
 
 	sortDir := "DESC"
 	if params.SortDir == "asc" {
 		sortDir = "ASC"
 	}
+
+	// Stable tiebreaker for pagination: rows sharing the same sort value must
+	// not shift between pages, so always append products.id ASC.
+	orderClause := fmt.Sprintf("%s %s, products.id ASC", sortBy, sortDir)
 
 	offset := (params.Page - 1) * params.PerPage
 
@@ -318,15 +329,16 @@ func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductPara
 			products.updated_at,
 			category.slug AS category_slug,
 			category.name AS category_name,
-			COALESCE(price_stats.min_price, 0) AS start_price,
-			COALESCE(price_stats.max_price, 0) AS max_price,
+			products.price_min AS start_price,
+			products.price_max AS max_price,
+			products.rating_avg AS rating_avg,
+			products.rating_count AS rating_count,
 			thumbnail.type AS thumbnail_type,
 			thumbnail.url AS thumbnail_url,
 			thumbnail.alt_text AS thumbnail_alt_text
 
 		FROM products
 		LEFT JOIN category ON products.category_id = category.id
-		%s
 		LEFT JOIN LATERAL (
 			SELECT pm.type, pm.url, pm.alt_text
 			FROM product_media pm
@@ -334,9 +346,9 @@ func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductPara
 			LIMIT 1
 		) thumbnail ON true
 		%s
-		ORDER BY %s %s
+		ORDER BY %s
 		LIMIT $%d OFFSET $%d
-	`, priceStatsJoin, where, sortBy, sortDir, argIdx+1, argIdx+2)
+	`, where, orderClause, argIdx+1, argIdx+2)
 
 	args = append(args, params.PerPage, offset)
 
@@ -362,6 +374,10 @@ func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductPara
 		}
 		item.Prices.StartPrice = row.StartPrice
 		item.Prices.MaxPrice = row.MaxPrice
+		item.Rating = domain.ProductRating{
+			Average: row.RatingAvg,
+			Count:   row.RatingCount,
+		}
 		if row.ThumbnailURL != nil {
 			item.Thumbnail = &domain.ProductThumbnail{
 				Type:    *row.ThumbnailType,
@@ -1098,6 +1114,8 @@ type productListRow struct {
 	CategoryName     *string         `db:"category_name"`
 	StartPrice       decimal.Decimal `db:"start_price"`
 	MaxPrice         decimal.Decimal `db:"max_price"`
+	RatingAvg        decimal.Decimal `db:"rating_avg"`
+	RatingCount      int             `db:"rating_count"`
 	ThumbnailType    *string         `db:"thumbnail_type"`
 	ThumbnailURL     *string         `db:"thumbnail_url"`
 	ThumbnailAltText *string         `db:"thumbnail_alt_text"`

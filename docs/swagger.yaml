@@ -101,6 +101,8 @@ definitions:
         type: array
       prices:
         $ref: '#/definitions/domain.ProductPrices'
+      rating:
+        $ref: '#/definitions/domain.ProductRating'
       status:
         $ref: '#/definitions/domain.ProductStatus'
       thumbnail:
@@ -168,6 +170,13 @@ definitions:
         type: number
       startPrice:
         type: number
+    type: object
+  domain.ProductRating:
+    properties:
+      average:
+        type: number
+      count:
+        type: integer
     type: object
   domain.ProductStatus:
     enum:
@@ -999,13 +1008,19 @@ paths:
         in: query
         name: per_page
         type: integer
-      - description: 'Sort column. One of: title, created_at, category_name'
+      - description: 'Sort column. One of: title, created_at, category_name, price,
+          popularity'
         in: query
         name: sort_by
         type: string
       - description: 'Sort direction. One of: asc, desc'
         in: query
         name: sort_dir
+        type: string
+      - description: Comma-separated list of rounded average ratings to filter by,
+          e.g. rating=3,4,5. Each value must be 1-5.
+        in: query
+        name: rating
         type: string
       produces:
       - application/json
