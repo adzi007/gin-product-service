@@ -25,7 +25,7 @@ An order service submits an order reference and one or more product-variant quan
 **Acceptance Scenarios**:
 
 1. **Given** every requested variant has sufficient available stock at the fulfillment location, **When** the order service creates a reservation, **Then** the service creates one active reservation per requested variant and returns the order reference, reservation identifiers, variant identifiers, quantities, statuses, and expiry times.
-2. **Given** a request contains one or more valid variant identifiers and positive whole-number quantities, **When** the order service sends it to `POST /v1/inventory/reservations`, **Then** the service accepts the `orderId` and `items`, where each item’s `id` means the product variant identifier and `qty` means the requested quantity.
+2. **Given** a request contains one or more valid variant identifiers and positive whole-number quantities, **When** the order service sends it to `POST /api/v1/inventory/reservations`, **Then** the service accepts the `orderId` and `items`, where each item’s `id` means the product variant identifier and `qty` means the requested quantity.
 
 ---
 
@@ -65,11 +65,11 @@ Order services can submit overlapping checkout requests at the same time without
 - A configured default fulfillment location is unavailable, or an item has no inventory record at that location.
 - A reservation request fails after some checks or records have been prepared; no reservation, stock-history, or inventory change from that request may remain.
 - The shared cross-instance coordination facility is temporarily unavailable; the service fails safely without making an uncoordinated inventory promise.
-- A previously active checkout hold reaches its expiry time before the order completes; lifecycle processing must make those units available again without releasing them twice.
+- A previously active checkout hold reaches its expiry time before the order completes; a separately delivered reservation-lifecycle feature must make those units available again without releasing them twice.
 
 ## Scope
 
-The caller-facing contract for this feature is `POST /v1/inventory/reservations` with this shape:
+The caller-facing contract for this feature is `POST /api/v1/inventory/reservations` with this shape:
 
 ```json
 {
@@ -87,7 +87,7 @@ This feature creates checkout holds only. Completing an order, cancelling it, an
 
 ### Functional Requirements
 
-- **FR-001**: The system MUST provide the create-reservation service at `POST /v1/inventory/reservations` and accept an `orderId` plus a non-empty `items` collection; each item MUST contain `id` and `qty`.
+- **FR-001**: The system MUST provide the create-reservation service at `POST /api/v1/inventory/reservations` and accept an `orderId` plus a non-empty `items` collection; each item MUST contain `id` and `qty`.
 - **FR-002**: The system MUST interpret each item `id` as a product variant identifier, resolve its inventory item internally, and never require callers to know internal inventory-item identifiers.
 - **FR-003**: The system MUST reject a request unless the order and all variant identifiers are valid, every requested quantity is a positive whole number, and each variant appears at most once.
 - **FR-004**: The system MUST select the configured default fulfillment location for this version of the request and reject the complete request when that location or an eligible inventory level cannot be resolved for any item.
@@ -119,7 +119,6 @@ This feature creates checkout holds only. Completing an order, cancelling it, an
 - **SC-002**: In acceptance testing, 100% of requests containing an unfulfillable item leave every requested item’s available and reserved quantities, reservations, and stock history unchanged.
 - **SC-003**: In a test of at least 100 concurrent competing checkout requests for the same variant, the total successful held quantity never exceeds the initial available quantity and neither available nor reserved quantity becomes negative.
 - **SC-004**: In acceptance testing, 100% of identical retries for a successful order reference return the original outcome without increasing the held quantity or creating duplicate reservations.
-- **SC-005**: Under normal operating load, 95% of checkout services receive a definitive reservation outcome within one second.
 - **SC-006**: In acceptance testing, 100% of created holds have a matching auditable stock-history record and enough information for later release or consumption.
 - **SC-007**: In acceptance testing, 100% of created reservations have an expiry time exactly 60 minutes after their creation time.
 
@@ -132,6 +131,7 @@ This feature creates checkout holds only. Completing an order, cancelling it, an
 - A separate reservation-lifecycle feature will complete, cancel, or expire active holds and return released quantities to availability. It is required before production use of this endpoint, but is outside this feature’s scope.
 - The requested reservation stock-history record is part of this feature, superseding the older draft inventory note that treated such records as optional for reservation creation.
 - A shared distributed locking capability is required for cross-instance coordination. The implementation plan will use the user-provided Redis service configuration (`REDIS_REST_URL` and `REDIS_REST_TOKEN`) without storing or exposing either secret in source code or responses.
+- Redis coordination leases use a fixed five-second TTL (`PX 5000`); PostgreSQL locking and rechecks remain the correctness boundary if a lease expires. Performance acceptance testing is outside this feature's scope.
 
 ## Dependencies
 

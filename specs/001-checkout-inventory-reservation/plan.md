@@ -23,25 +23,23 @@ Upstash Redis REST adapter, avoiding an incompatible Redis TCP client.
 **Storage**: PostgreSQL is authoritative durable storage. Upstash Redis REST is a
 short-lived, non-durable lock coordinator only.
 
-**Testing**: Standard-library `testing`, hand-written domain-port fakes, Gin handler/
-route tests, and isolated PostgreSQL integration tests for migrations, transactions, and
-concurrent reservation behavior.
-
 **Target Platform**: Linux-hosted Go HTTP service on port 5000.
 
 **Project Type**: HTTP microservice.
 
-**Performance Goals**: 95% of normal requests receive a definitive result within one
-second; validation, Redis, and database time budgets remain bounded below the lease TTL.
+**Performance Goals**: Performance acceptance testing is deferred from this feature.
+Validation, Redis, and database time budgets remain bounded below the fixed five-second
+lease TTL.
 
 **Constraints**: A request is all-or-nothing; quantities are non-negative integers; all
 new IDs are UUIDv7; reservations expire 60 minutes after the database-assigned creation
-timestamp; Redis failure or lease contention makes no inventory change; same `orderId`
-must be durably idempotent; credentials never appear in logs or responses.
+timestamp; Redis coordination leases use a fixed five-second TTL; Redis failure or lease
+contention makes no inventory change; same `orderId` must be durably idempotent; credentials
+never appear in logs or responses.
 
 **Scale/Scope**: One new create endpoint and inventory module; multi-item orders;
 concurrent callers across instances; schema migrations, Swagger output, metrics, logs,
-and focused unit/handler/PostgreSQL integration coverage.
+and deployment documentation.
 
 ## Constitution Check
 
@@ -53,7 +51,7 @@ and focused unit/handler/PostgreSQL integration coverage.
 | II. Business integrity and atomic writes | PASS | One pgx transaction locks inventory levels, checks stock, updates quantities, and writes every reservation/history row; deterministic ordering prevents lock-order deadlocks. |
 | III. Narrow contracts and explicit composition | PASS | Introduce separate `ReservationRepository` and `ReservationLocker` domain ports; construct the Redis adapter in the composition root with explicit configuration. |
 | IV. PostgreSQL correctness | PASS | Parameterized pgx queries, versioned forward-only migration, database constraints, `FOR UPDATE` locking, and exact integer `domain.Quantity` values. |
-| V. Verification and visibility | PASS | Add use-case, handler/route, real-PostgreSQL integration, concurrent, migration, metric, structured-log, and Swagger checks. |
+| V. Operational visibility | PASS | Add reservation metrics, structured no-secret logs, and Swagger documentation for the new public route. |
 
 No constitutional exception is required. The Redis REST adapter is a real external
 coordination boundary, not a replacement persistence store; PostgreSQL remains the
@@ -112,7 +110,8 @@ does not add a cross-layer dependency to the existing product repository.
 2. Canonicalize items by variant UUID and calculate a SHA-256 request fingerprint.
 3. Acquire a Redis REST lease for the canonical key set: the order key followed by all
    variant keys in lexical order. A single Upstash Lua `EVAL` verifies that every key is
-   absent and assigns every key the same random owner token with a short PX TTL.
+   absent and assigns every key the same random owner token with a five-second `PX 5000`
+   TTL.
 4. Begin one PostgreSQL transaction only after the lease succeeds. Claim or lock an
    order-level idempotency row. An equal fingerprint returns its persisted reservations
    unchanged; a different fingerprint returns conflict.
@@ -156,8 +155,8 @@ path is `/inventory/reservations` beneath that base path.
 All gates remain **PASS**. The design keeps business rules in the inventory domain/use
 case, leaves HTTP and Redis/PostgreSQL details outside the domain, and supplies a
 durable atomic transaction plus database constraints rather than relying on distributed
-locks alone. The migration, integration tests, docs, logs, and metrics close the
-Constitution V requirements.
+locks alone. The migration, documentation, logs, and metrics close the
+operational visibility requirements.
 
 ## Complexity Tracking
 
