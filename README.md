@@ -155,6 +155,12 @@ Base path: `/api/v1`. Full interactive docs are available via Swagger once the a
 | PATCH | `/:id/media/reorder` | Reorder a variant's media |
 | DELETE | `/:id/media/:media_id` | Detach media from a variant (media stays in the gallery) |
 
+### Inventory (`/api/v1/inventory`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/reservations` | Atomically reserve checkout stock for one order at the default location (idempotent by `orderId`) |
+
 > Note: category endpoints return `{"message": "success", "data": ...}`, while product/variant endpoints return `{"status": "success"|"error", "data"|"message": ..., "code": ...}`. The response envelope is not yet unified between modules.
 
 ## Setup
@@ -166,6 +172,11 @@ Base path: `/api/v1`. Full interactive docs are available via Swagger once the a
    Required variables:
    - `DATABASE_URL` — Postgres/Neon connection string, e.g. `postgresql://user:pass@host/db?sslmode=require`
    - `APP_ENV` — `development` or `production` (controls zap logger config)
+   - `REDIS_REST_URL`, `REDIS_REST_TOKEN` — Upstash Redis REST credentials required by
+     `POST /api/v1/inventory/reservations` for cross-instance coordination. These are
+     coordination-only: PostgreSQL remains the durable correctness authority. If they are
+     missing or unreachable the endpoint fails closed (`503 ERR_COORDINATION_UNAVAILABLE`)
+     without changing inventory. The token is never logged or returned.
 
 2. Ensure the target Postgres database already has the base schema (see [Database schema](#database-schema) / [PRD.md](PRD.md)) — there is no in-repo migration tool that creates the base tables. Apply the incremental patches in `migrations/` manually if needed:
    ```bash

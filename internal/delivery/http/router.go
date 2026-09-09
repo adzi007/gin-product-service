@@ -22,7 +22,7 @@ func NewAppRouter(app *gin.Engine) router {
 	}
 }
 
-func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler, productHandler *handler.ProductHandler, infraCheckerUseCase domain.InfraCheckUseCase, reviewHandler *handler.ReviewHandler, jwtSecret string) *gin.Engine {
+func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler, productHandler *handler.ProductHandler, infraCheckerUseCase domain.InfraCheckUseCase, reviewHandler *handler.ReviewHandler, inventoryHandler *handler.InventoryHandler, jwtSecret string) *gin.Engine {
 
 	r := router.appServer
 
@@ -118,6 +118,11 @@ func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler, prod
 			// Static /reorder must be registered before /:media_id.
 			variants.PATCH("/:id/media/reorder", productHandler.ReorderVariantMedia)
 			variants.DELETE("/:id/media/:media_id", productHandler.DetachVariantMedia)
+		}
+
+		inventory := v1.Group("/inventory")
+		{
+			inventory.POST("/reservations", inventoryHandler.CreateReservation)
 		}
 	}
 

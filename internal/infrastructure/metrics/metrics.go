@@ -34,6 +34,25 @@ var (
 		},
 		[]string{"repository", "operation"},
 	)
+
+	// ReservationAttempts counts checkout reservation attempts by outcome.
+	ReservationAttempts = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "inventory_reservation_attempts_total",
+			Help: "Total checkout reservation attempts by outcome",
+		},
+		[]string{"outcome"},
+	)
+
+	// ReservationDuration observes checkout reservation latency by outcome.
+	ReservationDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "inventory_reservation_duration_seconds",
+			Help:    "Checkout reservation latency by outcome",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"outcome"},
+	)
 )
 
 func ObserveHTTP(method, path, status string, start time.Time) {

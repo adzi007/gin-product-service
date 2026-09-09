@@ -380,6 +380,19 @@ definitions:
     - title
     - variants
     type: object
+  dto.CreateReservationRequest:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/dto.ReservationRequestItemDTO'
+        minItems: 1
+        type: array
+      orderId:
+        type: string
+    required:
+    - items
+    - orderId
+    type: object
   dto.CreateReviewRequest:
     properties:
       comment:
@@ -518,6 +531,46 @@ definitions:
         type: array
     required:
     - positions
+    type: object
+  dto.ReservationData:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/dto.ReservationItemData'
+        type: array
+      orderId:
+        type: string
+    type: object
+  dto.ReservationItemData:
+    properties:
+      expiresAt:
+        type: string
+      qty:
+        type: integer
+      reservationId:
+        type: string
+      status:
+        type: string
+      variantId:
+        type: string
+    type: object
+  dto.ReservationRequestItemDTO:
+    properties:
+      id:
+        type: string
+      qty:
+        minimum: 1
+        type: integer
+    required:
+    - id
+    - qty
+    type: object
+  dto.ReservationSuccessResponse:
+    properties:
+      data:
+        $ref: '#/definitions/dto.ReservationData'
+      status:
+        type: string
     type: object
   dto.ReviewListItemResponse:
     properties:
@@ -973,6 +1026,58 @@ paths:
       summary: List categories for dropdown
       tags:
       - categories
+  /inventory/reservations:
+    post:
+      consumes:
+      - application/json
+      description: Reserve sufficient stock for one order at the default fulfillment
+        location. Idempotent by orderId.
+      parameters:
+      - description: Checkout reservation request
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/dto.CreateReservationRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/dto.ReservationSuccessResponse'
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/dto.ReservationSuccessResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: Conflict
+          schema:
+            additionalProperties: true
+            type: object
+        "422":
+          description: Unprocessable Entity
+          schema:
+            additionalProperties: true
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Create an atomic checkout inventory reservation
+      tags:
+      - inventory
   /products:
     get:
       description: Get a paginated, filterable list of products

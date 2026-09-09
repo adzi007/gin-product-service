@@ -344,6 +344,81 @@ const docTemplate = `{
                 }
             }
         },
+        "/inventory/reservations": {
+            "post": {
+                "description": "Reserve sufficient stock for one order at the default fulfillment location. Idempotent by orderId.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "inventory"
+                ],
+                "summary": "Create an atomic checkout inventory reservation",
+                "parameters": [
+                    {
+                        "description": "Checkout reservation request",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/dto.CreateReservationRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/dto.ReservationSuccessResponse"
+                        }
+                    },
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/dto.ReservationSuccessResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "422": {
+                        "description": "Unprocessable Entity",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/products": {
             "get": {
                 "description": "Get a paginated, filterable list of products",
@@ -3153,6 +3228,25 @@ const docTemplate = `{
                 }
             }
         },
+        "dto.CreateReservationRequest": {
+            "type": "object",
+            "required": [
+                "items",
+                "orderId"
+            ],
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "$ref": "#/definitions/dto.ReservationRequestItemDTO"
+                    }
+                },
+                "orderId": {
+                    "type": "string"
+                }
+            }
+        },
         "dto.CreateReviewRequest": {
             "type": "object",
             "required": [
@@ -3357,6 +3451,67 @@ const docTemplate = `{
                     "items": {
                         "$ref": "#/definitions/dto.PositionUpdate"
                     }
+                }
+            }
+        },
+        "dto.ReservationData": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/dto.ReservationItemData"
+                    }
+                },
+                "orderId": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.ReservationItemData": {
+            "type": "object",
+            "properties": {
+                "expiresAt": {
+                    "type": "string"
+                },
+                "qty": {
+                    "type": "integer"
+                },
+                "reservationId": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "variantId": {
+                    "type": "string"
+                }
+            }
+        },
+        "dto.ReservationRequestItemDTO": {
+            "type": "object",
+            "required": [
+                "id",
+                "qty"
+            ],
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "qty": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            }
+        },
+        "dto.ReservationSuccessResponse": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "$ref": "#/definitions/dto.ReservationData"
+                },
+                "status": {
+                    "type": "string"
                 }
             }
         },

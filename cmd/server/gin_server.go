@@ -5,6 +5,7 @@ import (
 	"fmt"
 	apphttp "gin-product-service/internal/delivery/http"
 	"gin-product-service/internal/infrastructure/database"
+	"gin-product-service/internal/infrastructure/redis"
 	"gin-product-service/internal/wire"
 	"log"
 	"net/http"
@@ -37,10 +38,15 @@ func NewServer(db database.Database) AppServer {
 
 func (s *ginServer) Start() {
 
-	c := wire.NewContainer(s.db)
+	reservationLocker := redis.NewReservationLocker(
+		os.Getenv("REDIS_REST_URL"),
+		os.Getenv("REDIS_REST_TOKEN"),
+	)
+
+	c := wire.NewContainer(s.db, reservationLocker)
 	router := apphttp.NewAppRouter(s.app)
 	jwtSecret := os.Getenv("API_JWT_SECRET")
-	router.SetupRouter(c.CategoryHandler, c.ProductHandler, c.InfraCheckerUseCase, c.ReviewHandler, jwtSecret)
+	router.SetupRouter(c.CategoryHandler, c.ProductHandler, c.InfraCheckerUseCase, c.ReviewHandler, c.InventoryHandler, jwtSecret)
 
 	// expose Prometheus scrape endpoint
 	s.app.GET("/metrics", gin.WrapH(promhttp.Handler()))

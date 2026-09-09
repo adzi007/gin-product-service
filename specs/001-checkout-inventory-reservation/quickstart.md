@@ -63,7 +63,15 @@ both stored quantities stay non-negative:
 go test ./internal/domain/... ./internal/app/inventory/... ./internal/delivery/http/... \
   ./internal/infrastructure/repository/... -count=1
 ```
+The repository integration tests (`inventoryRepo_test.go`) run against a disposable
+PostgreSQL database set via `TEST_DATABASE_URL`; they skip automatically when it is unset,
+so `go test ./...` stays green without a database.
 
+```bash
+export TEST_DATABASE_URL="$DATABASE_URL"
+psql "$TEST_DATABASE_URL" -f migrations/0005_checkout_reservation_integrity.sql
+go test ./internal/infrastructure/repository/... -count=1
+```
 Inject failing Redis transport/configuration: expect `ERR_COORDINATION_UNAVAILABLE`
 and no PostgreSQL write. Force fake-locker contention: expect a retryable in-progress/
 coordination response and no write. Check outcome metrics/logs exclude Redis secrets.

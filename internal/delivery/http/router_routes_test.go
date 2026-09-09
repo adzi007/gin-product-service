@@ -9,7 +9,7 @@ import (
 func TestRouterRegistersProductOptionRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	appRouter := NewAppRouter(gin.New())
-	r := appRouter.SetupRouter(nil, nil, nil, nil, "test-secret")
+	r := appRouter.SetupRouter(nil, nil, nil, nil, nil, "test-secret")
 
 	for _, route := range []struct {
 		method string
@@ -48,6 +48,7 @@ func TestRouterRegistersProductOptionRoutes(t *testing.T) {
 		{"POST", "/api/v1/variants/:id/media"},
 		{"PATCH", "/api/v1/variants/:id/media/reorder"},
 		{"DELETE", "/api/v1/variants/:id/media/:media_id"},
+		{"POST", "/api/v1/inventory/reservations"},
 	} {
 		found := false
 		for _, ri := range r.Routes() {

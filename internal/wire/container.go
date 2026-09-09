@@ -3,6 +3,7 @@ package wire
 import (
 	"gin-product-service/internal/app/category"
 	"gin-product-service/internal/app/infrachecker"
+	"gin-product-service/internal/app/inventory"
 	"gin-product-service/internal/app/product"
 	"gin-product-service/internal/app/review"
 	"gin-product-service/internal/delivery/http/handler"
@@ -15,10 +16,11 @@ type Container struct {
 	CategoryHandler     *handler.CategoryHandler
 	ProductHandler      *handler.ProductHandler
 	ReviewHandler       *handler.ReviewHandler
+	InventoryHandler    *handler.InventoryHandler
 	InfraCheckerUseCase domain.InfraCheckUseCase
 }
 
-func NewContainer(db database.Database) *Container {
+func NewContainer(db database.Database, reservationLocker domain.ReservationLocker) *Container {
 	// category module
 	categoryRepo := repository.NewCategoryRepo(db)
 	categoryQueryUC := category.NewCategoryQueryUseCase(categoryRepo)
@@ -50,10 +52,16 @@ func NewContainer(db database.Database) *Container {
 	reviewSummaryUC := review.NewReviewSummaryUseCase(reviewRepo)
 	reviewHandler := handler.NewReviewHandler(reviewInsertUC, reviewQueryUC, reviewUpdateUC, reviewDeleteUC, reviewSummaryUC)
 
+	// inventory module
+	inventoryRepo := repository.NewInventoryRepo(db)
+	reservationUC := inventory.NewCreateReservationUseCase(inventoryRepo, reservationLocker)
+	inventoryHandler := handler.NewInventoryHandler(reservationUC)
+
 	return &Container{
 		CategoryHandler:     categoryHandler,
 		ProductHandler:      productHandler,
 		ReviewHandler:       reviewHandler,
+		InventoryHandler:    inventoryHandler,
 		InfraCheckerUseCase: infraCheckerUC,
 	}
 }
