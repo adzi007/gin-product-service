@@ -3,9 +3,11 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"gin-product-service/internal/delivery/http/dto"
 	"gin-product-service/internal/domain"
+	"gin-product-service/internal/infrastructure/metrics"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
@@ -23,7 +25,7 @@ func NewInventoryHandler(createReservationUC domain.CreateReservationUseCase) *I
 
 // CreateReservation godoc
 // @Summary      Create an atomic checkout inventory reservation
-// @Description  Reserve sufficient stock for one order at the default fulfillment location. Idempotent by orderId.
+// @Description  Reserve sufficient stock for one order at the default fulfillment location. Idempotent by orderId; the order service supplies the hold expiry.
 // @Tags         inventory
 // @Accept       json
 // @Produce      json
@@ -38,24 +40,30 @@ func NewInventoryHandler(createReservationUC domain.CreateReservationUseCase) *I
 // @Router       /inventory/reservations [post]
 func (h *InventoryHandler) CreateReservation(c *gin.Context) {
 	ctx := c.Request.Context()
+	start := time.Now()
 
 	var input dto.CreateReservationRequest
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, reservationErrorResponse("ERR_VALIDATION", err.Error(), nil))
+		h.respondBindingError(c, err, start)
 		return
 	}
 	if err := validate.Struct(input); err != nil {
-		c.JSON(http.StatusBadRequest, reservationErrorResponse("ERR_VALIDATION", reservationValidationMessage(err), nil))
+		h.respondBindingError(c, err, start)
 		return
 	}
 
-	orderID, items, err := input.ToDomain()
+	orderID, expiresAt, items, err := input.ToDomain()
 	if err != nil {
+		if errors.Is(err, domain.ErrInvalidExpiry) {
+			recordExpiryInvalid(start, time.Now())
+			c.JSON(http.StatusBadRequest, reservationErrorResponse("ERR_INVALID_EXPIRY", domain.ErrInvalidExpiry.Error(), nil))
+			return
+		}
 		c.JSON(http.StatusBadRequest, reservationErrorResponse("ERR_VALIDATION", "orderId and item ids must be valid UUIDs", nil))
 		return
 	}
 
-	result, err := h.createReservationUC.Create(ctx, orderID, items)
+	result, err := h.createReservationUC.Create(ctx, orderID, expiresAt, items)
 	if err != nil {
 		status, code, message, details := mapReservationError(err)
 		c.JSON(status, reservationErrorResponse(code, message, details))
@@ -67,6 +75,42 @@ func (h *InventoryHandler) CreateReservation(c *gin.Context) {
 		status = http.StatusOK
 	}
 	c.JSON(status, dto.ToReservationResponse(result))
+}
+
+// respondBindingError maps JSON binding/validation failures to the documented
+// response. A missing expiresAt is reported as ERR_INVALID_EXPIRY rather than
+// a generic validation failure so consumers can distinguish the two.
+func (h *InventoryHandler) respondBindingError(c *gin.Context, err error, start time.Time) {
+	if expiryBindingFailed(err) {
+		recordExpiryInvalid(start, time.Now())
+		c.JSON(http.StatusBadRequest, reservationErrorResponse("ERR_INVALID_EXPIRY", domain.ErrInvalidExpiry.Error(), nil))
+		return
+	}
+	c.JSON(http.StatusBadRequest, reservationErrorResponse("ERR_VALIDATION", reservationValidationMessage(err), nil))
+}
+
+// expiryBindingFailed reports whether err is a validator error concerning the
+// required expiresAt field. Gin's binding validator reports the JSON tag name
+// while the standalone validator reports the Go field name, so both are
+// matched.
+func expiryBindingFailed(err error) bool {
+	fieldErrs, ok := err.(validator.ValidationErrors)
+	if !ok {
+		return false
+	}
+	for _, fe := range fieldErrs {
+		if fe.Field() == "ExpiresAt" || fe.Field() == "expiresAt" {
+			return true
+		}
+	}
+	return false
+}
+
+// recordExpiryInvalid emits the invalid-expiry outcome metric with a latency
+// observation consistent with the use case's other outcomes.
+func recordExpiryInvalid(start, end time.Time) {
+	metrics.ReservationAttempts.WithLabelValues("expiry_invalid").Inc()
+	metrics.ReservationDuration.WithLabelValues("expiry_invalid").Observe(end.Sub(start).Seconds())
 }
 
 // reservationErrorResponse builds the reservation spec error envelope. details
@@ -104,6 +148,10 @@ func mapReservationError(err error) (int, string, string, gin.H) {
 	switch err {
 	case domain.ErrReservationValidation:
 		return http.StatusBadRequest, "ERR_VALIDATION", err.Error(), nil
+	case domain.ErrInvalidExpiry:
+		return http.StatusBadRequest, "ERR_INVALID_EXPIRY", err.Error(), nil
+	case domain.ErrExpiredExpiry:
+		return http.StatusUnprocessableEntity, "ERR_EXPIRED_EXPIRY", err.Error(), nil
 	case domain.ErrReservationInventoryNotFound:
 		return http.StatusNotFound, "ERR_INVENTORY_NOT_FOUND", err.Error(), nil
 	case domain.ErrReservationConflict:

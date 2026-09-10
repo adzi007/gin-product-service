@@ -346,7 +346,7 @@ const docTemplate = `{
         },
         "/inventory/reservations": {
             "post": {
-                "description": "Reserve sufficient stock for one order at the default fulfillment location. Idempotent by orderId.",
+                "description": "Reserve sufficient stock for one order at the default fulfillment location. Idempotent by orderId; the order service supplies the hold expiry.",
                 "consumes": [
                     "application/json"
                 ],
@@ -3231,10 +3231,14 @@ const docTemplate = `{
         "dto.CreateReservationRequest": {
             "type": "object",
             "required": [
+                "expiresAt",
                 "items",
                 "orderId"
             ],
             "properties": {
+                "expiresAt": {
+                    "type": "string"
+                },
                 "items": {
                     "type": "array",
                     "minItems": 1,

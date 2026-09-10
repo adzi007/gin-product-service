@@ -3,6 +3,7 @@ package repository
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"sort"
 	"time"
@@ -50,38 +51,43 @@ func (r *inventoryRepo) CreateReservation(ctx context.Context, input domain.Crea
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// 1. Claim the durable order-level idempotency row, or read the persisted
-	//    fingerprint when the order was already claimed.
-	var existingFP []byte
-	err = tx.QueryRow(ctx, `
-		INSERT INTO checkout_reservation_requests (order_id, request_fingerprint)
-		VALUES ($1, $2)
-		ON CONFLICT (order_id) DO NOTHING
-		RETURNING request_fingerprint`,
-		pgUUID(input.OrderID), input.Fingerprint,
-	).Scan(&existingFP)
-	if err != nil {
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return domain.ReservationResult{}, err
-		}
-		// Existing order: read its fingerprint while holding the row lock so a
-		// concurrent claim cannot change the outcome underneath us.
-		if err := tx.QueryRow(ctx, `
-			SELECT request_fingerprint
-			FROM checkout_reservation_requests
-			WHERE order_id = $1
-			FOR UPDATE`,
-			pgUUID(input.OrderID),
-		).Scan(&existingFP); err != nil {
-			return domain.ReservationResult{}, err
-		}
-		if !bytes.Equal(existingFP, input.Fingerprint) {
-			return domain.ReservationResult{}, domain.ErrReservationConflict
-		}
-		return r.loadPersistedReservations(ctx, tx, input.OrderID)
+	// 1. Serialize every request for one order with a deterministic
+	//    transaction-scoped advisory lock. This closes the zero-row race that
+	//    FOR UPDATE and the unique (order_id, inventory_item_id) constraint
+	//    cannot cover: two simultaneous first requests with different item sets
+	//    would otherwise both see no rows and both reserve stock.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, orderAdvisoryLockKey(input.OrderID)); err != nil {
+		return domain.ReservationResult{}, err
 	}
 
-	// 2. Resolve the single default fulfillment location.
+	// 2. Load the order's persisted reservation set (with public variant IDs)
+	//    while holding row locks. Existing rows are the sole durable idempotency
+	//    record: a retry returns them, any difference is a conflict.
+	persisted, err := r.loadOrderReservations(ctx, tx, input.OrderID)
+	if err != nil {
+		return domain.ReservationResult{}, err
+	}
+	if len(persisted.Items) > 0 {
+		if orderMatchesRequest(persisted.Items, input) {
+			persisted.Retried = true
+			return persisted, nil
+		}
+		return domain.ReservationResult{}, domain.ErrReservationConflict
+	}
+
+	// 3. Capture one authoritative creation instant after order coordination.
+	var reservedAt time.Time
+	if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&reservedAt); err != nil {
+		return domain.ReservationResult{}, err
+	}
+
+	// 4. Reject an expiry that is not strictly future at the authoritative
+	//    creation point, before any quantity transfer.
+	if err := domain.ValidateExpiry(input.ExpiresAt, reservedAt); err != nil {
+		return domain.ReservationResult{}, err
+	}
+
+	// 5. Resolve the single default fulfillment location.
 	var locationID uuid.UUID
 	err = tx.QueryRow(ctx, `SELECT id FROM locations WHERE is_default = true LIMIT 1`).Scan(&locationID)
 	if err != nil {
@@ -91,13 +97,13 @@ func (r *inventoryRepo) CreateReservation(ctx context.Context, input domain.Crea
 		return domain.ReservationResult{}, err
 	}
 
-	// 3. Resolve each public variant to its tracked, non-deleted inventory item.
+	// 6. Resolve each public variant to its tracked, non-deleted inventory item.
 	resolved, err := r.resolveItems(ctx, tx, input.Items)
 	if err != nil {
 		return domain.ReservationResult{}, err
 	}
 
-	// 4. Lock each level in deterministic inventory-item order, then check and
+	// 7. Lock each level in deterministic inventory-item order, then check and
 	//    transfer quantities while those rows remain locked.
 	for _, item := range resolved {
 		var available, reserved int
@@ -135,36 +141,38 @@ func (r *inventoryRepo) CreateReservation(ctx context.Context, input domain.Crea
 		}
 	}
 
-	// 5. Insert one ACTIVE reservation and one linked RESERVE stock movement
-	//    per item, reading the database-assigned reservation timestamps back.
+	// 8. Insert one ACTIVE reservation and one RESERVE stock movement
+	//    per item, persisting the caller-owned expiry and the shared reserved
+	//    instant unchanged.
 	result := domain.ReservationResult{
 		OrderID: input.OrderID,
 		Items:   make([]domain.ReservationItemResult, 0, len(resolved)),
 	}
 	for _, item := range resolved {
-		var reservedAt, expiresAt time.Time
+		var dbReservedAt, expiresAt time.Time
 		err = tx.QueryRow(ctx, `
 			INSERT INTO reservations (id, inventory_item_id, location_id, order_id, quantity, reserved_at, expires_at, status)
-			VALUES ($1, $2, $3, $4, $5, now(), now() + interval '60 minutes', 'ACTIVE')
+			VALUES ($1, $2, $3, $4, $5, $6, $7, 'ACTIVE')
 			RETURNING reserved_at, expires_at`,
 			pgUUID(item.ReservationID),
 			pgUUID(item.InventoryItemID),
 			pgUUID(locationID),
 			pgUUID(input.OrderID),
 			item.Quantity.Int(),
-		).Scan(&reservedAt, &expiresAt)
+			reservedAt,
+			input.ExpiresAt,
+		).Scan(&dbReservedAt, &expiresAt)
 		if err != nil {
 			return domain.ReservationResult{}, err
 		}
 
 		_, err = tx.Exec(ctx, `
-			INSERT INTO stock_moves (id, inventory_item_id, from_location_id, to_location_id, move_type, quantity, reservation_id)
-			VALUES ($1, $2, $3, NULL, 'RESERVE', $4, $5)`,
+			INSERT INTO stock_moves (id, inventory_item_id, from_location_id, to_location_id, move_type, quantity)
+			VALUES ($1, $2, $3, NULL, 'RESERVE', $4)`,
 			pgUUID(item.StockMoveID),
 			pgUUID(item.InventoryItemID),
 			pgUUID(locationID),
 			item.Quantity.Int(),
-			pgUUID(item.ReservationID),
 		)
 		if err != nil {
 			return domain.ReservationResult{}, err
@@ -225,16 +233,17 @@ func (r *inventoryRepo) resolveItems(ctx context.Context, tx pgx.Tx, items []dom
 	return resolved, nil
 }
 
-// loadPersistedReservations returns the previously persisted reservations for
-// an identical (retried) order without writing anything.
-func (r *inventoryRepo) loadPersistedReservations(ctx context.Context, tx pgx.Tx, orderID uuid.UUID) (domain.ReservationResult, error) {
+// loadOrderReservations returns the persisted reservation set for one order,
+// joined to public variant IDs and locked FOR UPDATE, without writing anything.
+func (r *inventoryRepo) loadOrderReservations(ctx context.Context, tx pgx.Tx, orderID uuid.UUID) (domain.ReservationResult, error) {
 	rows, err := tx.Query(ctx, `
 		SELECT r.id, r.inventory_item_id, r.location_id, r.order_id, r.quantity,
 		       r.reserved_at, r.expires_at, r.status, r.released_at, ii.variant_id
 		FROM reservations r
 		JOIN inventory_items ii ON ii.id = r.inventory_item_id
 		WHERE r.order_id = $1
-		ORDER BY r.inventory_item_id`,
+		ORDER BY r.inventory_item_id
+		FOR UPDATE OF r`,
 		pgUUID(orderID),
 	)
 	if err != nil {
@@ -249,7 +258,6 @@ func (r *inventoryRepo) loadPersistedReservations(ctx context.Context, tx pgx.Tx
 
 	result := domain.ReservationResult{
 		OrderID: orderID,
-		Retried: true,
 		Items:   make([]domain.ReservationItemResult, 0, len(reservationRows)),
 	}
 	for _, row := range reservationRows {
@@ -260,4 +268,41 @@ func (r *inventoryRepo) loadPersistedReservations(ctx context.Context, tx pgx.Tx
 		result.Items = append(result.Items, item)
 	}
 	return result, nil
+}
+
+// orderMatchesRequest reports whether the persisted reservation set has the
+// identical canonical item set, quantities, and represented expiry instant as
+// the request. Caller item order and equivalent offset spellings are
+// irrelevant: both sides are sorted by public variant ID and compared by
+// instant equality.
+func orderMatchesRequest(persisted []domain.ReservationItemResult, input domain.CreateReservationInput) bool {
+	if len(persisted) != len(input.Items) {
+		return false
+	}
+
+	req := append([]domain.CreateReservationItem(nil), input.Items...)
+	sort.Slice(req, func(i, j int) bool { return bytes.Compare(req[i].VariantID[:], req[j].VariantID[:]) < 0 })
+
+	pers := append([]domain.ReservationItemResult(nil), persisted...)
+	sort.Slice(pers, func(i, j int) bool { return bytes.Compare(pers[i].VariantID[:], pers[j].VariantID[:]) < 0 })
+
+	for i := range req {
+		if req[i].VariantID != pers[i].VariantID || req[i].Quantity != pers[i].Quantity {
+			return false
+		}
+		if !pers[i].ExpiresAt.Equal(input.ExpiresAt) {
+			return false
+		}
+	}
+	return true
+}
+
+// orderAdvisoryLockKey folds the complete 16-byte order ID into a single int64
+// advisory-lock key. A fold can only serialize unrelated orders; it can never
+// return a wrong result because the reservation rows remain the durable
+// correctness record.
+func orderAdvisoryLockKey(orderID uuid.UUID) int64 {
+	hi := binary.BigEndian.Uint64(orderID[0:8])
+	lo := binary.BigEndian.Uint64(orderID[8:16])
+	return int64(hi ^ lo)
 }

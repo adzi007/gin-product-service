@@ -382,6 +382,8 @@ definitions:
     type: object
   dto.CreateReservationRequest:
     properties:
+      expiresAt:
+        type: string
       items:
         items:
           $ref: '#/definitions/dto.ReservationRequestItemDTO'
@@ -390,6 +392,7 @@ definitions:
       orderId:
         type: string
     required:
+    - expiresAt
     - items
     - orderId
     type: object
@@ -1031,7 +1034,7 @@ paths:
       consumes:
       - application/json
       description: Reserve sufficient stock for one order at the default fulfillment
-        location. Idempotent by orderId.
+        location. Idempotent by orderId; the order service supplies the hold expiry.
       parameters:
       - description: Checkout reservation request
         in: body

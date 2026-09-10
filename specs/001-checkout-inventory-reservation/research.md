@@ -53,7 +53,7 @@
 
 - **Decision**: In one pgx transaction resolve the default location and eligible
   variants, lock `inventory_levels` with `SELECT ... FOR UPDATE` ordered by inventory
-  item ID, validate all stock, update each level, and insert every reservation and linked
+  item ID, validate all stock, update each level, and insert every reservation and
   `RESERVE` movement before one commit.
 - **Rationale**: Rollback leaves no partial hold. Deterministic order reduces multi-item
   deadlocks, and availability is checked after locks, preventing over-reservation.
@@ -63,14 +63,13 @@
 ## Decision: strengthen persistence invariants in a forward-only migration
 
 - **Decision**: Create the request table; require new reservation rows to have an order,
-  positive quantity, and `expires_at > reserved_at`; add order/item uniqueness, an
-  optional unique `stock_moves.reservation_id` FK, non-null/non-negative inventory
+  positive quantity, and `expires_at > reserved_at`; add order/item uniqueness,
+  non-null/non-negative inventory
   quantities, and a partial unique default-location index. Validate/backfill existing
   data before enabling strict constraints.
-- **Rationale**: The PRD base schema lacks these integrity/idempotency constraints. A
-  direct reservation-to-movement link is needed for future reconciliation.
-- **Alternatives considered**: Application-only checks do not protect future writers;
-  parsing free-text movement reasons is not reconciliation-safe.
+- **Rationale**: The PRD base schema lacks these reservation and inventory
+  integrity/idempotency constraints. Stock movements use the existing schema.
+- **Alternatives considered**: Application-only checks do not protect future writers.
 
 ## Decision: stable errors and no-secret telemetry
 

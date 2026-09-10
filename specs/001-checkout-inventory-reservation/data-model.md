@@ -15,7 +15,7 @@ fingerprint is `ERR_RESERVATION_CONFLICT` and makes no inventory change.
 
 ## Reservation
 
-The existing table is extended with constraints and a linked stock movement.
+The existing table is extended with reservation integrity constraints.
 
 | Field | Type | Rules |
 |---|---|---|
@@ -73,10 +73,13 @@ One existing-table row is inserted per reservation.
 | `to_location_id` | `NULL` |
 | `move_type` | `RESERVE` |
 | `quantity` | Held positive quantity |
-| `reservation_id` | New nullable FK, populated and unique when present |
+| `created_by` | `NULL` |
+| `reason` | `NULL` |
+| `created_at` | Existing `now()` default |
 
-The direct link supports later reconciliation, release, and consumption without parsing a
-human-readable reason.
+The existing `stock_moves` schema is retained. Each movement records the inventory
+item, location, type, quantity, and creation time; reservation identity and order
+association remain on the reservation record.
 
 ## Location and errors
 

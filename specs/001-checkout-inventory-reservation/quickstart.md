@@ -39,7 +39,8 @@ curl --fail-with-body -X POST http://localhost:5000/api/v1/inventory/reservation
 
 Expected: HTTP 201, `status: success`, an `ACTIVE` reservation, and expiry exactly
 60 minutes after its creation. The default-location level changes by available `-2`
-and reserved `+2`; one linked `RESERVE` history row exists.
+and reserved `+2`; one `RESERVE` history row exists with that inventory item,
+default location, and quantity, using the existing `stock_moves` columns.
 
 Repeat the identical request. Expected: HTTP 200 with original IDs and no extra
 reservation, movement, or quantity transfer. Change items/quantities for the same

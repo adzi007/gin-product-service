@@ -94,7 +94,7 @@ internal/
 └── wire/container.go                       # repository -> use case -> handler composition
 
 migrations/
-└── 0005_checkout_reservation_integrity.sql # idempotency, audit, and quantity constraints
+└── 0005_checkout_reservation_integrity.sql # idempotency and quantity constraints
 ```
 
 **Structure Decision**: Add the feature as a dedicated inventory module. It uses the
@@ -121,8 +121,8 @@ does not add a cross-layer dependency to the existing product repository.
 6. Check every quantity while those rows are locked. On any missing/non-reservable
    inventory or insufficient quantity, roll back the whole transaction.
 7. For every item, move `available_qty` to `reserved_qty`, insert one `ACTIVE`
-   reservation with `expires_at = reserved_at + 60 minutes`, and insert its linked
-   `RESERVE` stock movement. Commit once.
+   reservation with `expires_at = reserved_at + 60 minutes`, and insert one
+   `RESERVE` stock movement using the existing `stock_moves` columns. Commit once.
 8. Release only lease keys owned by this request via a second Lua script. If release
    fails after commit, log/measure it and allow TTL expiry; never undo committed data.
 

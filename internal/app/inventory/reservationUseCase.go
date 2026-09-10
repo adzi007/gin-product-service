@@ -3,8 +3,6 @@ package inventory
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"sort"
 	"time"
@@ -37,7 +35,7 @@ func NewCreateReservationUseCase(repo domain.ReservationRepository, locker domai
 
 var _ domain.CreateReservationUseCase = (*createReservationUc)(nil)
 
-func (uc *createReservationUc) Create(ctx context.Context, orderID uuid.UUID, items []domain.ReservationRequestItem) (domain.ReservationResult, error) {
+func (uc *createReservationUc) Create(ctx context.Context, orderID uuid.UUID, expiresAt time.Time, items []domain.ReservationRequestItem) (domain.ReservationResult, error) {
 	start := time.Now()
 
 	if orderID == uuid.Nil {
@@ -47,12 +45,14 @@ func (uc *createReservationUc) Create(ctx context.Context, orderID uuid.UUID, it
 		return domain.ReservationResult{}, err
 	}
 
-	// Canonicalize: sort by variant UUID so the fingerprint and lease keys are
-	// deterministic regardless of caller ordering.
+	// Canonicalize: sort by variant UUID so the lease keys are deterministic
+	// regardless of caller ordering. The expiry instant is already normalized
+	// to UTC at the delivery boundary; re-normalize defensively so the
+	// repository always receives one canonical instant.
 	sorted := append([]domain.ReservationRequestItem(nil), items...)
 	sort.Slice(sorted, func(i, j int) bool { return uuidLess(sorted[i].VariantID, sorted[j].VariantID) })
 
-	fingerprint := fingerprintRequest(sorted)
+	expiresAt = expiresAt.UTC()
 
 	// Canonical key set: the order key followed by all variant keys in lexical
 	// (== UUID byte) order.
@@ -80,9 +80,9 @@ func (uc *createReservationUc) Create(ctx context.Context, orderID uuid.UUID, it
 	}()
 
 	input := domain.CreateReservationInput{
-		OrderID:     orderID,
-		Fingerprint: fingerprint,
-		Items:       make([]domain.CreateReservationItem, 0, len(sorted)),
+		OrderID:   orderID,
+		ExpiresAt: expiresAt,
+		Items:     make([]domain.CreateReservationItem, 0, len(sorted)),
 	}
 	for _, it := range sorted {
 		input.Items = append(input.Items, domain.CreateReservationItem{
@@ -120,6 +120,10 @@ func (uc *createReservationUc) recordFailure(ctx context.Context, orderID uuid.U
 		outcome = "conflict"
 	case errors.Is(err, domain.ErrReservationCoordinationUnavailable):
 		outcome = "coordination_failed"
+	case errors.Is(err, domain.ErrExpiredExpiry):
+		outcome = "expiry_expired"
+	case errors.Is(err, domain.ErrInvalidExpiry):
+		outcome = "expiry_invalid"
 	}
 	metrics.ReservationAttempts.WithLabelValues(outcome).Inc()
 	metrics.ReservationDuration.WithLabelValues(outcome).Observe(time.Since(start).Seconds())
@@ -128,19 +132,6 @@ func (uc *createReservationUc) recordFailure(ctx context.Context, orderID uuid.U
 		zap.String("order_id", orderID.String()),
 		zap.Error(err),
 	)
-}
-
-// fingerprintRequest hashes the canonical sorted (variant_id, quantity) pairs
-// into a SHA-256 request fingerprint used for durable idempotency.
-func fingerprintRequest(items []domain.ReservationRequestItem) []byte {
-	h := sha256.New()
-	var qbuf [8]byte
-	for _, it := range items {
-		h.Write(it.VariantID[:])
-		binary.BigEndian.PutUint64(qbuf[:], uint64(it.Quantity))
-		h.Write(qbuf[:])
-	}
-	return h.Sum(nil)
 }
 
 func uuidLess(a, b uuid.UUID) bool {

@@ -2,6 +2,7 @@ package domain
 
 import (
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -82,5 +83,56 @@ func TestValidateReservationItems_AcceptsPositiveUniqueItems(t *testing.T) {
 	}
 	if err := ValidateReservationItems(items); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestErrInvalidAndExpiredExpiryAreDistinct(t *testing.T) {
+	if ErrInvalidExpiry == nil || ErrExpiredExpiry == nil {
+		t.Fatal("expiry errors must be defined")
+	}
+	if ErrInvalidExpiry == ErrExpiredExpiry {
+		t.Fatal("invalid and expired expiry errors must be distinct sentinels")
+	}
+	if ErrInvalidExpiry.Error() == ErrExpiredExpiry.Error() {
+		t.Fatal("invalid and expired expiry errors must carry distinct messages")
+	}
+	if ErrInvalidExpiry == ErrReservationValidation || ErrExpiredExpiry == ErrReservationConflict {
+		t.Fatal("expiry errors must not alias existing validation/conflict errors")
+	}
+}
+
+func TestCreateReservationInputCarriesCallerExpiry(t *testing.T) {
+	expires := time.Date(2030, 1, 1, 20, 4, 5, 123456000, time.UTC)
+	input := CreateReservationInput{
+		OrderID:   uuid.New(),
+		ExpiresAt: expires,
+		Items:     []CreateReservationItem{{VariantID: uuid.New(), Quantity: 1}},
+	}
+	if !input.ExpiresAt.Equal(expires) {
+		t.Fatalf("input must retain the caller expiry unchanged: %v", input.ExpiresAt)
+	}
+}
+
+func TestValidateExpiry_StrictlyFuture(t *testing.T) {
+	reference := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
+
+	if err := ValidateExpiry(reference.Add(time.Second), reference); err != nil {
+		t.Fatalf("future expiry must pass: %v", err)
+	}
+	if err := ValidateExpiry(reference, reference); err != ErrExpiredExpiry {
+		t.Fatalf("equal instant got %v, want ErrExpiredExpiry", err)
+	}
+	if err := ValidateExpiry(reference.Add(-time.Second), reference); err != ErrExpiredExpiry {
+		t.Fatalf("past instant got %v, want ErrExpiredExpiry", err)
+	}
+}
+
+func TestValidateExpiry_EquivalentOffsetInstantsCompareEqual(t *testing.T) {
+	// The same instant expressed with different offsets must compare equal so
+	// equivalent-offset retries identify the same expiry.
+	plusSeven := time.Date(2030, 1, 2, 3, 4, 5, 123456000, time.FixedZone("+07", 7*3600))
+	utc := time.Date(2030, 1, 1, 20, 4, 5, 123456000, time.UTC)
+	if !plusSeven.Equal(utc) {
+		t.Fatal("equivalent offset representations must represent the same instant")
 	}
 }

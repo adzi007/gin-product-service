@@ -61,8 +61,7 @@ func (m Reservation) ToResultItem() (domain.ReservationItemResult, bool) {
 	}, true
 }
 
-// StockMove is the stock movement row shape including the optional
-// reservation link added for checkout reservations.
+// StockMove is the existing stock movement row shape.
 type StockMove struct {
 	ID              uuid.UUID  `db:"id"`
 	InventoryItemID uuid.UUID  `db:"inventory_item_id"`
@@ -73,7 +72,6 @@ type StockMove struct {
 	CreatedBy       *uuid.UUID `db:"created_by"`
 	Reason          *string    `db:"reason"`
 	CreatedAt       time.Time  `db:"created_at"`
-	ReservationID   *uuid.UUID `db:"reservation_id"`
 }
 
 // ToDomain converts the stock movement row to the domain entity.

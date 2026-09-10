@@ -33,10 +33,10 @@ description: "Implementation tasks for checkout inventory reservation"
 
 **⚠️ CRITICAL**: Complete this phase before starting user-story implementation.
 
-- [X] T002 Create the forward-only checkout reservation integrity migration, including request claims, reservation/stock-move links, quantity and expiry checks, and the single-default-location constraint in `migrations/0005_checkout_reservation_integrity.sql`
+- [X] T002 Create the forward-only checkout reservation integrity migration, including request claims, quantity and expiry checks, and the single-default-location constraint, while retaining the existing stock-movement schema in `migrations/0005_checkout_reservation_integrity.sql`
 - [X] T003 Add isolated PostgreSQL migration/invariant coverage for `0005_checkout_reservation_integrity.sql` in `internal/infrastructure/repository/inventoryRepo_test.go`
 - [X] T004 [P] Extend reservation domain types, stable errors, `ReservationRepository`, and `ReservationLocker` ports in `internal/domain/inventory.go`
-- [X] T005 [P] Add PostgreSQL row models and domain mapping for reservation request claims, reservations, levels, and linked stock moves in `internal/infrastructure/repository/model/reservation_model.go`
+- [X] T005 [P] Add PostgreSQL row models and domain mapping for reservation request claims, reservations, levels, and stock moves using the existing columns in `internal/infrastructure/repository/model/reservation_model.go`
 - [X] T006 [P] Implement the fail-closed Upstash Redis REST Lua lease acquire/release adapter with a fixed five-second `PX 5000` TTL, owner-token checks, bounded contexts, and no-secret errors in `internal/infrastructure/redis/reservation_locker.go`
 - [X] T007 [P] Add REST-adapter tests for the five-second lease TTL, atomic acquire, contention, token-checked release, malformed responses, and transport failure in `internal/infrastructure/redis/reservation_locker_test.go`
 
@@ -48,20 +48,20 @@ description: "Implementation tasks for checkout inventory reservation"
 
 **Goal**: An order service can reserve sufficient stock for all unique requested variants at the configured default location and receive the active holds.
 
-**Independent Test**: Submit a valid multi-item `POST /api/v1/inventory/reservations` request against seeded tracked variants and a default location; receive one `ACTIVE` reservation per item with a 60-minute expiry, while each level changes available `-qty` and reserved `+qty` and each linked `RESERVE` move exists.
+**Independent Test**: Submit a valid multi-item `POST /api/v1/inventory/reservations` request against seeded tracked variants and a default location; receive one `ACTIVE` reservation per item with a 60-minute expiry, while each level changes available `-qty` and reserved `+qty` and one `RESERVE` move exists per held item.
 
 ### Tests for User Story 1
 
 - [X] T008 [P] [US1] Add domain tests for positive reservation request items, duplicate-variant rejection, and available-to-reserved transfer invariants in `internal/domain/inventory_test.go`
 - [X] T009 [P] [US1] Add use-case success-path tests with fakes for multi-item canonical input, default-location selection, and 60-minute expiry in `internal/app/inventory/reservationUseCase_test.go`
-- [X] T010 [P] [US1] Add PostgreSQL integration coverage for one transactional successful multi-item reservation, level updates, and linked `RESERVE` moves in `internal/infrastructure/repository/inventoryRepo_test.go`
+- [X] T010 [P] [US1] Add PostgreSQL integration coverage for one transactional successful multi-item reservation, level updates, and `RESERVE` moves using the existing columns in `internal/infrastructure/repository/inventoryRepo_test.go`
 - [X] T011 [P] [US1] Add Gin contract coverage for the documented 201 create response and returned reservation fields in `internal/delivery/http/handler/inventory_handler_test.go`
 
 ### Implementation for User Story 1
 
 - [X] T012 [P] [US1] Add `orderId`/`items[].id`/`items[].qty` request and success-response DTOs with strict binding validation in `internal/delivery/http/dto/inventory_dto.go`
 - [X] T013 [US1] Implement the create-reservation use case to validate input, generate UUIDv7 reservation IDs, set database-relative 60-minute expiry intent, and orchestrate the repository in `internal/app/inventory/reservationUseCase.go`
-- [X] T014 [US1] Implement the pgx/v5 transactional happy path that resolves the default location and tracked variants, locks levels in inventory-item order, transfers quantities, and inserts reservations and linked moves in `internal/infrastructure/repository/inventoryRepo.go`
+- [X] T014 [US1] Implement the pgx/v5 transactional happy path that resolves the default location and tracked variants, locks levels in inventory-item order, transfers quantities, and inserts reservations and stock moves using the existing columns in `internal/infrastructure/repository/inventoryRepo.go`
 - [X] T015 [US1] Implement the Gin inventory handler with request binding and successful reservation encoding in `internal/delivery/http/handler/inventory_handler.go`
 - [X] T016 [US1] Compose the inventory repository, use case, handler, and fail-closed Redis-locker configuration in `internal/wire/container.go` and `cmd/server/gin_server.go`
 - [X] T017 [US1] Register `POST /api/v1/inventory/reservations` in the existing API group in `internal/delivery/http/router.go`

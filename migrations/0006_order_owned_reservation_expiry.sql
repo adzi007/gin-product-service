@@ -1,0 +1,21 @@
+-- 0006_order_owned_reservation_expiry.sql
+-- Post-rollout, forward-only migration for the order-owned reservation expiry
+-- feature.
+--
+-- The application revision shipped with this feature stops reading and
+-- writing `checkout_reservation_requests`: the complete set of `reservations`
+-- rows for an `order_id` is now the sole durable idempotency record, and the
+-- order identifier plus caller-owned expiry live directly on each reservation
+-- row. That revision is compatible while this parent table still exists.
+--
+-- PREREQUISITE (deployment order):
+--   1. Deploy the new application revision.
+--   2. Drain every old application instance (old instances still query this
+--      table and would fail if it is dropped while they can serve traffic).
+--   3. Only then apply this migration.
+--
+-- This migration drops ONLY the redundant parent-claim table. It does not
+-- modify, backfill, recalculate, or delete any reservation, stock movement,
+-- inventory level, or historical expiry value.
+
+DROP TABLE IF EXISTS checkout_reservation_requests;

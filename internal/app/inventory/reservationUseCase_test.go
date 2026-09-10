@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"testing"
+	"time"
 
 	"gin-product-service/internal/domain"
 
@@ -31,6 +32,7 @@ func (f *fakeReservationRepo) CreateReservation(_ context.Context, input domain.
 			VariantID:     it.VariantID,
 			Quantity:      it.Quantity,
 			Status:        domain.ReservationActive,
+			ExpiresAt:     input.ExpiresAt,
 		})
 	}
 	return domain.ReservationResult{OrderID: input.OrderID, Items: items}, nil
@@ -80,12 +82,13 @@ func TestCreateReservation_Success_CanonicalizesAndDelegates(t *testing.T) {
 		vA, vB = vB, vA
 	}
 	orderID := uuid.New()
+	expiresAt := time.Date(2030, 1, 1, 20, 4, 5, 123456000, time.UTC)
 	items := []domain.ReservationRequestItem{
 		{VariantID: vB, Quantity: 1},
 		{VariantID: vA, Quantity: 3},
 	}
 
-	result, err := uc.Create(context.Background(), orderID, items)
+	result, err := uc.Create(context.Background(), orderID, expiresAt, items)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -94,6 +97,11 @@ func TestCreateReservation_Success_CanonicalizesAndDelegates(t *testing.T) {
 	}
 	if len(result.Items) != 2 {
 		t.Fatalf("result items = %d, want 2", len(result.Items))
+	}
+
+	// The caller-owned expiry must be propagated unchanged to the repository.
+	if !repo.input.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("expiry = %v, want %v (no duration may be calculated)", repo.input.ExpiresAt, expiresAt)
 	}
 
 	// Items must arrive sorted by variant ID.
@@ -131,36 +139,47 @@ func TestCreateReservation_Success_CanonicalizesAndDelegates(t *testing.T) {
 	}
 }
 
-func TestCreateReservation_FingerprintIsDeterministic(t *testing.T) {
+func TestCreateReservation_PropagatesCanonicalItemsAndExpiry(t *testing.T) {
 	vA := uuid.New()
 	vB := uuid.New()
+	if bytes.Compare(vA[:], vB[:]) > 0 {
+		vA, vB = vB, vA
+	}
 	orderID := uuid.New()
+	expiresAt := time.Date(2030, 1, 1, 20, 4, 5, 123456000, time.UTC)
 
-	run := func(items []domain.ReservationRequestItem) []byte {
+	run := func(items []domain.ReservationRequestItem) (domain.CreateReservationInput, error) {
 		repo := &fakeReservationRepo{}
 		locker := &fakeReservationLocker{}
 		uc := NewCreateReservationUseCase(repo, locker)
-		if _, err := uc.Create(context.Background(), orderID, items); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		return repo.input.Fingerprint
+		_, err := uc.Create(context.Background(), orderID, expiresAt, items)
+		return repo.input, err
 	}
 
-	fp1 := run([]domain.ReservationRequestItem{
+	in1, err := run([]domain.ReservationRequestItem{
 		{VariantID: vA, Quantity: 1}, {VariantID: vB, Quantity: 2},
 	})
-	fp2 := run([]domain.ReservationRequestItem{
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	in2, err := run([]domain.ReservationRequestItem{
 		{VariantID: vB, Quantity: 2}, {VariantID: vA, Quantity: 1},
 	})
-	if !bytes.Equal(fp1, fp2) {
-		t.Fatalf("fingerprint must be order-independent: %x != %x", fp1, fp2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	fp3 := run([]domain.ReservationRequestItem{
-		{VariantID: vA, Quantity: 1}, {VariantID: vB, Quantity: 3},
-	})
-	if bytes.Equal(fp1, fp3) {
-		t.Fatalf("fingerprint must change when a quantity changes")
+	// Item order must be canonicalized to the same sorted variant order, and
+	// the expiry must be identical and untouched in both runs.
+	if in1.Items[0].VariantID != vA || in1.Items[1].VariantID != vB {
+		t.Fatalf("items not canonicalized: %v", in1.Items)
+	}
+	if in1.Items[0].VariantID != in2.Items[0].VariantID ||
+		in1.Items[1].VariantID != in2.Items[1].VariantID {
+		t.Fatalf("canonical item order must be order-independent: %v vs %v", in1.Items, in2.Items)
+	}
+	if !in1.ExpiresAt.Equal(expiresAt) || !in2.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("expiry must be propagated unchanged: %v / %v", in1.ExpiresAt, in2.ExpiresAt)
 	}
 }
 
@@ -178,7 +197,7 @@ func TestCreateReservation_RetryReturnsOriginalResult(t *testing.T) {
 	locker := &fakeReservationLocker{}
 	uc := NewCreateReservationUseCase(stub, locker)
 
-	result, err := uc.Create(context.Background(), orderID, []domain.ReservationRequestItem{item})
+	result, err := uc.Create(context.Background(), orderID, time.Now().Add(time.Hour).UTC(), []domain.ReservationRequestItem{item})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -206,7 +225,7 @@ func TestCreateReservation_AcquireFailureFailsClosed(t *testing.T) {
 	locker := &fakeReservationLocker{acquireErr: domain.ErrReservationCoordinationUnavailable}
 	uc := NewCreateReservationUseCase(repo, locker)
 
-	_, err := uc.Create(context.Background(), uuid.New(), []domain.ReservationRequestItem{
+	_, err := uc.Create(context.Background(), uuid.New(), time.Now().Add(time.Hour).UTC(), []domain.ReservationRequestItem{
 		{VariantID: uuid.New(), Quantity: 1},
 	})
 	if err != domain.ErrReservationCoordinationUnavailable {
@@ -238,7 +257,7 @@ func TestCreateReservation_ValidationErrorsShortCircuit(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		if _, err := uc.Create(context.Background(), tc.orderID, tc.items); err != domain.ErrReservationValidation {
+		if _, err := uc.Create(context.Background(), tc.orderID, time.Now().Add(time.Hour).UTC(), tc.items); err != domain.ErrReservationValidation {
 			t.Errorf("%s: got %v, want ErrReservationValidation", tc.name, err)
 		}
 	}
@@ -252,7 +271,7 @@ func TestCreateReservation_ConflictPropagates(t *testing.T) {
 	locker := &fakeReservationLocker{}
 	uc := NewCreateReservationUseCase(repo, locker)
 
-	_, err := uc.Create(context.Background(), uuid.New(), []domain.ReservationRequestItem{
+	_, err := uc.Create(context.Background(), uuid.New(), time.Now().Add(time.Hour).UTC(), []domain.ReservationRequestItem{
 		{VariantID: uuid.New(), Quantity: 1},
 	})
 	if err != domain.ErrReservationConflict {
@@ -260,5 +279,21 @@ func TestCreateReservation_ConflictPropagates(t *testing.T) {
 	}
 	if locker.releaseToken == "" {
 		t.Fatal("lease must be released even on failure")
+	}
+}
+
+func TestCreateReservation_ExpiredExpiryPropagates(t *testing.T) {
+	repo := &fakeReservationRepo{err: domain.ErrExpiredExpiry}
+	locker := &fakeReservationLocker{}
+	uc := NewCreateReservationUseCase(repo, locker)
+
+	_, err := uc.Create(context.Background(), uuid.New(), time.Now().Add(time.Hour).UTC(), []domain.ReservationRequestItem{
+		{VariantID: uuid.New(), Quantity: 1},
+	})
+	if err != domain.ErrExpiredExpiry {
+		t.Fatalf("got %v, want ErrExpiredExpiry", err)
+	}
+	if locker.releaseToken == "" {
+		t.Fatal("lease must be released even on expiry failure")
 	}
 }

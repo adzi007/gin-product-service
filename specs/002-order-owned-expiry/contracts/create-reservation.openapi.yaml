@@ -1,0 +1,191 @@
+openapi: 3.0.3
+info:
+  title: Gin Product Service - Order-Owned Reservation Expiry
+  version: 1.0.0
+servers:
+  - url: /api/v1
+paths:
+  /inventory/reservations:
+    post:
+      summary: Create an atomic checkout inventory reservation
+      operationId: createCheckoutReservation
+      tags: [inventory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReservationRequest'
+      responses:
+        '201':
+          description: New active reservations created for every requested item.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReservationSuccess'
+        '200':
+          description: Identical retry; original result returned without another stock transfer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReservationSuccess'
+        '400':
+          description: Invalid request fields or invalid expiry representation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalidExpiry:
+                  value:
+                    status: error
+                    code: ERR_INVALID_EXPIRY
+                    message: expiresAt must be an RFC 3339 timestamp with an explicit offset and microsecond precision or less
+                invalidItems:
+                  value:
+                    status: error
+                    code: ERR_VALIDATION
+                    message: items must contain unique variant IDs and positive whole-number quantities
+        '404':
+          $ref: '#/components/responses/MissingInventoryError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
+        '422':
+          description: The request is well-formed but cannot create a reservation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                expiredExpiry:
+                  value:
+                    status: error
+                    code: ERR_EXPIRED_EXPIRY
+                    message: expiresAt must be later than reservation creation time
+                insufficientStock:
+                  value:
+                    status: error
+                    code: ERR_INSUFFICIENT_STOCK
+                    message: requested quantity exceeds available stock
+                    details:
+                      variantId: 018f0c31-8a8e-7a19-a479-8e4f22e09f9d
+        '503':
+          $ref: '#/components/responses/CoordinationError'
+components:
+  schemas:
+    CreateReservationRequest:
+      type: object
+      additionalProperties: false
+      required: [orderId, expiresAt, items]
+      properties:
+        orderId:
+          type: string
+          format: uuid
+        expiresAt:
+          type: string
+          format: date-time
+          description: >-
+            Required RFC 3339 instant with an explicit UTC offset and no more than six
+            fractional-second digits. It must be strictly future when the reservation is
+            created. Equivalent offset representations identify the same retry.
+          example: '2030-01-02T03:04:05.123456+07:00'
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, qty]
+            properties:
+              id:
+                type: string
+                format: uuid
+                description: Product variant identifier, never an inventory-item identifier.
+              qty:
+                type: integer
+                minimum: 1
+                description: Positive whole number of variant units to hold.
+    ReservationSuccess:
+      type: object
+      required: [status, data]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        data:
+          type: object
+          required: [orderId, items]
+          properties:
+            orderId:
+              type: string
+              format: uuid
+            items:
+              type: array
+              minItems: 1
+              items:
+                type: object
+                required: [reservationId, variantId, qty, status, expiresAt]
+                properties:
+                  reservationId:
+                    type: string
+                    format: uuid
+                  variantId:
+                    type: string
+                    format: uuid
+                  qty:
+                    type: integer
+                    minimum: 1
+                  status:
+                    type: string
+                    enum: [ACTIVE]
+                  expiresAt:
+                    type: string
+                    format: date-time
+                    description: Canonical RFC 3339 representation of the caller-owned stored instant.
+    Error:
+      type: object
+      required: [status, code, message]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+  responses:
+    MissingInventoryError:
+      description: Variant, default location, inventory item, or level cannot be resolved.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            status: error
+            code: ERR_INVENTORY_NOT_FOUND
+            message: reservable inventory was not found for the requested variant
+            details:
+              variantId: 018f0c31-8a8e-7a19-a479-8e4f22e09f9d
+    ConflictError:
+      description: Existing order ID has a different item set, quantity, or expiry instant.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            status: error
+            code: ERR_RESERVATION_CONFLICT
+            message: order already has a different reservation request
+    CoordinationError:
+      description: Redis coordination is unavailable, timed out, or a conflicting lease could not be acquired. Retry safely.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            status: error
+            code: ERR_COORDINATION_UNAVAILABLE
+            message: checkout reservation coordination is temporarily unavailable

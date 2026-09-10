@@ -17,14 +17,16 @@ import (
 )
 
 type fakeCreateReservationUC struct {
-	result     domain.ReservationResult
-	err        error
-	gotOrderID uuid.UUID
-	gotItems   []domain.ReservationRequestItem
+	result       domain.ReservationResult
+	err          error
+	gotOrderID   uuid.UUID
+	gotExpiresAt time.Time
+	gotItems     []domain.ReservationRequestItem
 }
 
-func (f *fakeCreateReservationUC) Create(_ context.Context, orderID uuid.UUID, items []domain.ReservationRequestItem) (domain.ReservationResult, error) {
+func (f *fakeCreateReservationUC) Create(_ context.Context, orderID uuid.UUID, expiresAt time.Time, items []domain.ReservationRequestItem) (domain.ReservationResult, error) {
 	f.gotOrderID = orderID
+	f.gotExpiresAt = expiresAt
 	f.gotItems = items
 	return f.result, f.err
 }
@@ -47,7 +49,7 @@ func TestInventoryHandler_CreateReservation_201(t *testing.T) {
 	orderID := uuid.New()
 	variantID := uuid.New()
 	reservationID := uuid.New()
-	expires := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	expires := time.Date(2026, 9, 9, 12, 0, 0, 123456000, time.UTC)
 
 	uc := &fakeCreateReservationUC{result: domain.ReservationResult{
 		OrderID: orderID,
@@ -56,7 +58,7 @@ func TestInventoryHandler_CreateReservation_201(t *testing.T) {
 		},
 	}}
 
-	body := fmt.Sprintf(`{"orderId":%q,"items":[{"id":%q,"qty":2}]}`, orderID.String(), variantID.String())
+	body := fmt.Sprintf(`{"orderId":%q,"expiresAt":"2026-09-09T19:00:00.123456+07:00","items":[{"id":%q,"qty":2}]}`, orderID.String(), variantID.String())
 	w := performReservationRequest(t, uc, body)
 
 	if w.Code != http.StatusCreated {
@@ -90,8 +92,13 @@ func TestInventoryHandler_CreateReservation_201(t *testing.T) {
 	}
 	item := resp.Data.Items[0]
 	if item.ReservationID != reservationID.String() || item.VariantID != variantID.String() ||
-		item.Qty != 2 || item.Status != "ACTIVE" || item.ExpiresAt != expires.Format("2006-01-02T15:04:05Z07:00") {
+		item.Qty != 2 || item.Status != "ACTIVE" || item.ExpiresAt != "2026-09-09T12:00:00.123456Z" {
 		t.Errorf("item mismatch: %+v", item)
+	}
+
+	// The normalized UTC expiry must be threaded into the use case.
+	if !uc.gotExpiresAt.Equal(expires) {
+		t.Errorf("use case expiry = %v, want %v", uc.gotExpiresAt, expires)
 	}
 }
 
@@ -106,7 +113,7 @@ func TestInventoryHandler_CreateReservation_200Retry(t *testing.T) {
 		},
 	}}
 
-	body := fmt.Sprintf(`{"orderId":%q,"items":[{"id":%q,"qty":1}]}`, orderID.String(), variantID.String())
+	body := fmt.Sprintf(`{"orderId":%q,"expiresAt":"2030-01-02T03:04:05.123456+07:00","items":[{"id":%q,"qty":1}]}`, orderID.String(), variantID.String())
 	w := performReservationRequest(t, uc, body)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
@@ -121,7 +128,7 @@ func TestInventoryHandler_422InsuffientStockIdentifiesOnlyVariant(t *testing.T) 
 		Err:       domain.ErrInsufficientStock,
 	}}
 
-	body := fmt.Sprintf(`{"orderId":%q,"items":[{"id":%q,"qty":99}]}`, orderID.String(), variantID.String())
+	body := fmt.Sprintf(`{"orderId":%q,"expiresAt":"2030-01-02T03:04:05.123456+07:00","items":[{"id":%q,"qty":99}]}`, orderID.String(), variantID.String())
 	w := performReservationRequest(t, uc, body)
 
 	if w.Code != http.StatusUnprocessableEntity {
@@ -145,7 +152,7 @@ func TestInventoryHandler_503CoordinationWithoutSecrets(t *testing.T) {
 	variantID := uuid.New()
 	uc := &fakeCreateReservationUC{err: domain.ErrReservationCoordinationUnavailable}
 
-	body := fmt.Sprintf(`{"orderId":%q,"items":[{"id":%q,"qty":1}]}`, orderID.String(), variantID.String())
+	body := fmt.Sprintf(`{"orderId":%q,"expiresAt":"2030-01-02T03:04:05.123456+07:00","items":[{"id":%q,"qty":1}]}`, orderID.String(), variantID.String())
 	w := performReservationRequest(t, uc, body)
 
 	if w.Code != http.StatusServiceUnavailable {
@@ -162,13 +169,63 @@ func TestInventoryHandler_503CoordinationWithoutSecrets(t *testing.T) {
 
 func TestInventoryHandler_400MalformedOrderID(t *testing.T) {
 	uc := &fakeCreateReservationUC{}
-	body := `{"orderId":"not-a-uuid","items":[{"id":"00000000-0000-4000-8000-000000000000","qty":1}]}`
+	body := `{"orderId":"not-a-uuid","expiresAt":"2030-01-02T03:04:05.123456+07:00","items":[{"id":"00000000-0000-4000-8000-000000000000","qty":1}]}`
 	w := performReservationRequest(t, uc, body)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
 	}
 	if !strings.Contains(w.Body.String(), "ERR_VALIDATION") {
 		t.Errorf("body missing ERR_VALIDATION: %s", w.Body.String())
+	}
+}
+
+func TestInventoryHandler_400InvalidExpiry(t *testing.T) {
+	orderID := uuid.New()
+	variantID := uuid.New()
+	uc := &fakeCreateReservationUC{}
+
+	cases := []struct {
+		name      string
+		expiresAt string
+	}{
+		{"missing", ""},
+		{"malformed", "not-a-timestamp"},
+		{"offsetless", "2030-01-02T03:04:05"},
+		{"overprecision", "2030-01-02T03:04:05.1234567+07:00"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var body string
+			if tc.name == "missing" {
+				body = fmt.Sprintf(`{"orderId":%q,"items":[{"id":%q,"qty":1}]}`, orderID.String(), variantID.String())
+			} else {
+				body = fmt.Sprintf(`{"orderId":%q,"expiresAt":%q,"items":[{"id":%q,"qty":1}]}`, orderID.String(), tc.expiresAt, variantID.String())
+			}
+			w := performReservationRequest(t, uc, body)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), "ERR_INVALID_EXPIRY") {
+				t.Errorf("body missing ERR_INVALID_EXPIRY: %s", w.Body.String())
+			}
+		})
+	}
+}
+
+func TestInventoryHandler_422ExpiredExpiry(t *testing.T) {
+	orderID := uuid.New()
+	variantID := uuid.New()
+	uc := &fakeCreateReservationUC{err: domain.ErrExpiredExpiry}
+
+	body := fmt.Sprintf(`{"orderId":%q,"expiresAt":"2030-01-02T03:04:05.123456+07:00","items":[{"id":%q,"qty":1}]}`, orderID.String(), variantID.String())
+	w := performReservationRequest(t, uc, body)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "ERR_EXPIRED_EXPIRY") {
+		t.Errorf("body missing ERR_EXPIRED_EXPIRY: %s", w.Body.String())
 	}
 }
 
@@ -182,6 +239,8 @@ func TestMapReservationError_StatusCodesAndDetails(t *testing.T) {
 		hasVariant bool
 	}{
 		{"validation", domain.ErrReservationValidation, http.StatusBadRequest, "ERR_VALIDATION", false},
+		{"invalid expiry", domain.ErrInvalidExpiry, http.StatusBadRequest, "ERR_INVALID_EXPIRY", false},
+		{"expired expiry", domain.ErrExpiredExpiry, http.StatusUnprocessableEntity, "ERR_EXPIRED_EXPIRY", false},
 		{"conflict", domain.ErrReservationConflict, http.StatusConflict, "ERR_RESERVATION_CONFLICT", false},
 		{"coordination", domain.ErrReservationCoordinationUnavailable, http.StatusServiceUnavailable, "ERR_COORDINATION_UNAVAILABLE", false},
 		{"insufficient", &domain.VariantError{VariantID: vid, Err: domain.ErrInsufficientStock}, http.StatusUnprocessableEntity, "ERR_INSUFFICIENT_STOCK", true},

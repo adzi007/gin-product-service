@@ -161,6 +161,29 @@ Base path: `/api/v1`. Full interactive docs are available via Swagger once the a
 |---|---|---|
 | POST | `/reservations` | Atomically reserve checkout stock for one order at the default location (idempotent by `orderId`) |
 
+`POST /api/v1/inventory/reservations` requires an `expiresAt` value with every
+request: the order service owns the hold deadline, so the inventory service
+applies no duration policy and persists the supplied instant unchanged. The
+request body is:
+
+```json
+{
+  "orderId": "11111111-1111-4111-8111-111111111111",
+  "expiresAt": "2030-01-02T03:04:05.123456+07:00",
+  "items": [{ "id": "22222222-2222-4222-8222-222222222222", "qty": 2 }]
+}
+```
+
+`expiresAt` is an RFC 3339 timestamp with an explicit UTC offset and no more
+than six fractional-second digits; it is normalized to UTC and returned in
+RFC3339Nano form. Missing/malformed/offset-less/over-precision values return
+`400 ERR_INVALID_EXPIRY`; a well-formed value that is not strictly future at
+reservation time returns `422 ERR_EXPIRED_EXPIRY`. Retrying the same
+`orderId`, items, quantities, and represented expiry returns the original
+holds (HTTP 200) without another stock transfer; changing any of them returns
+`409 ERR_RESERVATION_CONFLICT`. The reservation rows themselves are the sole
+durable idempotency record.
+
 > Note: category endpoints return `{"message": "success", "data": ...}`, while product/variant endpoints return `{"status": "success"|"error", "data"|"message": ..., "code": ...}`. The response envelope is not yet unified between modules.
 
 ## Setup
@@ -182,7 +205,12 @@ Base path: `/api/v1`. Full interactive docs are available via Swagger once the a
    ```bash
    psql "$DATABASE_URL" -f migrations/0001_add_variant_position.sql
    psql "$DATABASE_URL" -f migrations/0002_add_inventory_levels_unique.sql
+   psql "$DATABASE_URL" -f migrations/0005_checkout_reservation_integrity.sql
    ```
+   `migrations/0006_order_owned_reservation_expiry.sql` drops the now-obsolete
+   `checkout_reservation_requests` table. It is a post-rollout, forward-only
+   migration: deploy the current revision and drain every old instance **before**
+   applying it, because older instances still query that table.
 
 3. Install Go dependencies:
    ```bash
