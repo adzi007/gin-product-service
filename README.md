@@ -242,7 +242,122 @@ go test ./...
 go test ./internal/app/infrachecker/ -run TestNewInfraCheckerUseCase_CheckDatabase
 ```
 
-Tests use the standard library `testing` package only (no testify/gomock). Use cases are tested against small hand-rolled fakes implementing the domain repository interfaces; `internal/domain` has entity/value-object tests (status transitions, validation, quantity math); `internal/delivery/http/router_routes_test.go` asserts routes are registered. There are currently no integration tests against a real Postgres instance — the repository layer itself is not covered by tests.
+Tests use the standard library `testing` package only (no testify/gomock). Use cases are tested against small hand-rolled fakes implementing the domain repository interfaces; `internal/domain` has entity/value-object tests (status transitions, validation, quantity math); `internal/delivery/http/router_routes_test.go` asserts routes are registered. PostgreSQL tracing integration tests are gated by `TEST_DATABASE_URL` and skip when it is unset.
+
+## Tracing (OpenTelemetry)
+
+End-to-end tracing is opt-in and disabled by default. It is implemented as
+infrastructure plus delivery middleware: no domain entity, business rule, or
+application use case imports OpenTelemetry.
+
+### Coverage
+
+| Traffic | Traced |
+|---|---|
+| Every registered business route under `/api/v1` | Yes — one server span per request |
+| `GET /readyz` | Yes — it exercises PostgreSQL |
+| `GET /healthz`, `GET /metrics`, `/swagger/*any`, unmatched routes | No — unchanged behavior, no exported span |
+
+A sampled request produces one connected hierarchy:
+
+```text
+HTTP GET /api/v1/products/:id          (server)
+`-- app.product.query.get_by_id        (internal)
+    |-- pool.acquire                   (client, PostgreSQL)
+    `-- SELECT                         (client, PostgreSQL)
+```
+
+Reservation requests additionally carry `redis.reservation.acquire` and
+`redis.reservation.release` client spans around the transactional database work.
+Span names use only the matched route template and a bounded
+`app.<module>.<operation>` vocabulary; raw URL paths, query strings, UUIDs, and
+handles are never used.
+
+### Configuration
+
+Every variable, its default, and its bounds are documented in
+[`.env.example`](.env.example). Defaults are safe to leave in place: tracing stays
+off until `OTEL_TRACING_ENABLED=true` and an endpoint is supplied.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `OTEL_TRACING_ENABLED` | `false` | Strict boolean. Disabled creates no exporter, worker, pgx tracer, or middleware. |
+| `OTEL_SERVICE_NAME` | `gin-product-service` | Exported as `service.name`. |
+| `OTEL_DEPLOYMENT_ENVIRONMENT` | none (`APP_ENV` fallback) | Required when enabled; exported as `deployment.environment.name`. |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | none | Required when enabled; absolute `http`/`https` URL, no user info/query/fragment. |
+| `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | none | Optional OTLP headers; values are never logged or exported. |
+| `OTEL_EXPORTER_OTLP_TRACES_COMPRESSION` | `gzip` | `gzip` or `none`. |
+| `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT` | `5000` ms | Positive, within the 15 s shutdown budget. |
+| `OTEL_TRACES_SAMPLER_ARG` | `0.10` | Decimal in `[0,1]`; new root traces only. |
+| `OTEL_BSP_MAX_QUEUE_SIZE` | `2048` | Positive, bounded. |
+| `OTEL_BSP_MAX_EXPORT_BATCH_SIZE` | `512` | Positive, no larger than the queue size. |
+| `OTEL_BSP_SCHEDULE_DELAY` | `5000` ms | Positive, bounded. |
+| `OTEL_BSP_EXPORT_TIMEOUT` | `5000` ms | Positive, within the shutdown budget. |
+| `OTEL_TRACES_SHUTDOWN_TIMEOUT` | `5000` ms | Positive, strictly below the 15 s shutdown budget. |
+| `OTEL_BAGGAGE_ALLOWLIST` | empty | Comma-separated baggage keys; empty means default-deny. |
+
+### Sampling and propagation
+
+Sampling uses `ParentBased(TraceIDRatioBased(OTEL_TRACES_SAMPLER_ARG))`: a valid
+upstream sampling decision is honored, and the local ratio applies only when this
+service starts a new root trace. Missing, malformed, or unsupported trace
+metadata starts a new trace and never rejects the request. W3C `traceparent` and
+`tracestate` are always propagated; baggage is default-deny and only allowlisted
+keys are forwarded. Baggage never becomes a span or log attribute.
+
+### Failure behavior
+
+- The exporter boundary fails open: a slow or unavailable destination never
+  changes a response, transaction, or lease.
+- Buffering is bounded. When full, newly completed spans are dropped rather than
+  delaying a request, and reported through
+  `telemetry_spans_dropped_total{reason="queue_full"}`.
+- Export failures are counted separately on
+  `telemetry_exporter_failures_total{reason=...}`, so queue pressure and
+  destination failure stay distinguishable. Warnings are rate-limited and
+  sanitized — endpoints, headers, credentials, SQL, Redis commands, and payloads
+  are never emitted.
+- Enabling tracing with structurally invalid configuration fails startup with a
+  safe field-level error.
+- Request-scoped logs carry lowercase `trace_id` and `span_id` whenever a valid
+  span is active.
+
+### What is intentionally not included
+
+Jaeger, an OpenTelemetry Collector, trace storage, retention, and any trace UI are
+out of scope. The service owns only the OTLP exporter boundary; point
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` at an environment-managed destination if you
+have one.
+
+### Verifying exporter delivery without a backend
+
+The exporter contract test starts a local OTLP/HTTP capture receiver, points the
+real exporter at it, and asserts `POST /v1/traces`, the OTLP protobuf content
+type, a decodable non-empty payload, resource identity, successful flush, and safe
+handling of non-success or unavailable destinations. No backend is installed.
+
+```bash
+go test ./internal/infrastructure/telemetry/... -run 'TestOTLPHTTPExporter' -count=1 -v
+```
+
+End-to-end behavior (trace hierarchy, failure/interruption outcomes, log
+correlation, sensitive-data exclusion, queue pressure, and graceful shutdown) is
+covered by:
+
+```bash
+go test ./internal/infrastructure/telemetry/... -count=1
+go test ./internal/delivery/http/... -count=1
+go test ./cmd/... -count=1
+go test ./... -count=1
+go test -race ./...
+go vet ./...
+```
+
+With a disposable PostgreSQL database, real pgx span parenting is verified by:
+
+```bash
+TEST_DATABASE_URL="$DATABASE_URL" go test ./internal/infrastructure/database/... -count=1
+```
 
 ## API documentation
 

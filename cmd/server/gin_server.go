@@ -2,15 +2,19 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	apphttp "gin-product-service/internal/delivery/http"
 	"gin-product-service/internal/infrastructure/database"
 	"gin-product-service/internal/infrastructure/redis"
+	"gin-product-service/internal/infrastructure/telemetry"
 	"gin-product-service/internal/wire"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -18,71 +22,248 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
+// ServiceShutdownBudget is the single graceful shutdown window for the whole
+// process: HTTP intake stop, accepted-request drain, dependency close, and the
+// bounded telemetry flush all share it.
+const ServiceShutdownBudget = 15 * time.Second
+
+// defaultListenAddress matches the documented service port.
+const defaultListenAddress = ":5000"
+
 type ginServer struct {
-	app *gin.Engine
-	db  database.Database
-	// conn     *grpc.ClientConn
-	// rabbitMQ *rabbitmq.RabbitMQ
+	app       *gin.Engine
+	db        database.Database
+	telemetry *telemetry.TelemetryRuntime
+
+	address        string
+	shutdownBudget time.Duration
+	stop           <-chan struct{}
+	report         func(error)
+
+	// mu guards the bound listener and its HTTP server, which Listen publishes
+	// for Addr and Stop.
+	mu         sync.Mutex
+	httpServer *http.Server
+	listener   net.Listener
+
+	// ready is closed once the listener is bound.
+	ready     chan struct{}
+	readyOnce sync.Once
+
+	shutdownOnce sync.Once
+	shutdownErr  error
 }
 
-func NewServer(db database.Database) AppServer {
+// Options configure the server lifecycle. Zero values fall back to the
+// production defaults, so the process entry point only sets what it needs.
+type Options struct {
+	// Address is the listen address; "host:0" binds an ephemeral port.
+	Address string
+	// ShutdownBudget bounds the whole shutdown sequence.
+	ShutdownBudget time.Duration
+	// Stop triggers shutdown when closed. When nil, SIGINT/SIGTERM are observed.
+	Stop <-chan struct{}
+	// Report receives sanitized lifecycle errors instead of the default logger.
+	Report func(error)
+}
 
-	server := gin.Default()
+// NewServer builds the production server.
+func NewServer(db database.Database, tracing *telemetry.TelemetryRuntime) AppServer {
+	return NewServerWithOptions(db, tracing, Options{})
+}
 
-	return &ginServer{
-		app: server,
-		db:  db,
+// NewServerWithOptions builds the server and wires every route up front, so the
+// engine is complete before shutdown behavior is exercised.
+func NewServerWithOptions(db database.Database, tracing *telemetry.TelemetryRuntime, opts Options) *ginServer {
+	if tracing == nil {
+		// Defensive: never dereference a nil runtime, and never attach
+		// instrumentation implicitly.
+		if disabled, err := telemetry.NewRuntime(context.Background(), telemetry.TelemetryConfig{}); err == nil {
+			tracing = disabled
+		}
 	}
 
+	address := opts.Address
+	if address == "" {
+		address = defaultListenAddress
+	}
+	budget := opts.ShutdownBudget
+	if budget <= 0 {
+		budget = ServiceShutdownBudget
+	}
+
+	s := &ginServer{
+		app:            gin.Default(),
+		db:             db,
+		telemetry:      tracing,
+		address:        address,
+		shutdownBudget: budget,
+		stop:           opts.Stop,
+		report:         opts.Report,
+		ready:          make(chan struct{}),
+	}
+	s.setupRoutes()
+	return s
 }
 
-func (s *ginServer) Start() {
-
+// setupRoutes is the composition step: infrastructure adapters and use cases are
+// built with the explicit telemetry runtime and registered on the engine.
+func (s *ginServer) setupRoutes() {
 	reservationLocker := redis.NewReservationLocker(
 		os.Getenv("REDIS_REST_URL"),
 		os.Getenv("REDIS_REST_TOKEN"),
+		redis.WithTracing(s.telemetry.TracerProvider, s.telemetry.Propagator),
 	)
 
-	c := wire.NewContainer(s.db, reservationLocker)
+	c := wire.NewContainer(s.db, reservationLocker, s.telemetry)
 	router := apphttp.NewAppRouter(s.app)
 	jwtSecret := os.Getenv("API_JWT_SECRET")
-	router.SetupRouter(c.CategoryHandler, c.ProductHandler, c.InfraCheckerUseCase, c.ReviewHandler, c.InventoryHandler, jwtSecret)
+	router.SetupRouter(c.CategoryHandler, c.ProductHandler, c.InfraCheckerUseCase, c.ReviewHandler, c.InventoryHandler, jwtSecret, s.telemetry)
 
 	// expose Prometheus scrape endpoint
 	s.app.GET("/metrics", gin.WrapH(promhttp.Handler()))
+}
 
-	srv := &http.Server{
-		Addr:         ":5000",
+// Handler exposes the configured engine.
+func (s *ginServer) Handler() http.Handler { return s.app }
+
+// Router exposes the engine so additional routes can be registered before Listen.
+func (s *ginServer) Router() *gin.Engine { return s.app }
+
+// Addr reports the bound address, or the configured address before Listen.
+func (s *ginServer) Addr() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.listener != nil {
+		return s.listener.Addr().String()
+	}
+	return s.address
+}
+
+// Ready is closed once the listener is bound, so callers can wait for startup
+// without polling.
+func (s *ginServer) Ready() <-chan struct{} { return s.ready }
+
+// Listen binds the configured address and serves in the background. It returns
+// once the socket is bound, so callers can observe the actual address.
+func (s *ginServer) Listen() error {
+	listener, err := net.Listen("tcp", s.address)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", s.address, err)
+	}
+	httpServer := &http.Server{
 		Handler:      s.app,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
 
-	// if err := s.app.Run(":5000"); err != nil {
-	// 	log.Fatalf("Failed to start server: %v", err)
-	// }
+	s.mu.Lock()
+	s.listener = listener
+	s.httpServer = httpServer
+	s.mu.Unlock()
+
+	s.readyOnce.Do(func() { close(s.ready) })
+
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("listen: %v", err)
+		if err := httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			s.reportError(fmt.Errorf("http server stopped: %w", err))
 		}
 	}()
-
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
-		log.Printf("forced shutdown: %v", err)
-	}
-	s.db.Close()
-
+	return nil
 }
+
+// Start binds the listener, waits for the injected stop signal (or an OS
+// termination signal), then performs one bounded shutdown.
+func (s *ginServer) Start() {
+	if err := s.Listen(); err != nil {
+		log.Fatal(err)
+	}
+
+	<-s.stopSignal()
+
+	if err := s.Stop(context.Background()); err != nil {
+		s.reportError(err)
+	}
+}
+
+// Stop performs the bounded shutdown sequence exactly once: stop accepting new
+// work, drain accepted requests, close dependencies, then flush accepted
+// telemetry with the remaining deadline. It is idempotent and bounded by the
+// configured budget.
+func (s *ginServer) Stop(parent context.Context) error {
+	s.shutdownOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(parent, s.shutdownBudget)
+		defer cancel()
+
+		var errs []error
+
+		s.mu.Lock()
+		httpServer := s.httpServer
+		listener := s.listener
+		s.mu.Unlock()
+
+		// 1. Stop HTTP intake and drain accepted requests.
+		if httpServer != nil {
+			if err := httpServer.Shutdown(ctx); err != nil {
+				errs = append(errs, err)
+			}
+		} else if listener != nil {
+			_ = listener.Close()
+		}
+
+		// 2. Close dependencies.
+		if s.db != nil {
+			s.db.Close()
+		}
+
+		// 3. Flush accepted telemetry within the same budget.
+		if s.telemetry != nil {
+			if err := s.telemetry.Shutdown(ctx); err != nil {
+				errs = append(errs, err)
+			}
+		}
+
+		s.shutdownErr = errors.Join(errs...)
+	})
+	return s.shutdownErr
+}
+
+// Use registers additional engine middleware.
 func (s *ginServer) Use(args gin.HandlerFunc) {
 	s.app.Use(args)
 }
+
+// Close performs a bounded shutdown; it is safe to call more than once.
 func (s *ginServer) Close() {
-	fmt.Println("close connection...")
+	_ = s.Stop(context.Background())
+}
+
+// stopSignal returns the injected trigger or an OS signal channel.
+func (s *ginServer) stopSignal() <-chan struct{} {
+	if s.stop != nil {
+		return s.stop
+	}
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+	done := make(chan struct{})
+	go func() {
+		<-quit
+		close(done)
+	}()
+	return done
+}
+
+func (s *ginServer) reportError(err error) {
+	if err == nil {
+		return
+	}
+	if s.report != nil {
+		s.report(err)
+		return
+	}
+	log.Printf("server: %v", err)
 }

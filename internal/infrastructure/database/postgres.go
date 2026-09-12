@@ -6,19 +6,43 @@ import (
 	"os"
 	"time"
 
+	"github.com/exaring/otelpgx"
 	pgxdecimal "github.com/jackc/pgx-shopspring-decimal"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type postgresDatabase struct {
 	Db *pgxpool.Pool
 }
 
-func NewPool(ctx context.Context) (Database, error) {
+// PoolOption customises pool construction.
+type PoolOption func(*poolOptions)
+
+type poolOptions struct {
+	tracerProvider trace.TracerProvider
+}
+
+// WithTracerProvider attaches OpenTelemetry pgx instrumentation to the pool.
+//
+// SQL statement text, query parameters, and connection details are excluded, so
+// no customer data, credentials, or endpoints can reach exported spans. The
+// provider is supplied explicitly by the composition root; nothing is resolved
+// from a package global.
+func WithTracerProvider(provider trace.TracerProvider) PoolOption {
+	return func(o *poolOptions) { o.tracerProvider = provider }
+}
+
+func NewPool(ctx context.Context, opts ...PoolOption) (Database, error) {
 
 	_ = godotenv.Load()
+
+	var options poolOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
 
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
@@ -34,6 +58,16 @@ func NewPool(ctx context.Context) (Database, error) {
 	config.MinConns = 2
 	config.MaxConnLifetime = time.Hour
 	config.MaxConnIdleTime = 30 * time.Minute
+
+	if options.tracerProvider != nil {
+		config.ConnConfig.Tracer = otelpgx.NewTracer(
+			otelpgx.WithTracerProvider(options.tracerProvider),
+			// Mechanical sensitive-data boundary: never export statement text,
+			// parameters, or connection details.
+			otelpgx.WithDisableSQLStatementInAttributes(),
+			otelpgx.WithDisableConnectionDetailsInAttributes(),
+		)
+	}
 
 	// Register the shopspring/decimal codec on every connection so numeric
 	// columns (price, weight, quantities) scan directly into decimal.Decimal.

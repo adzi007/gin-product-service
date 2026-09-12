@@ -9,7 +9,9 @@ import (
 	"gin-product-service/internal/delivery/http/handler"
 	"gin-product-service/internal/domain"
 	"gin-product-service/internal/infrastructure/database"
+	"gin-product-service/internal/infrastructure/logger"
 	"gin-product-service/internal/infrastructure/repository"
+	"gin-product-service/internal/infrastructure/telemetry"
 )
 
 type Container struct {
@@ -20,41 +22,52 @@ type Container struct {
 	InfraCheckerUseCase domain.InfraCheckUseCase
 }
 
-func NewContainer(db database.Database, reservationLocker domain.ReservationLocker) *Container {
+// NewContainer is the composition root. Every handler-facing use case is wrapped
+// with its telemetry decorator here — the only place application
+// implementations are decorated — so no domain entity, business rule, or
+// application implementation depends on observability.
+func NewContainer(db database.Database, reservationLocker domain.ReservationLocker, runtime *telemetry.TelemetryRuntime) *Container {
+	decorators := telemetry.DecoratorConfig{
+		TracerProvider: runtime.TracerProvider,
+		// Refresh the request-scoped logger from each child span's context so
+		// application logs carry the current trace_id/span_id.
+		EnrichContext: logger.WithTraceContext,
+	}
+
 	// category module
 	categoryRepo := repository.NewCategoryRepo(db)
-	categoryQueryUC := category.NewCategoryQueryUseCase(categoryRepo)
-	categoryInsertUC := category.NewCategoryInsertUseCase(categoryRepo)
-	categoryUpdateUC := category.NewCategoryUpdateUseCase(categoryRepo)
-	categoryDeleteUC := category.NewCategoryDeleteUseCase(categoryRepo)
+	categoryQueryUC := telemetry.NewCategoryQueryDecorator(category.NewCategoryQueryUseCase(categoryRepo), decorators)
+	categoryInsertUC := telemetry.NewCategoryInsertDecorator(category.NewCategoryInsertUseCase(categoryRepo), decorators)
+	categoryUpdateUC := telemetry.NewCategoryUpdateDecorator(category.NewCategoryUpdateUseCase(categoryRepo), decorators)
+	categoryDeleteUC := telemetry.NewCategoryDeleteDecorator(category.NewCategoryDeleteUseCase(categoryRepo), decorators)
 	categoryHandler := handler.NewCategoryHandler(categoryQueryUC, categoryInsertUC, categoryUpdateUC, categoryDeleteUC)
 
 	// product module
 	productRepo := repository.NewProductRepo(db)
-	productInsertUC := product.NewProductInsertUseCase(productRepo)
-	productQueryUC := product.NewProductQueryUseCase(productRepo)
-	productUpdateUC := product.NewProductUpdateUseCase(productRepo)
-	productDeleteUC := product.NewProductDeleteUseCase(productRepo)
-	optionUC := product.NewOptionUseCase(productRepo, productRepo)
-	variantUC := product.NewVariantUseCase(productRepo, productRepo, productRepo)
-	mediaUC := product.NewMediaUseCase(productRepo, productRepo, productRepo)
+	productInsertUC := telemetry.NewProductInsertDecorator(product.NewProductInsertUseCase(productRepo), decorators)
+	productQueryUC := telemetry.NewProductQueryDecorator(product.NewProductQueryUseCase(productRepo), decorators)
+	productUpdateUC := telemetry.NewProductUpdateDecorator(product.NewProductUpdateUseCase(productRepo), decorators)
+	productDeleteUC := telemetry.NewProductDeleteDecorator(product.NewProductDeleteUseCase(productRepo), decorators)
+	optionUC := telemetry.NewOptionDecorator(product.NewOptionUseCase(productRepo, productRepo), decorators)
+	variantUC := telemetry.NewVariantDecorator(product.NewVariantUseCase(productRepo, productRepo, productRepo), decorators)
+	mediaUC := telemetry.NewMediaDecorator(product.NewMediaUseCase(productRepo, productRepo, productRepo), decorators)
 	productHandler := handler.NewProductHandler(productInsertUC, productQueryUC, productUpdateUC, productDeleteUC, optionUC, variantUC, mediaUC)
 
 	healthRepo := repository.NewHealthRepo(db)
-	infraCheckerUC := infrachecker.NewInfraCheckerUseCase(healthRepo)
+	infraCheckerUC := telemetry.NewInfraCheckDecorator(infrachecker.NewInfraCheckerUseCase(healthRepo), decorators)
 
 	// review module
 	reviewRepo := repository.NewReviewRepo(db)
-	reviewInsertUC := review.NewReviewInsertUseCase(reviewRepo)
-	reviewQueryUC := review.NewReviewQueryUseCase(reviewRepo)
-	reviewUpdateUC := review.NewReviewUpdateUseCase(reviewRepo)
-	reviewDeleteUC := review.NewReviewDeleteUseCase(reviewRepo)
-	reviewSummaryUC := review.NewReviewSummaryUseCase(reviewRepo)
+	reviewInsertUC := telemetry.NewReviewInsertDecorator(review.NewReviewInsertUseCase(reviewRepo), decorators)
+	reviewQueryUC := telemetry.NewReviewQueryDecorator(review.NewReviewQueryUseCase(reviewRepo), decorators)
+	reviewUpdateUC := telemetry.NewReviewUpdateDecorator(review.NewReviewUpdateUseCase(reviewRepo), decorators)
+	reviewDeleteUC := telemetry.NewReviewDeleteDecorator(review.NewReviewDeleteUseCase(reviewRepo), decorators)
+	reviewSummaryUC := telemetry.NewReviewSummaryDecorator(review.NewReviewSummaryUseCase(reviewRepo), decorators)
 	reviewHandler := handler.NewReviewHandler(reviewInsertUC, reviewQueryUC, reviewUpdateUC, reviewDeleteUC, reviewSummaryUC)
 
 	// inventory module
 	inventoryRepo := repository.NewInventoryRepo(db)
-	reservationUC := inventory.NewCreateReservationUseCase(inventoryRepo, reservationLocker)
+	reservationUC := telemetry.NewReservationDecorator(inventory.NewCreateReservationUseCase(inventoryRepo, reservationLocker), decorators)
 	inventoryHandler := handler.NewInventoryHandler(reservationUC)
 
 	return &Container{

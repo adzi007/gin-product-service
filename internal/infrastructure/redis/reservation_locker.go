@@ -13,6 +13,32 @@ import (
 	"gin-product-service/internal/domain"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+)
+
+// Bounded coordination span vocabulary. Names and attributes never contain the
+// Redis script, keys, owner tokens, credentials, or endpoint URLs.
+const (
+	coordinationInstrumentation = "gin-product-service/redis"
+
+	opReservationAcquire = "redis.reservation.acquire"
+	opReservationRelease = "redis.reservation.release"
+
+	attrSystem       = "db.system"
+	attrOperation    = "db.operation"
+	attrOutcome      = "reservation.outcome"
+	coordinationName = "redis"
+	operationAcquire = "acquire"
+	operationRelease = "release"
+
+	outcomeAcquired    = "acquired"
+	outcomeContended   = "contended"
+	outcomeUnavailable = "unavailable"
+	outcomeReleased    = "released"
+	outcomeFailed      = "failed"
 )
 
 // errCoordination is an opaque internal sentinel for REST transport/protocol
@@ -62,6 +88,28 @@ type reservationLocker struct {
 	baseURL string
 	token   string
 	client  *http.Client
+
+	// tracer and propagator are supplied explicitly by the composition root. A
+	// no-op configuration is used when tracing is disabled.
+	tracer     trace.Tracer
+	propagator propagation.TextMapPropagator
+}
+
+// LockerOption customises the reservation locker.
+type LockerOption func(*lockerOptions)
+
+type lockerOptions struct {
+	tracerProvider trace.TracerProvider
+	propagator     propagation.TextMapPropagator
+}
+
+// WithTracing injects the explicit tracer provider and propagator used for the
+// reservation coordination client spans and outbound trace propagation.
+func WithTracing(provider trace.TracerProvider, propagator propagation.TextMapPropagator) LockerOption {
+	return func(o *lockerOptions) {
+		o.tracerProvider = provider
+		o.propagator = propagator
+	}
 }
 
 // failClosedLocker is used when coordination configuration is missing or
@@ -71,14 +119,31 @@ type failClosedLocker struct{}
 // NewReservationLocker constructs the REST lease adapter. When the base URL or
 // token is empty it returns a fail-closed locker so unrelated endpoints can
 // still start while the reservation endpoint degrades safely.
-func NewReservationLocker(baseURL, token string) domain.ReservationLocker {
+func NewReservationLocker(baseURL, token string, opts ...LockerOption) domain.ReservationLocker {
 	if baseURL == "" || token == "" {
 		return &failClosedLocker{}
 	}
+
+	var options lockerOptions
+	for _, opt := range opts {
+		opt(&options)
+	}
+
+	provider := options.tracerProvider
+	if provider == nil {
+		provider = trace.NewNoopTracerProvider()
+	}
+	propagator := options.propagator
+	if propagator == nil {
+		propagator = propagation.NewCompositeTextMapPropagator()
+	}
+
 	return &reservationLocker{
-		baseURL: baseURL,
-		token:   token,
-		client:  &http.Client{Timeout: 2 * time.Second},
+		baseURL:    baseURL,
+		token:      token,
+		client:     &http.Client{Timeout: 2 * time.Second},
+		tracer:     provider.Tracer(coordinationInstrumentation),
+		propagator: propagator,
 	}
 }
 
@@ -88,30 +153,61 @@ var (
 )
 
 func (l *reservationLocker) Acquire(ctx context.Context, keys []string) (string, error) {
+	ctx, span := l.tracer.Start(ctx, opReservationAcquire, trace.WithSpanKind(trace.SpanKindClient))
+	defer span.End()
+
 	owner := uuid.NewString()
 	body, err := evalCommand(acquireScript, keys, owner, leaseTTLMillis)
 	if err != nil {
-		return "", domain.ErrReservationCoordinationUnavailable
+		return "", l.fail(span, operationAcquire, outcomeUnavailable, domain.ErrReservationCoordinationUnavailable)
 	}
 
 	result, err := l.do(ctx, body)
 	if err != nil {
-		return "", domain.ErrReservationCoordinationUnavailable
+		return "", l.fail(span, operationAcquire, outcomeUnavailable, domain.ErrReservationCoordinationUnavailable)
 	}
 	if result != 1 {
 		// Contention: at least one canonical key is already held.
-		return "", domain.ErrReservationCoordinationUnavailable
+		return "", l.fail(span, operationAcquire, outcomeContended, domain.ErrReservationCoordinationUnavailable)
 	}
+
+	recordCoordinationOutcome(span, operationAcquire, outcomeAcquired)
 	return owner, nil
 }
 
 func (l *reservationLocker) Release(ctx context.Context, keys []string, token string) error {
+	ctx, span := l.tracer.Start(ctx, opReservationRelease, trace.WithSpanKind(trace.SpanKindClient))
+	defer span.End()
+
 	body, err := evalCommand(releaseScript, keys, token)
 	if err != nil {
+		recordCoordinationOutcome(span, operationRelease, outcomeFailed)
 		return err
 	}
-	_, err = l.do(ctx, body)
+	if _, err = l.do(ctx, body); err != nil {
+		recordCoordinationOutcome(span, operationRelease, outcomeFailed)
+		return err
+	}
+
+	recordCoordinationOutcome(span, operationRelease, outcomeReleased)
+	return nil
+}
+
+// fail records a bounded, non-identifying failure and returns the stable domain
+// error so no Redis credential or endpoint leaks to callers.
+func (l *reservationLocker) fail(span trace.Span, operation, outcome string, err error) error {
+	recordCoordinationOutcome(span, operation, outcome)
+	span.SetStatus(codes.Error, "coordination unavailable")
 	return err
+}
+
+// recordCoordinationOutcome attaches only bounded vocabulary values.
+func recordCoordinationOutcome(span trace.Span, operation, outcome string) {
+	span.SetAttributes(
+		attribute.String(attrSystem, coordinationName),
+		attribute.String(attrOperation, operation),
+		attribute.String(attrOutcome, outcome),
+	)
 }
 
 // do performs one REST EVAL round-trip. Errors are intentionally opaque so
@@ -123,6 +219,10 @@ func (l *reservationLocker) do(ctx context.Context, body []byte) (int64, error) 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+l.token)
+
+	// Propagate only trace context plus configured baggage; the Redis command
+	// payload itself is never instrumented.
+	l.propagator.Inject(ctx, propagation.HeaderCarrier(req.Header))
 
 	resp, err := l.client.Do(req)
 	if err != nil {

@@ -5,6 +5,8 @@ import (
 	"gin-product-service/internal/delivery/http/handler"
 	"gin-product-service/internal/delivery/http/middleware"
 	"gin-product-service/internal/domain"
+	"gin-product-service/internal/infrastructure/logger"
+	"gin-product-service/internal/infrastructure/telemetry"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -22,9 +24,31 @@ func NewAppRouter(app *gin.Engine) router {
 	}
 }
 
-func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler, productHandler *handler.ProductHandler, infraCheckerUseCase domain.InfraCheckUseCase, reviewHandler *handler.ReviewHandler, inventoryHandler *handler.InventoryHandler, jwtSecret string) *gin.Engine {
+func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler, productHandler *handler.ProductHandler, infraCheckerUseCase domain.InfraCheckUseCase, reviewHandler *handler.ReviewHandler, inventoryHandler *handler.InventoryHandler, jwtSecret string, runtime *telemetry.TelemetryRuntime) *gin.Engine {
 
 	r := router.appServer
+
+	// Inbound tracing is registered before authentication and every handler so the
+	// server span covers the whole request. Only /api/v1 business routes and
+	// /readyz are traced; health, metrics, Swagger, and unmatched routes are not.
+	tracingConfig := middleware.TracingConfig{}
+	if runtime != nil {
+		tracingConfig.Enabled = runtime.Enabled
+		tracingConfig.TracerProvider = runtime.TracerProvider
+		tracingConfig.Propagator = runtime.Propagator
+		// Correlate request-scoped logs with the active server span.
+		tracingConfig.EnrichContext = logger.WithTraceContext
+	}
+	r.Use(middleware.Tracing(tracingConfig))
+
+	// Tracing-aware recovery is registered inside tracing so a recovered panic can
+	// mark the active server span as an error before it closes, while keeping the
+	// established 500 response contract.
+	r.Use(middleware.Recovery(middleware.RecoveryConfig{
+		Report: func(c *gin.Context) {
+			logger.L(c.Request.Context()).Error("recovered from panic")
+		},
+	}))
 
 	// 1. Redirect /swagger to /swagger/index.html
 	r.GET("/swagger", func(c *gin.Context) {

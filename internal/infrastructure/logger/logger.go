@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -48,6 +49,24 @@ func L(ctx context.Context) *zap.Logger {
 // and returns a new context carrying it.
 func WithContext(ctx context.Context, fields ...zap.Field) context.Context {
 	return context.WithValue(ctx, ctxKey{}, L(ctx).With(fields...))
+}
+
+// WithTraceContext enriches the request-scoped logger with the active span's
+// correlation identifiers.
+//
+// When a valid span is active, lowercase hex trace_id and span_id fields are
+// added while every existing field and error cause is preserved. Without an
+// active span the context is returned unchanged, so logs outside a request are
+// untouched. Trace identifiers are correlation fields, not credentials.
+func WithTraceContext(ctx context.Context) context.Context {
+	spanContext := trace.SpanContextFromContext(ctx)
+	if !spanContext.IsValid() {
+		return ctx
+	}
+	return WithContext(ctx,
+		zap.String("trace_id", spanContext.TraceID().String()),
+		zap.String("span_id", spanContext.SpanID().String()),
+	)
 }
 
 func Sync() {
