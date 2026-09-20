@@ -5,26 +5,30 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gin-product-service/cmd/server"
 )
 
 // telemetryEnvVars is every variable the tracing configuration reads. Tests
 // neutralise them so the ambient environment cannot change the outcome.
 var telemetryEnvVars = []string{
 	"OTEL_TRACING_ENABLED",
-	"OTEL_SERVICE_NAME",
 	"OTEL_DEPLOYMENT_ENVIRONMENT",
 	"APP_ENV",
 	"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-	"OTEL_EXPORTER_OTLP_TRACES_HEADERS",
-	"OTEL_EXPORTER_OTLP_TRACES_COMPRESSION",
-	"OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
+	"OTEL_TRACES_SHUTDOWN_TIMEOUT",
+	"OTEL_BAGGAGE_ALLOWLIST",
+	"OTEL_TRACES_SAMPLER",
 	"OTEL_TRACES_SAMPLER_ARG",
+	"OTEL_EXPORTER_OTLP_TRACES_COMPRESSION",
+	"OTEL_EXPORTER_OTLP_COMPRESSION",
+	"OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
+	"OTEL_EXPORTER_OTLP_TIMEOUT",
 	"OTEL_BSP_MAX_QUEUE_SIZE",
 	"OTEL_BSP_MAX_EXPORT_BATCH_SIZE",
 	"OTEL_BSP_SCHEDULE_DELAY",
 	"OTEL_BSP_EXPORT_TIMEOUT",
-	"OTEL_TRACES_SHUTDOWN_TIMEOUT",
-	"OTEL_BAGGAGE_ALLOWLIST",
+	"OTEL_GO_X_OBSERVABILITY",
 }
 
 func clearTelemetryEnv(t *testing.T) {
@@ -128,32 +132,29 @@ func TestLoadTelemetryInvalidEnabledConfigurationFailsStartup(t *testing.T) {
 			wantField: "OTEL_DEPLOYMENT_ENVIRONMENT",
 		},
 		{
-			name: "unsupported compression",
-			env: map[string]string{
-				"OTEL_DEPLOYMENT_ENVIRONMENT":           "test",
-				"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT":    "http://127.0.0.1:9/v1/traces",
-				"OTEL_EXPORTER_OTLP_TRACES_COMPRESSION": "brotli",
-			},
-			wantField: "OTEL_EXPORTER_OTLP_TRACES_COMPRESSION",
-		},
-		{
-			name: "sampling ratio out of range",
+			name: "zero shutdown timeout",
 			env: map[string]string{
 				"OTEL_DEPLOYMENT_ENVIRONMENT":        "test",
 				"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://127.0.0.1:9/v1/traces",
-				"OTEL_TRACES_SAMPLER_ARG":            "4.2",
+				"OTEL_TRACES_SHUTDOWN_TIMEOUT":       "0",
 			},
-			wantField: "OTEL_TRACES_SAMPLER_ARG",
+			wantField: "OTEL_TRACES_SHUTDOWN_TIMEOUT",
 		},
 		{
-			name: "batch larger than queue",
+			name: "invalid baggage allowlist",
 			env: map[string]string{
 				"OTEL_DEPLOYMENT_ENVIRONMENT":        "test",
 				"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "http://127.0.0.1:9/v1/traces",
-				"OTEL_BSP_MAX_QUEUE_SIZE":            "10",
-				"OTEL_BSP_MAX_EXPORT_BATCH_SIZE":     "11",
+				"OTEL_BAGGAGE_ALLOWLIST":             "safe test",
 			},
-			wantField: "OTEL_BSP_MAX_EXPORT_BATCH_SIZE",
+			wantField: "OTEL_BAGGAGE_ALLOWLIST",
+		},
+		{
+			name: "malformed enablement flag",
+			env: map[string]string{
+				"OTEL_TRACING_ENABLED": "yes",
+			},
+			wantField: "OTEL_TRACING_ENABLED",
 		},
 	}
 
@@ -176,6 +177,18 @@ func TestLoadTelemetryInvalidEnabledConfigurationFailsStartup(t *testing.T) {
 				t.Fatalf("error %q does not name the offending field %q", err, tt.wantField)
 			}
 		})
+	}
+}
+
+// The process constructor propagates a nil-telemetry rejection instead of
+// starting with an instrumented-less server.
+func TestServerConstructionRejectsNilTelemetry(t *testing.T) {
+	srv, err := server.NewServer(nil, nil)
+	if err == nil {
+		t.Fatalf("NewServer(nil, nil) error = nil, want a constructor error")
+	}
+	if srv != nil {
+		t.Fatalf("NewServer(nil, nil) returned a server")
 	}
 }
 

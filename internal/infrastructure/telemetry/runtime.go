@@ -4,19 +4,27 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"runtime/debug"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"gin-product-service/internal/infrastructure/logger"
 	"gin-product-service/internal/infrastructure/metrics"
+	"gin-product-service/internal/lifecycle"
 
+	"github.com/go-logr/logr"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 // Semantic-convention attribute keys used for resource identity. They are
@@ -26,6 +34,34 @@ const (
 	attrServiceName           = "service.name"
 	attrServiceVersion        = "service.version"
 	attrDeploymentEnvironment = "deployment.environment.name"
+)
+
+// observabilityEnvKey enables the SDK's experimental observability feature,
+// which the drop bridge observes. It is set only at enabled-tracing bootstrap
+// and restored to its previous value at shutdown.
+const observabilityEnvKey = "OTEL_GO_X_OBSERVABILITY"
+
+// Native sampling environment keys, bootstrapped at enabled-tracing startup so
+// the SDK's parent-based ratio sampler interprets the documented 0.10 default.
+const (
+	envSampler    = "OTEL_TRACES_SAMPLER"
+	envSamplerArg = "OTEL_TRACES_SAMPLER_ARG"
+)
+
+// Documented absent-setting defaults preserved through small selection only
+// when no effective SDK setting exists.
+const (
+	defaultExporterTimeout    = 5000 * time.Millisecond
+	defaultBatchExportTimeout = 5000 * time.Millisecond
+)
+
+// SDK tuning environment keys whose presence suppresses the documented defaults.
+const (
+	envExporterTimeoutTrace = "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT"
+	envExporterTimeout      = "OTEL_EXPORTER_OTLP_TIMEOUT"
+	envCompressionTrace     = "OTEL_EXPORTER_OTLP_TRACES_COMPRESSION"
+	envCompression          = "OTEL_EXPORTER_OTLP_COMPRESSION"
+	envBSPExportTimeout     = "OTEL_BSP_EXPORT_TIMEOUT"
 )
 
 // TelemetryRuntime is the explicitly composed tracing runtime. It is created in
@@ -43,12 +79,21 @@ type TelemetryRuntime struct {
 
 	// provider is the concrete SDK provider that owns processors and flushing.
 	provider *sdktrace.TracerProvider
-	// warnings rate-limits sanitized operator warnings across the runtime.
-	warnings *WarningLimiter
-	// sink receives sanitized warnings (logs in production, a recorder in tests).
-	sink WarningSink
+	// warnings delivers sanitized, rate-limited operator warnings.
+	warnings *WarningDispatcher
 	// shutdownTimeout bounds the telemetry portion of the service shutdown window.
 	shutdownTimeout time.Duration
+
+	// Process-global state owned at enabled bootstrap and restored at shutdown.
+	prevMeterProvider metric.MeterProvider
+	prevObservability string
+	hadObservability  bool
+	prevSampler       string
+	hadSampler        bool
+	changedSampler    bool
+	prevSamplerArg    string
+	hadSamplerArg     bool
+	changedSamplerArg bool
 
 	shutdownOnce sync.Once
 	shutdownErr  error
@@ -93,19 +138,23 @@ func NewRuntime(ctx context.Context, cfg TelemetryConfig, opts ...RuntimeOption)
 	if runtimeMetrics == nil {
 		runtimeMetrics = metrics.NewTelemetryMetrics(nil)
 	}
-	warnings := options.warnings
-	if warnings == nil {
-		warnings = NewWarningLimiter(DefaultWarningWindow)
+	sink := options.sink
+	if sink == nil {
+		// Production: route already-sanitized, rate-limited warnings to the
+		// structured logger so operators still see them.
+		sink = func(message string) {
+			logger.L(context.Background()).Warn(message)
+		}
 	}
+	warnings := NewWarningDispatcher(options.warnings, sink)
 
 	if !cfg.Enabled {
 		return &TelemetryRuntime{
 			Enabled:         false,
-			TracerProvider:  trace.NewNoopTracerProvider(),
+			TracerProvider:  noop.NewTracerProvider(),
 			Propagator:      propagation.NewCompositeTextMapPropagator(),
 			Metrics:         runtimeMetrics,
 			warnings:        warnings,
-			sink:            options.sink,
 			shutdownTimeout: cfg.ShutdownTimeout,
 		}, nil
 	}
@@ -113,82 +162,97 @@ func NewRuntime(ctx context.Context, cfg TelemetryConfig, opts ...RuntimeOption)
 	// Re-validate so a programmatically built configuration cannot bypass the
 	// startup gate.
 	if err := validateEnabled(cfg); err != nil {
+		warnings.Stop()
 		return nil, err
+	}
+
+	// Install sanitized SDK diagnostics before any parser runs: the error
+	// handler classifies without echoing raw text, and the logger is dropped so
+	// native parsing diagnostics (which can contain raw header values) never
+	// surface. Parsing diagnostics are never counted as export failures.
+	otel.SetLogger(logr.Discard())
+	otel.SetErrorHandler(NewExportErrorHandler(runtimeMetrics, warnings))
+
+	// D3: bootstrap native parent-based sampling before the SDK constructs the
+	// tracer provider. Select parentbased_traceidratio and default the missing
+	// ratio argument without parsing it; explicit operator values win and the
+	// previous values are restored at shutdown.
+	prevSampler, hadSampler := os.LookupEnv(envSampler)
+	prevSamplerArg, hadSamplerArg := os.LookupEnv(envSamplerArg)
+	changedSampler := os.Getenv(envSampler) == ""
+	changedSamplerArg := os.Getenv(envSamplerArg) == ""
+	if changedSampler {
+		_ = os.Setenv(envSampler, "parentbased_traceidratio")
+	}
+	if changedSamplerArg {
+		_ = os.Setenv(envSamplerArg, "0.10")
 	}
 
 	res, err := newResource(ctx, cfg)
 	if err != nil {
+		warnings.Stop()
 		return nil, fmt.Errorf("build telemetry resource: %w", err)
 	}
 
 	exporter, err := newOTLPHTTPExporter(ctx, cfg)
 	if err != nil {
+		warnings.Stop()
 		return nil, fmt.Errorf("build otlp/http trace exporter: %w", err)
 	}
 
-	gate := NewTokenGate(cfg.QueueSize)
-	capacityExporter := NewCapacityExporter(exporter, gate, runtimeMetrics, warnings)
-	capacityExporter.SetWarningSink(options.sink)
+	outcomeExporter := NewOutcomeExporter(exporter, runtimeMetrics, warnings)
 
-	processor := sdktrace.NewBatchSpanProcessor(capacityExporter,
-		// The SDK queue never silently drops: the bounded gate in front of it owns
-		// drop-new behavior, and it admits fewer spans than the queue can hold.
-		sdktrace.WithMaxQueueSize(cfg.QueueSize),
-		sdktrace.WithMaxExportBatchSize(cfg.BatchSize),
-		sdktrace.WithBatchTimeout(cfg.ScheduleDelay),
-		sdktrace.WithExportTimeout(cfg.BatchExportTimeout),
-		sdktrace.WithBlocking(),
-	)
+	// The experimental drop-observation bridge must be installed before the
+	// batch processor is constructed so the SDK's observability instruments
+	// route to the existing Prometheus drop counter. The previous global meter
+	// provider and feature flag are restored at shutdown.
+	prevMeterProvider := otel.GetMeterProvider()
+	prevObservability, hadObservability := os.LookupEnv(observabilityEnvKey)
+	_ = os.Setenv(observabilityEnvKey, "true")
+	otel.SetMeterProvider(NewDropObservationMeterProvider(runtimeMetrics, warnings))
 
-	dropProcessor := NewDropProcessor(processor, DropProcessorConfig{
-		Capacity: cfg.QueueSize,
-		Metrics:  runtimeMetrics,
-		Warnings: warnings,
-		Gate:     gate,
-	})
-	dropProcessor.SetWarningSink(options.sink)
+	// Native non-blocking batching: queue/batch sizes, schedule delay, and
+	// export timeout are delegated to the SDK's environment parsing. Only the
+	// documented 5-second BSP export timeout is defaulted when no effective SDK
+	// setting exists.
+	processorOpts := make([]sdktrace.BatchSpanProcessorOption, 0, 1)
+	if _, ok := os.LookupEnv(envBSPExportTimeout); !ok {
+		processorOpts = append(processorOpts, sdktrace.WithExportTimeout(defaultBatchExportTimeout))
+	}
+	processor := sdktrace.NewBatchSpanProcessor(outcomeExporter, processorOpts...)
 
 	propagator := NewPropagator(cfg.BaggageAllowlist)
 
-	// ---- my custom config -----------------
-
-	// exporter, errN := stdouttrace.New(
-	// 	stdouttrace.WithWriter(os.Stdout),
-	// 	stdouttrace.WithPrettyPrint(),
-	// )
-	// if errN != nil {
-	// 	return nil, fmt.Errorf("failed to create stdout exporter: %w", err)
-	// }
-
-	// --------------------------------------
-
+	// Sampling is delegated to the SDK's native environment parsing, which the
+	// bootstrap above pinned to parent-based ratio sampling with the 0.10
+	// default.
 	provider := sdktrace.NewTracerProvider(
-		// Parent-based sampling honors valid upstream decisions; the configured
-		// ratio applies only when this service starts a new root trace.
-		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.RootSampleRatio))),
-
-		// my custom config
-		// sdktrace.WithBatcher(exporter),
-
 		sdktrace.WithResource(res),
-		sdktrace.WithSpanProcessor(dropProcessor),
+		sdktrace.WithSpanProcessor(processor),
 	)
 
 	// Global registration exists only for third-party library compatibility;
 	// every feature-owned component above receives the runtime explicitly.
 	otel.SetTracerProvider(provider)
 	otel.SetTextMapPropagator(propagator)
-	otel.SetErrorHandler(NewExportErrorHandler(runtimeMetrics, warnings, options.sink))
 
 	return &TelemetryRuntime{
-		Enabled:         true,
-		TracerProvider:  provider,
-		Propagator:      propagator,
-		Metrics:         runtimeMetrics,
-		provider:        provider,
-		warnings:        warnings,
-		sink:            options.sink,
-		shutdownTimeout: cfg.ShutdownTimeout,
+		Enabled:           true,
+		TracerProvider:    provider,
+		Propagator:        propagator,
+		Metrics:           runtimeMetrics,
+		provider:          provider,
+		warnings:          warnings,
+		shutdownTimeout:   cfg.ShutdownTimeout,
+		prevMeterProvider: prevMeterProvider,
+		prevObservability: prevObservability,
+		hadObservability:  hadObservability,
+		prevSampler:       prevSampler,
+		hadSampler:        hadSampler,
+		changedSampler:    changedSampler,
+		prevSamplerArg:    prevSamplerArg,
+		hadSamplerArg:     hadSamplerArg,
+		changedSamplerArg: changedSamplerArg,
 	}, nil
 }
 
@@ -198,11 +262,26 @@ func (r *TelemetryRuntime) Provider() *sdktrace.TracerProvider {
 	return r.provider
 }
 
+// EffectiveShutdownTimeout reports the telemetry delivery window the server
+// reserves during shutdown so a slow HTTP drain cannot starve the flush. It is
+// zero when tracing is disabled because disabled telemetry accepts nothing and
+// needs no reservation.
+func (r *TelemetryRuntime) EffectiveShutdownTimeout() time.Duration {
+	if !r.Enabled {
+		return 0
+	}
+	return r.shutdownTimeout
+}
+
 // Shutdown stops trace intake, makes one bounded attempt to deliver accepted
 // telemetry, and returns. It is idempotent and never exceeds the configured
 // telemetry shutdown timeout or the caller's deadline.
 func (r *TelemetryRuntime) Shutdown(ctx context.Context) error {
 	r.shutdownOnce.Do(func() {
+		defer func() {
+			r.warnings.Stop()
+			r.restoreDropObservation()
+		}()
 		if r.provider == nil {
 			r.shutdownErr = nil
 			return
@@ -223,10 +302,42 @@ func (r *TelemetryRuntime) Shutdown(ctx context.Context) error {
 	return r.shutdownErr
 }
 
-// newResource builds the exported resource identity.
+// restoreDropObservation restores the process-global meter provider and the SDK
+// observability feature flag, plus the sampling bootstrap, to the values
+// captured at enabled bootstrap. It is a no-op for a disabled runtime, which
+// never installed the bridge.
+func (r *TelemetryRuntime) restoreDropObservation() {
+	if r.prevMeterProvider == nil {
+		return
+	}
+	otel.SetMeterProvider(r.prevMeterProvider)
+	if r.hadObservability {
+		_ = os.Setenv(observabilityEnvKey, r.prevObservability)
+	} else {
+		_ = os.Unsetenv(observabilityEnvKey)
+	}
+	if r.changedSampler {
+		if r.hadSampler {
+			_ = os.Setenv(envSampler, r.prevSampler)
+		} else {
+			_ = os.Unsetenv(envSampler)
+		}
+	}
+	if r.changedSamplerArg {
+		if r.hadSamplerArg {
+			_ = os.Setenv(envSamplerArg, r.prevSamplerArg)
+		} else {
+			_ = os.Unsetenv(envSamplerArg)
+		}
+	}
+}
+
+// newResource builds the exported resource identity. The SDK merges its own
+// environment-detected resource on top, so an explicit OTEL_SERVICE_NAME still
+// overrides the documented gin-product-service fallback.
 func newResource(ctx context.Context, cfg TelemetryConfig) (*resource.Resource, error) {
 	attrs := []attribute.KeyValue{
-		attribute.String(attrServiceName, cfg.ServiceName),
+		attribute.String(attrServiceName, DefaultServiceName),
 		attribute.String(attrDeploymentEnvironment, cfg.Environment),
 	}
 	if version := buildVersion(); version != "" {
@@ -241,28 +352,59 @@ func newResource(ctx context.Context, cfg TelemetryConfig) (*resource.Resource, 
 
 // newOTLPHTTPExporter constructs the OTLP/HTTP exporter. Construction performs
 // no network I/O, so the service stays fail-open when the destination is down.
+// Headers, compression, and timeout are delegated to the SDK's environment
+// parsing; only the documented gzip and 5-second timeout defaults are applied
+// when no effective SDK setting exists.
 func newOTLPHTTPExporter(ctx context.Context, cfg TelemetryConfig) (sdktrace.SpanExporter, error) {
+	timeout := effectiveExporterTimeout()
+
 	options := []otlptracehttp.Option{
 		otlptracehttp.WithEndpointURL(cfg.Endpoint),
-		otlptracehttp.WithTimeout(cfg.ExporterTimeout),
-		// Bound retries explicitly so a slow or flapping destination can never
-		// extend an export, or shutdown, beyond the configured timeout.
-		otlptracehttp.WithRetry(otlptracehttp.RetryConfig{
-			Enabled:         true,
-			InitialInterval: 100 * time.Millisecond,
-			MaxInterval:     cfg.ExporterTimeout / 2,
-			MaxElapsedTime:  cfg.ExporterTimeout,
-		}),
 	}
-	if cfg.Compression == CompressionNone {
-		options = append(options, otlptracehttp.WithCompression(otlptracehttp.NoCompression))
-	} else {
+
+	if !exporterTimeoutConfigured() {
+		options = append(options, otlptracehttp.WithTimeout(timeout))
+	}
+	if !compressionConfigured() {
 		options = append(options, otlptracehttp.WithCompression(otlptracehttp.GzipCompression))
 	}
-	if len(cfg.Headers) > 0 {
-		options = append(options, otlptracehttp.WithHeaders(cfg.Headers))
-	}
+
+	// Bound retries explicitly so a slow or flapping destination can never
+	// extend an export, or shutdown, beyond the effective timeout.
+	options = append(options, otlptracehttp.WithRetry(otlptracehttp.RetryConfig{
+		Enabled:         true,
+		InitialInterval: 100 * time.Millisecond,
+		MaxInterval:     timeout / 2,
+		MaxElapsedTime:  timeout,
+	}))
+
 	return otlptracehttp.New(ctx, options...)
+}
+
+// effectiveExporterTimeout reports the exporter timeout in effect: the trace
+// specific SDK setting, else the generic SDK setting, else the documented
+// 5-second default.
+func effectiveExporterTimeout() time.Duration {
+	for _, key := range []string{envExporterTimeoutTrace, envExporterTimeout} {
+		if raw := strings.TrimSpace(os.Getenv(key)); raw != "" {
+			if ms, err := strconv.ParseInt(raw, 10, 64); err == nil && ms > 0 {
+				return time.Duration(ms) * time.Millisecond
+			}
+		}
+	}
+	return defaultExporterTimeout
+}
+
+// exporterTimeoutConfigured reports whether any effective SDK timeout setting
+// exists, so the documented default is only applied when absent.
+func exporterTimeoutConfigured() bool {
+	return os.Getenv(envExporterTimeoutTrace) != "" || os.Getenv(envExporterTimeout) != ""
+}
+
+// compressionConfigured reports whether any effective SDK compression setting
+// exists, so the documented gzip default is only applied when absent.
+func compressionConfigured() bool {
+	return os.Getenv(envCompressionTrace) != "" || os.Getenv(envCompression) != ""
 }
 
 // buildVersion reports the build version when the toolchain supplies one.
@@ -285,28 +427,13 @@ func buildVersion() string {
 // validateEnabled enforces the enabled-configuration invariants again at runtime
 // construction so programmatic callers cannot bypass the startup gate.
 func validateEnabled(cfg TelemetryConfig) error {
-	if cfg.ServiceName == "" {
-		return &ConfigError{Field: FieldServiceName, Reason: "must not be empty"}
-	}
 	if cfg.Environment == "" {
 		return &ConfigError{Field: FieldEnvironment, Reason: "is required when tracing is enabled"}
 	}
 	if err := validateEndpoint(cfg.Endpoint); err != nil {
 		return err
 	}
-	if cfg.RootSampleRatio < 0 || cfg.RootSampleRatio > 1 {
-		return &ConfigError{Field: FieldRootSampleRatio, Reason: "must be a decimal between 0 and 1"}
-	}
-	if cfg.QueueSize < 1 {
-		return &ConfigError{Field: FieldQueueSize, Reason: "must be positive"}
-	}
-	if cfg.BatchSize < 1 || cfg.BatchSize > cfg.QueueSize {
-		return &ConfigError{Field: FieldBatchSize, Reason: "must be positive and no larger than the queue size"}
-	}
-	if cfg.ExporterTimeout <= 0 || cfg.ExporterTimeout > ServiceShutdownBudget {
-		return &ConfigError{Field: FieldExporterTimeout, Reason: "must be positive and within the service shutdown budget"}
-	}
-	if cfg.ShutdownTimeout <= 0 || cfg.ShutdownTimeout >= ServiceShutdownBudget {
+	if cfg.ShutdownTimeout <= 0 || cfg.ShutdownTimeout >= lifecycle.ServiceShutdownBudget {
 		return &ConfigError{Field: FieldShutdownTimeout, Reason: "must be positive and strictly within the service shutdown budget"}
 	}
 	return nil
@@ -317,20 +444,15 @@ func validateEnabled(cfg TelemetryConfig) error {
 // text, so endpoints, response bodies, headers, and credentials cannot leak.
 type ExportErrorHandler struct {
 	metrics  *metrics.TelemetryMetrics
-	warnings *WarningLimiter
-	sink     WarningSink
+	warnings *WarningDispatcher
 }
 
 // NewExportErrorHandler builds the sanitized global error handler.
 func NewExportErrorHandler(
 	telemetryMetrics *metrics.TelemetryMetrics,
-	warnings *WarningLimiter,
-	sink WarningSink,
+	warnings *WarningDispatcher,
 ) *ExportErrorHandler {
-	if warnings == nil {
-		warnings = NewWarningLimiter(DefaultWarningWindow)
-	}
-	return &ExportErrorHandler{metrics: telemetryMetrics, warnings: warnings, sink: sink}
+	return &ExportErrorHandler{metrics: telemetryMetrics, warnings: warnings}
 }
 
 // Handle implements otel.ErrorHandler.
@@ -346,9 +468,7 @@ func (h *ExportErrorHandler) Handle(err error) {
 
 	reason := classifyExportError(err)
 	h.metrics.RecordExporterFailure(reason)
-	if h.warnings.Allow() && h.sink != nil {
-		h.sink(warningExportFailedPrefix + string(reason))
-	}
+	h.warnings.Warn(debugDiagnostic(reason))
 }
 
 // fallbackShutdownTimeout guards programmatic construction that omits the field.

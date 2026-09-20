@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,9 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
@@ -25,21 +29,17 @@ import (
 const testProtocolContentType = "application/x-protobuf"
 
 // enabledConfig builds a valid enabled configuration for tests without going
-// through environment parsing.
-func enabledConfig(endpoint string) TelemetryConfig {
+// through environment parsing, and pins deterministic native sampling.
+func enabledConfig(t *testing.T, endpoint string) TelemetryConfig {
+	t.Helper()
+	t.Setenv("OTEL_TRACES_SAMPLER", "parentbased_traceidratio")
+	t.Setenv("OTEL_TRACES_SAMPLER_ARG", "1.0")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_COMPRESSION", "none")
 	return TelemetryConfig{
-		Enabled:            true,
-		ServiceName:        "gin-product-service",
-		Environment:        "test",
-		Endpoint:           endpoint,
-		Compression:        CompressionNone,
-		ExporterTimeout:    2 * time.Second,
-		RootSampleRatio:    1,
-		QueueSize:          64,
-		BatchSize:          8,
-		ScheduleDelay:      50 * time.Millisecond,
-		BatchExportTimeout: 2 * time.Second,
-		ShutdownTimeout:    2 * time.Second,
+		Enabled:         true,
+		Environment:     "test",
+		Endpoint:        endpoint,
+		ShutdownTimeout: 2 * time.Second,
 	}
 }
 
@@ -104,21 +104,21 @@ func TestRuntimeParentBasedSampler(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		ratio       float64
+		arg         string
 		parent      *trace.SpanContext
 		wantSampled bool
 	}{
-		{"new root sampled at ratio 1", 1, nil, true},
-		{"new root not sampled at ratio 0", 0, nil, false},
-		{"upstream sampled parent honored at ratio 0", 0, &sampledParent, true},
-		{"upstream unsampled parent honored at ratio 1", 1, &unsampledParent, false},
+		{"new root sampled at ratio 1", "1", nil, true},
+		{"new root not sampled at ratio 0", "0", nil, false},
+		{"upstream sampled parent honored at ratio 0", "0", &sampledParent, true},
+		{"upstream unsampled parent honored at ratio 1", "1", &unsampledParent, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			receiver := newCaptureReceiver(t, http.StatusOK)
-			cfg := enabledConfig(receiver.endpoint())
-			cfg.RootSampleRatio = tt.ratio
+			cfg := enabledConfig(t, receiver.endpoint())
+			t.Setenv("OTEL_TRACES_SAMPLER_ARG", tt.arg)
 
 			rt, err := NewRuntime(context.Background(), cfg)
 			if err != nil {
@@ -146,7 +146,7 @@ func TestRuntimeParentBasedSampler(t *testing.T) {
 
 func TestRuntimeResourceIdentity(t *testing.T) {
 	receiver := newCaptureReceiver(t, http.StatusOK)
-	cfg := enabledConfig(receiver.endpoint())
+	cfg := enabledConfig(t, receiver.endpoint())
 	cfg.Environment = "staging"
 
 	rt, err := NewRuntime(context.Background(), cfg)
@@ -171,8 +171,8 @@ func TestRuntimeResourceIdentity(t *testing.T) {
 	for _, request := range decoded {
 		for _, resourceSpans := range request.GetResourceSpans() {
 			attrs := attributeMap(resourceSpans.GetResource().GetAttributes())
-			if got := attrs["service.name"]; got != cfg.ServiceName {
-				t.Errorf("service.name = %q, want %q", got, cfg.ServiceName)
+			if got := attrs["service.name"]; got != DefaultServiceName {
+				t.Errorf("service.name = %q, want %q", got, DefaultServiceName)
 			}
 			if got := attrs["deployment.environment.name"]; got != cfg.Environment {
 				t.Errorf("deployment.environment.name = %q, want %q", got, cfg.Environment)
@@ -185,7 +185,7 @@ func TestRuntimeResourceIdentity(t *testing.T) {
 // real OTLP/HTTP serialization boundary against a local capture receiver.
 func TestOTLPHTTPExporter(t *testing.T) {
 	receiver := newCaptureReceiver(t, http.StatusOK)
-	cfg := enabledConfig(receiver.endpoint())
+	cfg := enabledConfig(t, receiver.endpoint())
 	warningSinkMessages := make([]string, 0, 1)
 
 	runtimeMetrics := metrics.NewTelemetryMetrics(prometheus.NewRegistry())
@@ -264,7 +264,7 @@ func TestOTLPHTTPExporter(t *testing.T) {
 
 func TestOTLPHTTPExporterNonSuccessResponseIsSafe(t *testing.T) {
 	receiver := newCaptureReceiver(t, http.StatusBadRequest)
-	cfg := enabledConfig(receiver.endpoint())
+	cfg := enabledConfig(t, receiver.endpoint())
 
 	var warnings []string
 	runtimeMetrics := metrics.NewTelemetryMetrics(prometheus.NewRegistry())
@@ -304,7 +304,7 @@ func TestOTLPHTTPExporterUnavailableReceiverIsSafe(t *testing.T) {
 	endpoint := unavailable.URL + "/v1/traces"
 	unavailable.Close()
 
-	cfg := enabledConfig(endpoint)
+	cfg := enabledConfig(t, endpoint)
 
 	var warnings []string
 	runtimeMetrics := metrics.NewTelemetryMetrics(prometheus.NewRegistry())
@@ -337,7 +337,7 @@ func TestOTLPHTTPExporterUnavailableReceiverIsSafe(t *testing.T) {
 
 func TestRuntimeShutdownIsIdempotent(t *testing.T) {
 	receiver := newCaptureReceiver(t, http.StatusOK)
-	cfg := enabledConfig(receiver.endpoint())
+	cfg := enabledConfig(t, receiver.endpoint())
 
 	rt, err := NewRuntime(context.Background(), cfg)
 	if err != nil {
@@ -360,7 +360,7 @@ func TestRuntimeShutdownIsIdempotent(t *testing.T) {
 }
 
 func TestNewRuntimeRejectsInvalidEnabledConfiguration(t *testing.T) {
-	cfg := enabledConfig("not-a-url")
+	cfg := enabledConfig(t, "not-a-url")
 	cfg.Endpoint = "not-a-url"
 
 	if _, err := NewRuntime(context.Background(), cfg); err == nil {
@@ -450,4 +450,186 @@ func attributeMap(attrs []*commonpb.KeyValue) map[string]string {
 		out[attr.GetKey()] = attr.GetValue().GetStringValue()
 	}
 	return out
+}
+
+// The D1-approved drop bridge owns process-global state only for the lifetime of
+// an enabled runtime and restores it at shutdown.
+func TestRuntimeInstallsAndRestoresObservabilityGlobals(t *testing.T) {
+	prevMP := otel.GetMeterProvider()
+	prevObs, hadObs := os.LookupEnv(observabilityEnvKey)
+	t.Cleanup(func() {
+		otel.SetMeterProvider(prevMP)
+		if hadObs {
+			_ = os.Setenv(observabilityEnvKey, prevObs)
+		} else {
+			_ = os.Unsetenv(observabilityEnvKey)
+		}
+	})
+
+	receiver := newCaptureReceiver(t, http.StatusOK)
+	cfg := enabledConfig(t, receiver.endpoint())
+
+	rt, err := NewRuntime(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	if got := os.Getenv(observabilityEnvKey); got != "true" {
+		t.Fatalf("observability flag = %q, want %q while the enabled runtime lives", got, "true")
+	}
+	if _, ok := otel.GetMeterProvider().(*DropObservationMeterProvider); !ok {
+		t.Fatalf("global meter provider = %T, want the drop bridge", otel.GetMeterProvider())
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := rt.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+
+	if hadObs {
+		if got := os.Getenv(observabilityEnvKey); got != prevObs {
+			t.Fatalf("observability flag = %q after shutdown, want restored %q", got, prevObs)
+		}
+	} else if _, ok := os.LookupEnv(observabilityEnvKey); ok {
+		t.Fatalf("observability flag was not unset after shutdown")
+	}
+	if otel.GetMeterProvider() != prevMP {
+		t.Fatalf("global meter provider was not restored after shutdown")
+	}
+}
+
+// The bridge counter must count concurrent native drops exactly once each.
+func TestDropObservationCounterConcurrentAddsCountExactly(t *testing.T) {
+	const (
+		workers = 32
+		each    = 100
+	)
+
+	m := newTestMetrics(t)
+	warnings := NewWarningDispatcher(NewWarningLimiter(time.Hour), nil)
+	defer warnings.Stop()
+
+	bridge := NewDropObservationMeterProvider(m, warnings)
+	counter, err := bridge.Meter("go.opentelemetry.io/otel/sdk/trace/internal/observ").Int64Counter(sdkSpanProcessedInstrument)
+	if err != nil {
+		t.Fatalf("Int64Counter() error = %v", err)
+	}
+
+	queueFull := metric.WithAttributes(
+		attribute.String("otel.component.type", "batching_span_processor"),
+		attribute.String("otel.component.name", "batching_span_processor/0"),
+		attribute.String("error.type", "queue_full"),
+	)
+
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < each; j++ {
+				counter.Add(context.Background(), 1, queueFull)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := testutil.ToFloat64(m.SpansDropped.WithLabelValues(string(metrics.DropReasonQueueFull))); got != workers*each {
+		t.Fatalf("dropped = %v, want %d concurrent queue-full drops counted exactly once", got, workers*each)
+	}
+}
+
+// unsetEnv removes key from the environment for the duration of the test and
+// restores its previous value (or absence) afterward. Tests using this must not
+// call t.Parallel.
+func unsetEnv(t *testing.T, key string) {
+	t.Helper()
+	prev, ok := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatalf("Unsetenv(%q): %v", key, err)
+	}
+	t.Cleanup(func() {
+		if ok {
+			_ = os.Setenv(key, prev)
+		} else {
+			_ = os.Unsetenv(key)
+		}
+	})
+}
+
+// The runtime bootstraps native parent-based sampling with the documented 0.10
+// default when the operator leaves the sampler unset, and restores the
+// process environment at shutdown.
+func TestRuntimeBootstrapsDefaultSamplingAndRestoresIt(t *testing.T) {
+	unsetEnv(t, "OTEL_TRACES_SAMPLER")
+	unsetEnv(t, "OTEL_TRACES_SAMPLER_ARG")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_COMPRESSION", "none")
+
+	receiver := newCaptureReceiver(t, http.StatusOK)
+	cfg := TelemetryConfig{
+		Enabled:         true,
+		Environment:     "test",
+		Endpoint:        receiver.endpoint(),
+		ShutdownTimeout: 2 * time.Second,
+	}
+
+	rt, err := NewRuntime(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	if got := os.Getenv("OTEL_TRACES_SAMPLER"); got != "parentbased_traceidratio" {
+		t.Fatalf("OTEL_TRACES_SAMPLER = %q, want parentbased_traceidratio bootstrap", got)
+	}
+	if got := os.Getenv("OTEL_TRACES_SAMPLER_ARG"); got != "0.10" {
+		t.Fatalf("OTEL_TRACES_SAMPLER_ARG = %q, want 0.10 bootstrap", got)
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := rt.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+
+	if _, ok := os.LookupEnv("OTEL_TRACES_SAMPLER"); ok {
+		t.Fatalf("OTEL_TRACES_SAMPLER was not unset after shutdown")
+	}
+	if _, ok := os.LookupEnv("OTEL_TRACES_SAMPLER_ARG"); ok {
+		t.Fatalf("OTEL_TRACES_SAMPLER_ARG was not unset after shutdown")
+	}
+}
+
+// Malformed native tuning values and header sentinels are delegated to the SDK:
+// startup must not panic or fail on them, and parsing diagnostics must never be
+// counted as exporter failures.
+func TestRuntimeToleratesMalformedNativeTuning(t *testing.T) {
+	t.Setenv("OTEL_TRACES_SAMPLER", "parentbased_traceidratio")
+	t.Setenv("OTEL_TRACES_SAMPLER_ARG", "1.0")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_COMPRESSION", "none")
+	t.Setenv("OTEL_BSP_MAX_QUEUE_SIZE", "not-a-number")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "authorization=Bearer sup3r-s3cret-header")
+
+	receiver := newCaptureReceiver(t, http.StatusOK)
+	runtimeMetrics := metrics.NewTelemetryMetrics(prometheus.NewRegistry())
+	cfg := TelemetryConfig{
+		Enabled:         true,
+		Environment:     "test",
+		Endpoint:        receiver.endpoint(),
+		ShutdownTimeout: 2 * time.Second,
+	}
+
+	rt, err := NewRuntime(context.Background(), cfg, WithTelemetryMetrics(runtimeMetrics))
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v, want native malformed tuning tolerated", err)
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := rt.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+
+	if got := testutil.ToFloat64(runtimeMetrics.ExporterFailures.WithLabelValues(string(metrics.ExporterFailureOtherReason))); got != 0 {
+		t.Fatalf("native parsing diagnostic was counted as an exporter failure: %v", got)
+	}
 }

@@ -226,3 +226,21 @@ func TestTelemetryMetricsRegistrationIsScopedToRegistry(t *testing.T) {
 		}
 	}
 }
+
+// The D1 drop bridge routes SDK observability into the existing Prometheus
+// counters without publishing any SDK-internal metric family on the scrape.
+func TestTelemetryMetricsExposeNoSDKInternalSeries(t *testing.T) {
+	m, reg := newTestTelemetryMetrics(t)
+	m.RecordSpanDrop(DropReasonQueueFull)
+	m.RecordExporterFailure(ExporterFailureServerError)
+
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("Gather() error = %v", err)
+	}
+	for _, family := range families {
+		if strings.HasPrefix(family.GetName(), "otel.sdk.") {
+			t.Errorf("SDK-internal metric family %q leaked onto the scrape surface", family.GetName())
+		}
+	}
+}

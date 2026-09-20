@@ -8,6 +8,7 @@ import (
 	"gin-product-service/internal/infrastructure/database"
 	"gin-product-service/internal/infrastructure/redis"
 	"gin-product-service/internal/infrastructure/telemetry"
+	"gin-product-service/internal/lifecycle"
 	"gin-product-service/internal/wire"
 	"log"
 	"net"
@@ -21,11 +22,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
-
-// ServiceShutdownBudget is the single graceful shutdown window for the whole
-// process: HTTP intake stop, accepted-request drain, dependency close, and the
-// bounded telemetry flush all share it.
-const ServiceShutdownBudget = 15 * time.Second
 
 // defaultListenAddress matches the documented service port.
 const defaultListenAddress = ":5000"
@@ -67,20 +63,21 @@ type Options struct {
 	Report func(error)
 }
 
-// NewServer builds the production server.
-func NewServer(db database.Database, tracing *telemetry.TelemetryRuntime) AppServer {
-	return NewServerWithOptions(db, tracing, Options{})
+// NewServer builds the production server, rejecting a nil telemetry runtime.
+func NewServer(db database.Database, tracing *telemetry.TelemetryRuntime) (AppServer, error) {
+	srv, err := NewServerWithOptions(db, tracing, Options{})
+	if err != nil {
+		return nil, err
+	}
+	return srv, nil
 }
 
 // NewServerWithOptions builds the server and wires every route up front, so the
-// engine is complete before shutdown behavior is exercised.
-func NewServerWithOptions(db database.Database, tracing *telemetry.TelemetryRuntime, opts Options) *ginServer {
+// engine is complete before shutdown behavior is exercised. A nil telemetry
+// runtime is rejected so instrumentation is never attached implicitly.
+func NewServerWithOptions(db database.Database, tracing *telemetry.TelemetryRuntime, opts Options) (*ginServer, error) {
 	if tracing == nil {
-		// Defensive: never dereference a nil runtime, and never attach
-		// instrumentation implicitly.
-		if disabled, err := telemetry.NewRuntime(context.Background(), telemetry.TelemetryConfig{}); err == nil {
-			tracing = disabled
-		}
+		return nil, errors.New("telemetry runtime is required")
 	}
 
 	address := opts.Address
@@ -89,7 +86,7 @@ func NewServerWithOptions(db database.Database, tracing *telemetry.TelemetryRunt
 	}
 	budget := opts.ShutdownBudget
 	if budget <= 0 {
-		budget = ServiceShutdownBudget
+		budget = lifecycle.ServiceShutdownBudget
 	}
 
 	s := &ginServer{
@@ -103,7 +100,7 @@ func NewServerWithOptions(db database.Database, tracing *telemetry.TelemetryRunt
 		ready:          make(chan struct{}),
 	}
 	s.setupRoutes()
-	return s
+	return s, nil
 }
 
 // setupRoutes is the composition step: infrastructure adapters and use cases are
@@ -115,7 +112,7 @@ func (s *ginServer) setupRoutes() {
 		redis.WithTracing(s.telemetry.TracerProvider, s.telemetry.Propagator),
 	)
 
-	c := wire.NewContainer(s.db, reservationLocker, s.telemetry)
+	c := wire.NewContainer(s.db, reservationLocker)
 	router := apphttp.NewAppRouter(s.app)
 	jwtSecret := os.Getenv("API_JWT_SECRET")
 	router.SetupRouter(c.CategoryHandler, c.ProductHandler, c.InfraCheckerUseCase, c.ReviewHandler, c.InventoryHandler, jwtSecret, s.telemetry)
@@ -189,12 +186,13 @@ func (s *ginServer) Start() {
 }
 
 // Stop performs the bounded shutdown sequence exactly once: stop accepting new
-// work, drain accepted requests, close dependencies, then flush accepted
-// telemetry with the remaining deadline. It is idempotent and bounded by the
-// configured budget.
+// work, drain accepted requests within a deadline that reserves time for the
+// telemetry flush, close dependencies without starving that flush, and deliver
+// accepted telemetry within the remaining deadline. It is idempotent and bounded
+// by the configured budget and any earlier caller deadline.
 func (s *ginServer) Stop(parent context.Context) error {
 	s.shutdownOnce.Do(func() {
-		ctx, cancel := context.WithTimeout(parent, s.shutdownBudget)
+		totalCtx, cancel := context.WithTimeout(parent, s.shutdownBudget)
 		defer cancel()
 
 		var errs []error
@@ -204,24 +202,63 @@ func (s *ginServer) Stop(parent context.Context) error {
 		listener := s.listener
 		s.mu.Unlock()
 
+		// Reserve a positive telemetry delivery slice inside the one total
+		// deadline so a slow HTTP drain cannot starve the flush. Disabled
+		// telemetry reserves nothing.
+		reservation := time.Duration(0)
+		if s.telemetry != nil {
+			reservation = s.telemetry.EffectiveShutdownTimeout()
+		}
+
+		// The drain window ends before the total deadline, reserving time for
+		// telemetry. It never extends the common deadline or a caller deadline.
+		drainBudget := s.shutdownBudget
+		if deadline, ok := totalCtx.Deadline(); ok {
+			drainBudget = time.Until(deadline) - reservation
+			if drainBudget < 0 {
+				drainBudget = 0
+			}
+		}
+		drainCtx, drainCancel := context.WithTimeout(totalCtx, drainBudget)
+		defer drainCancel()
+
 		// 1. Stop HTTP intake and drain accepted requests.
 		if httpServer != nil {
-			if err := httpServer.Shutdown(ctx); err != nil {
-				errs = append(errs, err)
+			drainErr := httpServer.Shutdown(drainCtx)
+			if drainCtx.Err() != nil {
+				// The drain allocation expired: force-close active connections
+				// so outstanding work is canceled rather than left hanging. This
+				// is the deliberate bounded-drain path, not a shutdown failure.
+				_ = httpServer.Close()
+			} else if drainErr != nil {
+				errs = append(errs, drainErr)
 			}
 		} else if listener != nil {
 			_ = listener.Close()
 		}
 
-		// 2. Close dependencies.
+		// 2. Close dependencies without blocking the telemetry flush.
+		dbDone := make(chan struct{})
 		if s.db != nil {
-			s.db.Close()
+			go func() {
+				s.db.Close()
+				close(dbDone)
+			}()
 		}
 
-		// 3. Flush accepted telemetry within the same budget.
+		// 3. Flush accepted telemetry with the still-live total context, never
+		// the expired drain context.
 		if s.telemetry != nil {
-			if err := s.telemetry.Shutdown(ctx); err != nil {
+			if err := s.telemetry.Shutdown(totalCtx); err != nil {
 				errs = append(errs, err)
+			}
+		}
+
+		// 4. Wait for dependency close only until the common deadline.
+		if s.db != nil {
+			select {
+			case <-dbDone:
+			case <-totalCtx.Done():
 			}
 		}
 

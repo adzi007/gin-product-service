@@ -100,9 +100,7 @@ func TestOutcomeFidelityAcrossFailureModes(t *testing.T) {
 			path:   "/api/v1/categories",
 			status: http.StatusInternalServerError,
 			register: func(h *securityHarness) {
-				uc := telemetry.NewCategoryQueryDecorator(failingCategoryQuery{}, telemetry.DecoratorConfig{
-					TracerProvider: h.provider,
-				})
+				uc := failingCategoryQuery{}
 				h.engine.GET("/api/v1/categories", func(c *gin.Context) {
 					if _, err := uc.FindAll(c.Request.Context(), domain.ListCategoryParams{}); err != nil {
 						c.Status(http.StatusInternalServerError)
@@ -144,9 +142,7 @@ func TestOutcomeFidelityAcrossFailureModes(t *testing.T) {
 			path:   "/api/v1/categories",
 			status: http.StatusOK,
 			register: func(h *securityHarness) {
-				uc := telemetry.NewCategoryQueryDecorator(slowCategoryQuery{delay: 40 * time.Millisecond}, telemetry.DecoratorConfig{
-					TracerProvider: h.provider,
-				})
+				uc := slowCategoryQuery{delay: 40 * time.Millisecond}
 				h.engine.GET("/api/v1/categories", func(c *gin.Context) {
 					if _, err := uc.FindAll(c.Request.Context(), domain.ListCategoryParams{}); err != nil {
 						c.Status(http.StatusInternalServerError)
@@ -196,20 +192,11 @@ func TestOutcomeFidelityAcrossFailureModes(t *testing.T) {
 					gotError, tt.wantError, rec.Code, server.Status().Description)
 			}
 
-			// A failing child must be an error even when the request is recovered.
-			if tt.wantError && rec.Code == http.StatusInternalServerError {
-				for _, span := range spans {
-					if span.Name() == "app.category.query.find_all" && span.Status().Code != codes.Error {
-						t.Fatalf("failing application span was not marked as an error")
-					}
-				}
-			}
-
-			// The slow dependency must be visible in the application span duration.
+			// D2: application spans are retired, so the server span carries the
+			// request outcome; the slow dependency remains visible in its duration.
 			if tt.name == "slow dependency remains a successful but attributable trace" {
-				span := spanByName(t, spans, "app.category.query.find_all")
-				if got := span.EndTime().Sub(span.StartTime()); got < 40*time.Millisecond {
-					t.Fatalf("application span duration = %v, want >= the slow dependency", got)
+				if got := server.EndTime().Sub(server.StartTime()); got < 40*time.Millisecond {
+					t.Fatalf("server span duration = %v, want >= the slow dependency", got)
 				}
 			}
 		})
@@ -233,10 +220,10 @@ func TestForbiddenValuesAreNeverExported(t *testing.T) {
 
 	harness := newSecurityHarness(t)
 
-	uc := telemetry.NewReviewInsertDecorator(leakyReviewInsert{
+	uc := leakyReviewInsert{
 		sqlText:    forbiddenSQL,
 		connString: forbiddenConnString,
-	}, telemetry.DecoratorConfig{TracerProvider: harness.provider})
+	}
 
 	harness.engine.POST("/api/v1/inventory/reservations", func(c *gin.Context) {
 		if _, err := uc.Create(c.Request.Context(), variantID, orderID, "customer",
@@ -270,9 +257,9 @@ func TestForbiddenValuesAreNeverExported(t *testing.T) {
 		variantID.String(),
 	})
 
-	// The trace must still be usable: request, application, and dependency spans.
+	// The trace must still be usable: request and dependency spans, with no
+	// application span remaining.
 	spanByName(t, spans, "HTTP POST /api/v1/inventory/reservations")
-	spanByName(t, spans, "app.review.insert.create")
 	spanByName(t, spans, "SELECT")
 }
 

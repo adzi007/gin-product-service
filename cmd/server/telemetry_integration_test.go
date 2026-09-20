@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"gin-product-service/internal/domain"
-	"gin-product-service/internal/infrastructure/logger"
 	"gin-product-service/internal/infrastructure/metrics"
 	"gin-product-service/internal/infrastructure/telemetry"
 
@@ -112,15 +111,12 @@ func (r *telemetryReceiver) spanNames(t *testing.T) []string {
 }
 
 // registerTracedProbe registers a business route whose application operation is
-// decorated exactly like the production composition root does.
-func registerTracedProbe(srv *ginServer, runtime *telemetry.TelemetryRuntime) {
-	decorated := telemetry.NewCategoryQueryDecorator(probeCategoryQuery{}, telemetry.DecoratorConfig{
-		TracerProvider: runtime.TracerProvider,
-		EnrichContext:  logger.WithTraceContext,
-	})
+// wired directly, mirroring the production composition root (no decorators).
+func registerTracedProbe(srv *ginServer) {
+	uc := probeCategoryQuery{}
 
 	srv.Router().GET("/api/v1/probe", func(c *gin.Context) {
-		if _, err := decorated.FindAll(c.Request.Context(), domain.ListCategoryParams{}); err != nil {
+		if _, err := uc.FindAll(c.Request.Context(), domain.ListCategoryParams{}); err != nil {
 			c.Status(http.StatusInternalServerError)
 			return
 		}
@@ -148,11 +144,11 @@ func TestServerEnabledExportsRealOTLPRequest(t *testing.T) {
 	receiver := newTelemetryReceiver(t, http.StatusOK, nil)
 	runtime, _ := enabledRuntime(t, receiver.endpoint(), 2*time.Second)
 
-	srv := NewServerWithOptions(&fakeDatabase{}, runtime, Options{
+	srv := mustServer(t, &fakeDatabase{}, runtime, Options{
 		Address:        "127.0.0.1:0",
 		ShutdownBudget: 8 * time.Second,
 	})
-	registerTracedProbe(srv, runtime)
+	registerTracedProbe(srv)
 
 	if err := srv.Listen(); err != nil {
 		t.Fatalf("Listen() error = %v", err)
@@ -182,17 +178,14 @@ func TestServerEnabledExportsRealOTLPRequest(t *testing.T) {
 		t.Fatalf("captured payload contained no spans")
 	}
 
-	var sawServer, sawApplication bool
+	var sawServer bool
 	for _, name := range names {
-		switch name {
-		case "HTTP GET /api/v1/probe":
+		if name == "HTTP GET /api/v1/probe" {
 			sawServer = true
-		case "app.category.query.find_all":
-			sawApplication = true
 		}
 	}
-	if !sawServer || !sawApplication {
-		t.Fatalf("captured spans = %v, want the server span and its application child", names)
+	if !sawServer {
+		t.Fatalf("captured spans = %v, want the server span", names)
 	}
 }
 
@@ -201,7 +194,7 @@ func TestServerDisabledAttemptsNoExport(t *testing.T) {
 	receiver := newTelemetryReceiver(t, http.StatusOK, nil)
 	runtime := disabledRuntime(t)
 
-	srv := NewServerWithOptions(&fakeDatabase{}, runtime, Options{
+	srv := mustServer(t, &fakeDatabase{}, runtime, Options{
 		Address:        "127.0.0.1:0",
 		ShutdownBudget: 5 * time.Second,
 	})
@@ -233,11 +226,11 @@ func TestServerUnavailableDestinationKeepsResponsesUnchanged(t *testing.T) {
 
 	runtime, runtimeMetrics := enabledRuntime(t, endpoint, time.Second)
 
-	srv := NewServerWithOptions(&fakeDatabase{}, runtime, Options{
+	srv := mustServer(t, &fakeDatabase{}, runtime, Options{
 		Address:        "127.0.0.1:0",
 		ShutdownBudget: 8 * time.Second,
 	})
-	registerTracedProbe(srv, runtime)
+	registerTracedProbe(srv)
 
 	if err := srv.Listen(); err != nil {
 		t.Fatalf("Listen() error = %v", err)
@@ -271,20 +264,21 @@ func TestServerQueuePressureDoesNotBlockRequests(t *testing.T) {
 	hang := make(chan struct{})
 	receiver := newTelemetryReceiver(t, http.StatusOK, hang)
 
+	// Native tuning: a tiny queue and batch plus deterministic sampling make the
+	// native queue saturate while the receiver hangs.
+	t.Setenv("OTEL_TRACES_SAMPLER", "parentbased_traceidratio")
+	t.Setenv("OTEL_TRACES_SAMPLER_ARG", "1.0")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_COMPRESSION", "none")
+	t.Setenv("OTEL_BSP_MAX_QUEUE_SIZE", "2")
+	t.Setenv("OTEL_BSP_MAX_EXPORT_BATCH_SIZE", "2")
+	t.Setenv("OTEL_BSP_SCHEDULE_DELAY", "10")
+
 	runtimeMetrics := metrics.NewTelemetryMetrics(prometheus.NewRegistry())
 	config := telemetry.TelemetryConfig{
-		Enabled:            true,
-		ServiceName:        "gin-product-service",
-		Environment:        "test",
-		Endpoint:           receiver.endpoint(),
-		Compression:        telemetry.CompressionNone,
-		ExporterTimeout:    time.Second,
-		RootSampleRatio:    1,
-		QueueSize:          2,
-		BatchSize:          2,
-		ScheduleDelay:      10 * time.Millisecond,
-		BatchExportTimeout: time.Second,
-		ShutdownTimeout:    time.Second,
+		Enabled:         true,
+		Environment:     "test",
+		Endpoint:        receiver.endpoint(),
+		ShutdownTimeout: time.Second,
 	}
 	runtime, err := telemetry.NewRuntime(context.Background(), config,
 		telemetry.WithTelemetryMetrics(runtimeMetrics),
@@ -293,11 +287,11 @@ func TestServerQueuePressureDoesNotBlockRequests(t *testing.T) {
 		t.Fatalf("NewRuntime() error = %v", err)
 	}
 
-	srv := NewServerWithOptions(&fakeDatabase{}, runtime, Options{
+	srv := mustServer(t, &fakeDatabase{}, runtime, Options{
 		Address:        "127.0.0.1:0",
 		ShutdownBudget: 8 * time.Second,
 	})
-	registerTracedProbe(srv, runtime)
+	registerTracedProbe(srv)
 
 	if err := srv.Listen(); err != nil {
 		t.Fatalf("Listen() error = %v", err)
@@ -334,7 +328,7 @@ func TestServerGracefulShutdownWithinBudget(t *testing.T) {
 	stop := make(chan struct{})
 	reported := make(chan error, 1)
 
-	srv := NewServerWithOptions(&fakeDatabase{}, runtime, Options{
+	srv := mustServer(t, &fakeDatabase{}, runtime, Options{
 		Address:        "127.0.0.1:0",
 		ShutdownBudget: 5 * time.Second,
 		Stop:           stop,
@@ -399,5 +393,112 @@ func TestServerGracefulShutdownWithinBudget(t *testing.T) {
 	case err := <-reported:
 		t.Fatalf("shutdown reported an error: %v", err)
 	default:
+	}
+}
+
+// TestServerSlowDrainStillDeliversAcceptedTelemetry proves that an accepted
+// sampled span reaches the local receiver before the common shutdown deadline
+// even when an HTTP request holds its connection open through the drain
+// allocation, and that a second Stop does not flush again.
+func TestServerSlowDrainStillDeliversAcceptedTelemetry(t *testing.T) {
+	receiver := newTelemetryReceiver(t, http.StatusOK, nil)
+
+	// A long schedule delay keeps accepted spans queued until the explicit
+	// shutdown flush; deterministic sampling makes the probe span always sampled.
+	t.Setenv("OTEL_TRACES_SAMPLER", "parentbased_traceidratio")
+	t.Setenv("OTEL_TRACES_SAMPLER_ARG", "1.0")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_COMPRESSION", "none")
+	t.Setenv("OTEL_BSP_SCHEDULE_DELAY", "3600000")
+
+	runtimeMetrics := metrics.NewTelemetryMetrics(prometheus.NewRegistry())
+	config := telemetry.TelemetryConfig{
+		Enabled:         true,
+		Environment:     "test",
+		Endpoint:        receiver.endpoint(),
+		ShutdownTimeout: time.Second,
+	}
+	runtime, err := telemetry.NewRuntime(context.Background(), config,
+		telemetry.WithTelemetryMetrics(runtimeMetrics),
+	)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	srv := mustServer(t, &fakeDatabase{}, runtime, Options{
+		Address:        "127.0.0.1:0",
+		ShutdownBudget: 5 * time.Second,
+	})
+	registerTracedProbe(srv)
+
+	// Slow handler holds its connection open until the drain allocation expires.
+	slowStarted := make(chan struct{})
+	slowRelease := make(chan struct{})
+	srv.Router().GET("/api/v1/slow", func(c *gin.Context) {
+		close(slowStarted)
+		<-slowRelease
+		c.Status(http.StatusOK)
+	})
+	t.Cleanup(func() { close(slowRelease) })
+
+	if err := srv.Listen(); err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+
+	// Complete a sampled probe span; the long schedule delay keeps it queued.
+	if got := get(t, "http://"+srv.Addr()+"/api/v1/probe"); got != http.StatusOK {
+		t.Fatalf("probe status = %d, want %d", got, http.StatusOK)
+	}
+
+	// Open a slow request that stays in flight across the drain allocation.
+	slowDone := make(chan struct{})
+	go func() {
+		defer close(slowDone)
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Get("http://" + srv.Addr() + "/api/v1/slow")
+		if err != nil {
+			return
+		}
+		_ = resp.Body.Close()
+	}()
+	select {
+	case <-slowStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("slow request never started")
+	}
+
+	start := time.Now()
+	if err := srv.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop() error = %v, want nil for a bounded drain", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("Stop() took %v, want it within the service budget", elapsed)
+	}
+
+	// The queued span must have been delivered despite the stalled drain.
+	names := receiver.spanNames(t)
+	sawProbe := false
+	for _, name := range names {
+		if name == "HTTP GET /api/v1/probe" {
+			sawProbe = true
+		}
+	}
+	if !sawProbe {
+		t.Fatalf("captured spans = %v, want the queued probe span delivered despite the slow drain", names)
+	}
+
+	// A second Stop must not initiate another flush.
+	before := len(receiver.snapshot())
+	if err := srv.Stop(context.Background()); err != nil {
+		t.Fatalf("second Stop() error = %v", err)
+	}
+	if after := len(receiver.snapshot()); after != before {
+		t.Fatalf("second Stop() delivered %d additional OTLP requests, want none", after-before)
+	}
+
+	// The slow request was force-canceled once its drain allocation expired.
+	select {
+	case <-slowDone:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("slow request was not canceled after the drain allocation expired")
 	}
 }

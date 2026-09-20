@@ -1,12 +1,15 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"gin-product-service/internal/domain"
+	"gin-product-service/internal/infrastructure/logger"
+	"gin-product-service/internal/infrastructure/telemetry"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
@@ -52,9 +55,31 @@ func NewCategoryHandler(
 // @Router       /categories [get]
 func (h *CategoryHandler) Fetch(c *gin.Context) {
 
-	ctx := c.Request.Context()
+	ctx, span := telemetry.StartOperation(
+		c.Request.Context(),
+		"gin-product-service/controller",
+		"controller.category.fetch",
+	)
+	ctx = logger.WithTraceContext(ctx)
+	c.Request = c.Request.WithContext(ctx)
 
-	page, _ := strconv.Atoi(c.Query("page"))
+	var operationErr error
+	defer func() {
+		telemetry.RecordError(span, operationErr)
+		span.End()
+	}()
+
+	page, err := strconv.Atoi(c.Query("page"))
+
+	if err != nil {
+		// Jaeger receives the full error (custom context + internal cause),
+		// while the API response only exposes the custom message.
+		const msg = "gagal konversi param string ke integer"
+		operationErr = fmt.Errorf("%s: %w", msg, err)
+		c.JSON(http.StatusBadRequest, categoryFetchErrorResponse(ctx, msg))
+		return
+	}
+
 	perPage, _ := strconv.Atoi(c.Query("per_page"))
 
 	sortBy := strings.ToLower(c.Query("sort_by"))
@@ -62,7 +87,7 @@ func (h *CategoryHandler) Fetch(c *gin.Context) {
 		sortBy = "name"
 	}
 	if sortBy != "name" && sortBy != "created_at" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid sort_by: must be one of name, created_at"})
+		c.JSON(http.StatusBadRequest, categoryFetchErrorResponse(ctx, "invalid sort_by: must be one of name, created_at"))
 		return
 	}
 
@@ -71,7 +96,7 @@ func (h *CategoryHandler) Fetch(c *gin.Context) {
 		sortDir = "asc"
 	}
 	if sortDir != "asc" && sortDir != "desc" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid sort_dir: must be one of asc, desc"})
+		c.JSON(http.StatusBadRequest, categoryFetchErrorResponse(ctx, "invalid sort_dir: must be one of asc, desc"))
 		return
 	}
 
@@ -85,7 +110,11 @@ func (h *CategoryHandler) Fetch(c *gin.Context) {
 
 	data, err := h.queryUseCase.FindAll(ctx, params)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		// Jaeger receives the full error (custom context + internal cause),
+		// while the API response only exposes the custom message.
+		const msg = "gagal mengambil data kategori"
+		operationErr = fmt.Errorf("%s: %w", msg, err)
+		c.JSON(http.StatusInternalServerError, categoryFetchErrorResponse(ctx, msg))
 		return
 	}
 
@@ -100,6 +129,14 @@ func (h *CategoryHandler) Fetch(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, res)
+}
+
+func categoryFetchErrorResponse(ctx context.Context, message string) gin.H {
+	response := gin.H{"error": message}
+	if traceID := telemetry.TraceID(ctx); traceID != "" {
+		response["trace_id"] = traceID
+	}
+	return response
 }
 
 // Dropdown godoc

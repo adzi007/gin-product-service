@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 // Bounded coordination span vocabulary. Names and attributes never contain the
@@ -131,7 +132,7 @@ func NewReservationLocker(baseURL, token string, opts ...LockerOption) domain.Re
 
 	provider := options.tracerProvider
 	if provider == nil {
-		provider = trace.NewNoopTracerProvider()
+		provider = noop.NewTracerProvider()
 	}
 	propagator := options.propagator
 	if propagator == nil {

@@ -44,7 +44,7 @@ func TestPostgresTracingInstrumentation(t *testing.T) {
 
 	before := len(recorder.Ended())
 
-	queryCtx, parent := provider.Tracer("test").Start(ctx, "app.product.query.get_by_id")
+	queryCtx, parent := provider.Tracer("test").Start(ctx, "HTTP GET /api/v1/products/:id")
 
 	const sqlText = "SELECT 1"
 	var value int
@@ -84,7 +84,7 @@ func TestPostgresTracingInstrumentation(t *testing.T) {
 		matched++
 
 		if span.Parent().SpanID() != parent.SpanContext().SpanID() {
-			t.Errorf("span %q parent = %q, want the active application span %q",
+			t.Errorf("span %q parent = %q, want the active HTTP span %q",
 				span.Name(), span.Parent().SpanID(), parent.SpanContext().SpanID())
 		}
 

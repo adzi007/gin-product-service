@@ -6,6 +6,7 @@ import (
 	"gin-product-service/internal/domain"
 	"gin-product-service/internal/infrastructure/database"
 	"gin-product-service/internal/infrastructure/metrics"
+	"gin-product-service/internal/infrastructure/telemetry"
 	"regexp"
 	"strings"
 	"time"
@@ -31,7 +32,16 @@ func NewCategoryRepo(db database.Database) domain.CategoryRepository {
 	return &categoryRepo{db: db}
 }
 
-func (r *categoryRepo) FindAll(ctx context.Context, params domain.ListCategoryParams) ([]domain.Category, int, error) {
+func (r *categoryRepo) FindAll(ctx context.Context, params domain.ListCategoryParams) (categories []domain.Category, total int, err error) {
+	ctx, span := telemetry.StartOperation(
+		ctx,
+		"gin-product-service/repository",
+		"repository.category.find_all",
+	)
+	defer func() {
+		telemetry.RecordError(span, err)
+		span.End()
+	}()
 
 	defer metrics.ObserveDB("category", "find_all")(time.Now())
 
@@ -50,8 +60,7 @@ func (r *categoryRepo) FindAll(ctx context.Context, params domain.ListCategoryPa
 
 	// total count matching filters (before pagination)
 	countQuery := "SELECT COUNT(*) FROM category " + where
-	var total int
-	if err := r.db.GetDb().QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
+	if err = r.db.GetDb().QueryRow(ctx, countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
@@ -84,7 +93,7 @@ func (r *categoryRepo) FindAll(ctx context.Context, params domain.ListCategoryPa
 	}
 	defer rows.Close()
 
-	categories, err := pgx.CollectRows(rows, pgx.RowToStructByName[domain.Category])
+	categories, err = pgx.CollectRows(rows, pgx.RowToStructByName[domain.Category])
 	if err != nil {
 		return nil, 0, err
 	}

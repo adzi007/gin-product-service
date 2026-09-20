@@ -246,9 +246,9 @@ Tests use the standard library `testing` package only (no testify/gomock). Use c
 
 ## Tracing (OpenTelemetry)
 
-End-to-end tracing is opt-in and disabled by default. It is implemented as
-infrastructure plus delivery middleware: no domain entity, business rule, or
-application use case imports OpenTelemetry.
+End-to-end tracing is opt-in and disabled by default. It is implemented at
+delivery, application-operation, and infrastructure boundaries; domain entities
+and business rules remain independent of OpenTelemetry.
 
 ### Coverage
 
@@ -258,20 +258,23 @@ application use case imports OpenTelemetry.
 | `GET /readyz` | Yes — it exercises PostgreSQL |
 | `GET /healthz`, `GET /metrics`, `/swagger/*any`, unmatched routes | No — unchanged behavior, no exported span |
 
-A sampled request produces one connected hierarchy:
+A sampled request produces one connected hierarchy. Most routes keep database
+and Redis spans directly under the server span. The category-list endpoint opts
+into additional layer spans so failures can be localized:
 
 ```text
-HTTP GET /api/v1/products/:id          (server)
-`-- app.product.query.get_by_id        (internal)
-    |-- pool.acquire                   (client, PostgreSQL)
-    `-- SELECT                         (client, PostgreSQL)
+HTTP GET /api/v1/categories             (server)
+`-- controller.category.fetch           (internal)
+    `-- usecase.category.find_all        (internal)
+        `-- repository.category.find_all (internal)
+            |-- pool.acquire             (client, PostgreSQL)
+            `-- SELECT                   (client, PostgreSQL)
 ```
 
 Reservation requests additionally carry `redis.reservation.acquire` and
 `redis.reservation.release` client spans around the transactional database work.
-Span names use only the matched route template and a bounded
-`app.<module>.<operation>` vocabulary; raw URL paths, query strings, UUIDs, and
-handles are never used.
+Span names use only the matched route template; raw URL paths, query strings,
+UUIDs, and handles are never used.
 
 ### Configuration
 
@@ -279,31 +282,37 @@ Every variable, its default, and its bounds are documented in
 [`.env.example`](.env.example). Defaults are safe to leave in place: tracing stays
 off until `OTEL_TRACING_ENABLED=true` and an endpoint is supplied.
 
-| Variable | Default | Notes |
+Five startup gates are owned and validated by this service; every other setting
+is delegated to the OpenTelemetry Go SDK's native environment parsing. The
+service applies only the documented absent-setting defaults — service name
+`gin-product-service`, gzip compression, a 5-second exporter timeout, a
+5-second batch export timeout, and parent-based ratio sampling at `0.10` —
+without ever overriding an explicit operator value.
+
+| Variable | Default | Ownership |
 |---|---|---|
-| `OTEL_TRACING_ENABLED` | `false` | Strict boolean. Disabled creates no exporter, worker, pgx tracer, or middleware. |
-| `OTEL_SERVICE_NAME` | `gin-product-service` | Exported as `service.name`. |
-| `OTEL_DEPLOYMENT_ENVIRONMENT` | none (`APP_ENV` fallback) | Required when enabled; exported as `deployment.environment.name`. |
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | none | Required when enabled; absolute `http`/`https` URL, no user info/query/fragment. |
-| `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | none | Optional OTLP headers; values are never logged or exported. |
-| `OTEL_EXPORTER_OTLP_TRACES_COMPRESSION` | `gzip` | `gzip` or `none`. |
-| `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT` | `5000` ms | Positive, within the 15 s shutdown budget. |
-| `OTEL_TRACES_SAMPLER_ARG` | `0.10` | Decimal in `[0,1]`; new root traces only. |
-| `OTEL_BSP_MAX_QUEUE_SIZE` | `2048` | Positive, bounded. |
-| `OTEL_BSP_MAX_EXPORT_BATCH_SIZE` | `512` | Positive, no larger than the queue size. |
-| `OTEL_BSP_SCHEDULE_DELAY` | `5000` ms | Positive, bounded. |
-| `OTEL_BSP_EXPORT_TIMEOUT` | `5000` ms | Positive, within the shutdown budget. |
-| `OTEL_TRACES_SHUTDOWN_TIMEOUT` | `5000` ms | Positive, strictly below the 15 s shutdown budget. |
-| `OTEL_BAGGAGE_ALLOWLIST` | empty | Comma-separated baggage keys; empty means default-deny. |
+| `OTEL_TRACING_ENABLED` | `false` | Service. Strict boolean; disabled creates no exporter, worker, pgx tracer, or middleware. |
+| `OTEL_DEPLOYMENT_ENVIRONMENT` | none (`APP_ENV` fallback) | Service. Required when enabled; exported as `deployment.environment.name`. |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | none | Service. Required when enabled; absolute `http`/`https` URL, no user info/query/fragment. |
+| `OTEL_TRACES_SHUTDOWN_TIMEOUT` | `5000` ms | Service. Positive, strictly below the 15 s shutdown budget. |
+| `OTEL_BAGGAGE_ALLOWLIST` | empty | Service. Comma-separated baggage keys; empty means default-deny. |
+| `OTEL_SERVICE_NAME` | `gin-product-service` | SDK resource/default selection. |
+| `OTEL_EXPORTER_OTLP_TRACES_HEADERS` | none | SDK native parsing; values are never logged or exported. |
+| `OTEL_EXPORTER_OTLP_TRACES_COMPRESSION` | `gzip` | SDK native parsing. |
+| `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT` | `5000` ms | SDK native parsing. |
+| `OTEL_TRACES_SAMPLER` / `OTEL_TRACES_SAMPLER_ARG` | `parentbased_traceidratio` / `0.10` | SDK native parsing (bootstrapped to the parent-based ratio default). |
+| `OTEL_BSP_MAX_QUEUE_SIZE` / `..._EXPORT_BATCH_SIZE` / `..._SCHEDULE_DELAY` / `..._EXPORT_TIMEOUT` | `2048` / `512` / `5000` ms / `5000` ms | SDK native parsing. |
 
 ### Sampling and propagation
 
-Sampling uses `ParentBased(TraceIDRatioBased(OTEL_TRACES_SAMPLER_ARG))`: a valid
-upstream sampling decision is honored, and the local ratio applies only when this
-service starts a new root trace. Missing, malformed, or unsupported trace
-metadata starts a new trace and never rejects the request. W3C `traceparent` and
-`tracestate` are always propagated; baggage is default-deny and only allowlisted
-keys are forwarded. Baggage never becomes a span or log attribute.
+Sampling is delegated to the SDK's parent-based trace-id ratio sampler,
+bootstrapped to `parentbased_traceidratio` with an argument default of `0.10`: a
+valid upstream sampling decision is honored, and the local ratio applies only
+when this service starts a new root trace. Missing, malformed, or unsupported
+trace metadata starts a new trace and never rejects the request. W3C
+`traceparent` and `tracestate` are always propagated; baggage is default-deny and
+only allowlisted keys are forwarded. Baggage never becomes a span or log
+attribute.
 
 ### Failure behavior
 
@@ -321,6 +330,8 @@ keys are forwarded. Baggage never becomes a span or log attribute.
   safe field-level error.
 - Request-scoped logs carry lowercase `trace_id` and `span_id` whenever a valid
   span is active.
+- Errors from `GET /api/v1/categories` include `trace_id` in the JSON response,
+  allowing the response to be correlated with the failed layer spans and logs.
 
 ### What is intentionally not included
 

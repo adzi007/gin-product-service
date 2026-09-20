@@ -44,10 +44,13 @@ func main() {
 		log.Fatal(err)
 	}
 
-	defer db.Close()
-
-	server := server.NewServer(db, tracing)
-	server.Start()
+	// Database cleanup is owned by the server's bounded shutdown sequence; a
+	// deferred close here would run again after Stop and could block exit.
+	srv, err := server.NewServer(db, tracing)
+	if err != nil {
+		log.Fatal(err)
+	}
+	srv.Start()
 }
 
 // loadTelemetry is the testable process-startup seam for tracing. It parses and

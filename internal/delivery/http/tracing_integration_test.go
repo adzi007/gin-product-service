@@ -82,26 +82,25 @@ func spanByName(t *testing.T, spans []sdktrace.ReadOnlySpan, name string) sdktra
 }
 
 // SC-001: every representative route family produces one complete trace from
-// request entry to final response, connected by parent-child relationships.
+// request entry to final response, with dependency spans reparented directly
+// under the HTTP span (the D2-approved application-span removal).
 func TestRepresentativeRouteFamiliesProduceOneTrace(t *testing.T) {
 	tests := []struct {
 		family       string
 		method       string
 		path         string
 		route        string
-		operation    string
 		dependency   string
-		registerFunc func(*tracingHarness, telemetry.DecoratorConfig)
+		registerFunc func(*tracingHarness)
 	}{
 		{
 			family:     "category",
 			method:     http.MethodGet,
 			path:       "/api/v1/categories",
 			route:      "/api/v1/categories",
-			operation:  "app.category.query.find_all",
 			dependency: "SELECT",
-			registerFunc: func(h *tracingHarness, cfg telemetry.DecoratorConfig) {
-				uc := telemetry.NewCategoryQueryDecorator(fakeCategoryQuery{}, cfg)
+			registerFunc: func(h *tracingHarness) {
+				uc := fakeCategoryQuery{}
 				h.engine.GET("/api/v1/categories", func(c *gin.Context) {
 					if _, err := uc.FindAll(c.Request.Context(), domain.ListCategoryParams{}); err != nil {
 						c.Status(http.StatusInternalServerError)
@@ -116,10 +115,9 @@ func TestRepresentativeRouteFamiliesProduceOneTrace(t *testing.T) {
 			method:     http.MethodGet,
 			path:       "/api/v1/products",
 			route:      "/api/v1/products",
-			operation:  "app.product.query.find_all",
 			dependency: "SELECT",
-			registerFunc: func(h *tracingHarness, cfg telemetry.DecoratorConfig) {
-				uc := telemetry.NewProductQueryDecorator(fakeProductQuery{}, cfg)
+			registerFunc: func(h *tracingHarness) {
+				uc := fakeProductQuery{}
 				h.engine.GET("/api/v1/products", func(c *gin.Context) {
 					if _, err := uc.FindAll(c.Request.Context(), domain.ListProductParams{}); err != nil {
 						c.Status(http.StatusInternalServerError)
@@ -134,10 +132,9 @@ func TestRepresentativeRouteFamiliesProduceOneTrace(t *testing.T) {
 			method:     http.MethodGet,
 			path:       "/api/v1/reviews/summary",
 			route:      "/api/v1/reviews/summary",
-			operation:  "app.review.summary.get_summary",
 			dependency: "SELECT",
-			registerFunc: func(h *tracingHarness, cfg telemetry.DecoratorConfig) {
-				uc := telemetry.NewReviewSummaryDecorator(fakeReviewSummary{}, cfg)
+			registerFunc: func(h *tracingHarness) {
+				uc := fakeReviewSummary{}
 				h.engine.GET("/api/v1/reviews/summary", func(c *gin.Context) {
 					if _, err := uc.GetSummary(c.Request.Context(), uuid.Nil); err != nil {
 						c.Status(http.StatusInternalServerError)
@@ -152,10 +149,9 @@ func TestRepresentativeRouteFamiliesProduceOneTrace(t *testing.T) {
 			method:     http.MethodPost,
 			path:       "/api/v1/inventory/reservations",
 			route:      "/api/v1/inventory/reservations",
-			operation:  "app.inventory.reservation.create",
 			dependency: "INSERT",
-			registerFunc: func(h *tracingHarness, cfg telemetry.DecoratorConfig) {
-				uc := telemetry.NewReservationDecorator(fakeReservation{}, cfg)
+			registerFunc: func(h *tracingHarness) {
+				uc := fakeReservation{}
 				h.engine.POST("/api/v1/inventory/reservations", func(c *gin.Context) {
 					if _, err := uc.Create(c.Request.Context(), uuid.Nil, time.Now().Add(time.Hour), nil); err != nil {
 						c.Status(http.StatusInternalServerError)
@@ -170,7 +166,7 @@ func TestRepresentativeRouteFamiliesProduceOneTrace(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.family, func(t *testing.T) {
 			harness := newTracingHarness(t)
-			tt.registerFunc(harness, telemetry.DecoratorConfig{TracerProvider: harness.provider})
+			tt.registerFunc(harness)
 
 			if rec := harness.do(t, tt.method, tt.path); rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -178,26 +174,29 @@ func TestRepresentativeRouteFamiliesProduceOneTrace(t *testing.T) {
 
 			spans := harness.spans()
 			server := spanByName(t, spans, "HTTP "+tt.method+" "+tt.route)
-			operation := spanByName(t, spans, tt.operation)
 			dependency := spanByName(t, spans, tt.dependency)
 
 			if server.Parent().IsValid() {
 				t.Errorf("server span must be the trace root")
 			}
-			assertParent(t, operation, server)
-			assertParent(t, dependency, operation)
+			// D2: dependency spans reparent directly under the HTTP span.
+			assertParent(t, dependency, server)
 
 			for _, span := range spans {
 				if span.SpanContext().TraceID() != server.SpanContext().TraceID() {
 					t.Errorf("span %q is not part of the request trace", span.Name())
+				}
+				if strings.HasPrefix(span.Name(), "app.") {
+					t.Errorf("unexpected application span %q: decorators are retired", span.Name())
 				}
 			}
 		})
 	}
 }
 
-// SC-002: the reservation trace connects the application operation, both Redis
-// coordination calls, the transactional database work, and the final response.
+// SC-002: the reservation trace connects both Redis coordination calls, the
+// transactional database work, and the final response directly under the HTTP
+// span (the D2-approved application-span removal).
 func TestReservationTraceHierarchy(t *testing.T) {
 	harness := newTracingHarness(t)
 
@@ -207,10 +206,7 @@ func TestReservationTraceHierarchy(t *testing.T) {
 	locker := redis.NewReservationLocker(redisCalls.URL, "test-token",
 		redis.WithTracing(harness.provider, telemetry.NewPropagator([]string{"safe-test"})))
 
-	reservation := telemetry.NewReservationDecorator(
-		tracedReservation{locker: locker},
-		telemetry.DecoratorConfig{TracerProvider: harness.provider},
-	)
+	reservation := tracedReservation{locker: locker}
 
 	harness.engine.POST("/api/v1/inventory/reservations", func(c *gin.Context) {
 		if _, err := reservation.Create(c.Request.Context(), uuid.New(), time.Now().Add(time.Hour), nil); err != nil {
@@ -226,16 +222,14 @@ func TestReservationTraceHierarchy(t *testing.T) {
 
 	spans := harness.spans()
 	server := spanByName(t, spans, "HTTP POST /api/v1/inventory/reservations")
-	operation := spanByName(t, spans, "app.inventory.reservation.create")
 	acquire := spanByName(t, spans, "redis.reservation.acquire")
 	release := spanByName(t, spans, "redis.reservation.release")
 	begin := spanByName(t, spans, "BEGIN")
 	statement := spanByName(t, spans, "SELECT")
 	commit := spanByName(t, spans, "COMMIT")
 
-	assertParent(t, operation, server)
 	for _, child := range []sdktrace.ReadOnlySpan{acquire, begin, statement, commit, release} {
-		assertParent(t, child, operation)
+		assertParent(t, child, server)
 	}
 	if acquire.SpanKind() != trace.SpanKindClient || release.SpanKind() != trace.SpanKindClient {
 		t.Errorf("coordination spans must be client spans")

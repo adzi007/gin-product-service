@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -14,6 +15,9 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -41,160 +45,131 @@ func testSpan(name string) sdktrace.ReadOnlySpan {
 	}.Snapshot()
 }
 
-// recordingProcessor forwards OnEnd calls so gating behavior is observable.
-type recordingProcessor struct {
-	mu       sync.Mutex
-	received int
-	shutdown func(context.Context) error
-	flushed  int
-}
+// installBridge installs the D1-approved experimental drop bridge as the global
+// meter provider and enables the SDK observability flag for the duration of a
+// test. These tests mutate process-global state and must run serially (no
+// t.Parallel); state is restored by t.Cleanup.
+func installBridge(t *testing.T, m *metrics.TelemetryMetrics, warnings *WarningDispatcher) {
+	t.Helper()
 
-func (p *recordingProcessor) OnStart(context.Context, sdktrace.ReadWriteSpan) {}
+	prevMP := otel.GetMeterProvider()
+	prevObs, hadObs := os.LookupEnv(observabilityEnvKey)
+	_ = os.Setenv(observabilityEnvKey, "true")
+	otel.SetMeterProvider(NewDropObservationMeterProvider(m, warnings))
 
-func (p *recordingProcessor) OnEnd(sdktrace.ReadOnlySpan) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.received++
-}
-
-func (p *recordingProcessor) Shutdown(ctx context.Context) error {
-	if p.shutdown != nil {
-		return p.shutdown(ctx)
-	}
-	return nil
-}
-
-func (p *recordingProcessor) ForceFlush(context.Context) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.flushed++
-	return nil
-}
-
-func (p *recordingProcessor) count() int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.received
-}
-
-func TestDropProcessorDropsNewSpansWhenCapacityIsFull(t *testing.T) {
-	m := newTestMetrics(t)
-	next := &recordingProcessor{}
-	proc := NewDropProcessor(next, DropProcessorConfig{Capacity: 2, Metrics: m})
-
-	for i := 0; i < 5; i++ {
-		proc.OnEnd(testSpan("test"))
-	}
-
-	if got := next.count(); got != 2 {
-		t.Fatalf("forwarded spans = %d, want 2 (capacity)", got)
-	}
-	if got := testutil.ToFloat64(m.SpansDropped.WithLabelValues(string(metrics.DropReasonQueueFull))); got != 3 {
-		t.Fatalf("dropped = %v, want 3", got)
-	}
-	if got := proc.Gate().InFlight(); got != 2 {
-		t.Fatalf("in-flight = %d, want 2", got)
-	}
-}
-
-// OnEnd must never wait for telemetry capacity, even when the exporter blocks.
-func TestDropProcessorOnEndIsNonBlockingWithBlockingExporter(t *testing.T) {
-	m := newTestMetrics(t)
-	gate := NewTokenGate(4)
-	exporter := newBlockingExporter()
-	wrapper := NewCapacityExporter(exporter, gate, m, NewWarningLimiter(time.Minute))
-
-	batch := sdktrace.NewBatchSpanProcessor(wrapper,
-		sdktrace.WithMaxQueueSize(64),
-		sdktrace.WithMaxExportBatchSize(4),
-		sdktrace.WithBatchTimeout(50*time.Millisecond),
-		sdktrace.WithExportTimeout(time.Hour),
-		sdktrace.WithBlocking(),
-	)
-	proc := NewDropProcessor(batch, DropProcessorConfig{Capacity: 4, Metrics: m, Gate: gate})
-
-	const total = 20
-	done := make(chan struct{})
-	go func() {
-		var wg sync.WaitGroup
-		for i := 0; i < total; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				proc.OnEnd(testSpan("test"))
-			}()
+	t.Cleanup(func() {
+		otel.SetMeterProvider(prevMP)
+		if hadObs {
+			_ = os.Setenv(observabilityEnvKey, prevObs)
+		} else {
+			_ = os.Unsetenv(observabilityEnvKey)
 		}
-		wg.Wait()
-		close(done)
-	}()
+	})
+}
 
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatalf("OnEnd blocked; request goroutines must never wait for telemetry capacity")
+// The native batch processor must observe exact native queue-full drops and
+// never block request goroutines on telemetry capacity.
+func TestNativeBatchProcessorCountsDropsExactly(t *testing.T) {
+	m := newTestMetrics(t)
+	warnings := NewWarningDispatcher(NewWarningLimiter(time.Hour), nil)
+	defer warnings.Stop()
+	installBridge(t, m, warnings)
+
+	exporter := newBlockingExporter()
+	outcome := NewOutcomeExporter(exporter, m, warnings)
+	processor := sdktrace.NewBatchSpanProcessor(outcome,
+		sdktrace.WithMaxQueueSize(4),
+		sdktrace.WithMaxExportBatchSize(4),
+		sdktrace.WithBatchTimeout(time.Hour),
+		sdktrace.WithExportTimeout(time.Hour),
+	)
+
+	// Fill the queue; the export worker drains all four spans into an in-flight
+	// export and blocks, leaving the queue empty.
+	for i := 0; i < 4; i++ {
+		processor.OnEnd(testSpan("fill"))
 	}
-
-	// The first accepted batch is now parked inside the blocking exporter.
 	select {
 	case <-exporter.started:
 	case <-time.After(2 * time.Second):
 		t.Fatalf("exporter was never invoked")
 	}
 
-	if got := testutil.ToFloat64(m.SpansDropped.WithLabelValues(string(metrics.DropReasonQueueFull))); got != total-4 {
-		t.Fatalf("dropped = %v, want %d", got, total-4)
+	// Refill the now-empty queue, then overflow it by exactly one span.
+	for i := 0; i < 4; i++ {
+		processor.OnEnd(testSpan("refill"))
+	}
+	processor.OnEnd(testSpan("overflow"))
+
+	if got := testutil.ToFloat64(m.SpansDropped.WithLabelValues(string(metrics.DropReasonQueueFull))); got != 1 {
+		t.Fatalf("dropped = %v, want exactly 1 native queue-full drop", got)
 	}
 
 	exporter.unblock()
-
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := proc.Shutdown(shutdownCtx); err != nil {
-		t.Fatalf("Shutdown() error = %v, want nil", err)
+	if err := processor.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
 	}
 }
 
-// Capacity is released exactly once per span handed to the exporter.
-func TestCapacityExporterReleasesCapacityExactlyOncePerSpan(t *testing.T) {
+// OnEnd must never wait for telemetry capacity, even when the exporter blocks,
+// and every completed sampled span stays accounted for exactly once.
+func TestNativeBatchProcessorOnEndIsNonBlocking(t *testing.T) {
+	const (
+		queueSize = 8
+		batchSize = 8
+		total     = 200
+	)
+
 	m := newTestMetrics(t)
-	gate := NewTokenGate(2)
-	inner := &recordingExporter{}
-	wrapper := NewCapacityExporter(inner, gate, m, NewWarningLimiter(time.Minute))
+	warnings := NewWarningDispatcher(NewWarningLimiter(time.Hour), nil)
+	defer warnings.Stop()
+	installBridge(t, m, warnings)
 
-	if !gate.TryAcquire() || !gate.TryAcquire() {
-		t.Fatalf("gate should accept up to its capacity")
+	exporter := newBlockingExporter()
+	outcome := NewOutcomeExporter(exporter, m, warnings)
+	processor := sdktrace.NewBatchSpanProcessor(outcome,
+		sdktrace.WithMaxQueueSize(queueSize),
+		sdktrace.WithMaxExportBatchSize(batchSize),
+		sdktrace.WithBatchTimeout(time.Hour),
+		sdktrace.WithExportTimeout(time.Hour),
+	)
+
+	start := time.Now()
+	var wg sync.WaitGroup
+	for i := 0; i < total; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			processor.OnEnd(testSpan("test"))
+		}()
 	}
-	if got := gate.InFlight(); got != 2 {
-		t.Fatalf("in-flight = %d, want 2", got)
-	}
-	if gate.TryAcquire() {
-		t.Fatalf("gate accepted beyond capacity")
+	wg.Wait()
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("OnEnd dispatch took %v during saturation; requests must not wait", elapsed)
 	}
 
-	spans := []sdktrace.ReadOnlySpan{testSpan("a"), testSpan("b")}
-	if err := wrapper.ExportSpans(context.Background(), spans); err != nil {
-		t.Fatalf("ExportSpans() error = %v, want nil", err)
-	}
-	if got := gate.InFlight(); got != 0 {
-		t.Fatalf("in-flight = %d, want 0 after export", got)
-	}
-	if !gate.TryAcquire() {
-		t.Fatalf("capacity was not returned after export")
+	select {
+	case <-exporter.started:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("exporter was never invoked")
 	}
 
-	// A single-span batch releases exactly one token.
-	if err := wrapper.ExportSpans(context.Background(), spans[:1]); err != nil {
-		t.Fatalf("ExportSpans() error = %v, want nil", err)
+	dropped := int(testutil.ToFloat64(m.SpansDropped.WithLabelValues(string(metrics.DropReasonQueueFull))))
+	if dropped <= 0 {
+		t.Fatalf("dropped = %d, want the native queue to saturate under %d spans", dropped, total)
 	}
-	if got := gate.InFlight(); got != 0 {
-		t.Fatalf("in-flight = %d, want 0 after second export", got)
-	}
-	if got := testutil.ToFloat64(m.ExporterFailures.WithLabelValues(string(metrics.ExporterFailureOtherReason))); got != 0 {
-		t.Fatalf("exporter failure counter = %v, want 0", got)
+
+	exporter.unblock()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := processor.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
 	}
 }
 
-func TestCapacityExporterClassifiesAndSanitizesFailures(t *testing.T) {
+func TestOutcomeExporterClassifiesAndSanitizesFailures(t *testing.T) {
 	secret := "https://collector.example.test/?token=sup3r-s3cret"
 
 	tests := []struct {
@@ -227,18 +202,18 @@ func TestCapacityExporterClassifiesAndSanitizesFailures(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := newTestMetrics(t)
-			gate := NewTokenGate(1)
-			var warnings []string
-			wrapper := NewCapacityExporter(
-				&recordingExporter{err: tt.innerErr},
-				gate,
-				m,
-				NewWarningLimiter(time.Minute),
-			)
-			wrapper.SetWarningSink(func(message string) { warnings = append(warnings, message) })
+			warningCh := make(chan string, 1)
+			dispatcher := NewWarningDispatcher(NewWarningLimiter(time.Minute), func(message string) {
+				select {
+				case warningCh <- message:
+				default:
+				}
+			})
+			defer dispatcher.Stop()
 
-			gate.TryAcquire()
-			err := wrapper.ExportSpans(context.Background(), []sdktrace.ReadOnlySpan{testSpan("a")})
+			exporter := NewOutcomeExporter(&recordingExporter{err: tt.innerErr}, m, dispatcher)
+
+			err := exporter.ExportSpans(context.Background(), []sdktrace.ReadOnlySpan{testSpan("a")})
 			if err == nil {
 				t.Fatalf("ExportSpans() error = nil, want a sanitized failure")
 			}
@@ -248,165 +223,171 @@ func TestCapacityExporterClassifiesAndSanitizesFailures(t *testing.T) {
 			if strings.Contains(err.Error(), "token") {
 				t.Fatalf("error %q leaks credential-ish detail", err)
 			}
-			if got := gate.InFlight(); got != 0 {
-				t.Fatalf("in-flight = %d, want 0: capacity must be released even on failure", got)
-			}
 			if got := testutil.ToFloat64(m.ExporterFailures.WithLabelValues(string(tt.wantReason))); got != 1 {
 				t.Fatalf("failure count for %q = %v, want 1", tt.wantReason, got)
 			}
-			if len(warnings) != 1 {
-				t.Fatalf("warnings = %v, want exactly one bounded warning", warnings)
-			}
-			if strings.Contains(warnings[0], secret) || strings.Contains(warnings[0], "token") {
-				t.Fatalf("warning %q leaks destination details", warnings[0])
+
+			select {
+			case warning := <-warningCh:
+				if strings.Contains(warning, secret) || strings.Contains(warning, "token") {
+					t.Fatalf("warning %q leaks destination details", warning)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatalf("warning was not delivered")
 			}
 		})
 	}
 }
 
-func TestCapacityExporterWarningsAreRateLimited(t *testing.T) {
+func TestOutcomeExporterWarningsAreRateLimited(t *testing.T) {
 	m := newTestMetrics(t)
-	gate := NewTokenGate(4)
 	limiter := NewWarningLimiter(30 * time.Second)
 	now := time.Now()
 	limiter.now = func() time.Time { return now }
 
-	var warningCount int
-	wrapper := NewCapacityExporter(&recordingExporter{err: context.DeadlineExceeded}, gate, m, limiter)
-	wrapper.SetWarningSink(func(string) { warningCount++ })
+	warningCh := make(chan string, 8)
+	dispatcher := NewWarningDispatcher(limiter, func(message string) { warningCh <- message })
+	defer dispatcher.Stop()
+
+	exporter := NewOutcomeExporter(&recordingExporter{err: context.DeadlineExceeded}, m, dispatcher)
 
 	spans := []sdktrace.ReadOnlySpan{testSpan("a")}
 	for i := 0; i < 5; i++ {
-		gate.TryAcquire()
-		if err := wrapper.ExportSpans(context.Background(), spans); err == nil {
+		if err := exporter.ExportSpans(context.Background(), spans); err == nil {
 			t.Fatalf("ExportSpans() error = nil, want failure")
 		}
 	}
 
-	if warningCount != 1 {
-		t.Fatalf("warnings = %d, want 1 within the rate-limit window", warningCount)
-	}
 	if got := testutil.ToFloat64(m.ExporterFailures.WithLabelValues(string(metrics.ExporterFailureTimeout))); got != 5 {
 		t.Fatalf("failure count = %v, want all 5 attempts counted", got)
 	}
 
+	if got := collectWarnings(warningCh, 500*time.Millisecond); len(got) != 1 {
+		t.Fatalf("warnings = %d, want 1 within the rate-limit window", len(got))
+	}
+
 	now = now.Add(31 * time.Second)
-	gate.TryAcquire()
-	if err := wrapper.ExportSpans(context.Background(), spans); err == nil {
+	if err := exporter.ExportSpans(context.Background(), spans); err == nil {
 		t.Fatalf("ExportSpans() error = nil, want failure")
 	}
-	if warningCount != 2 {
-		t.Fatalf("warnings = %d, want 2 after the window elapsed", warningCount)
+	if got := collectWarnings(warningCh, 500*time.Millisecond); len(got) != 1 {
+		t.Fatalf("warnings = %d, want 1 more after the window elapsed", len(got))
 	}
 }
 
-func TestDropProcessorDropWarningsAreRateLimited(t *testing.T) {
-	m := newTestMetrics(t)
-	next := &recordingProcessor{}
-	now := time.Now()
-	limiter := NewWarningLimiter(30 * time.Second)
-	limiter.now = func() time.Time { return now }
-
-	var warnings []string
-	proc := NewDropProcessor(next, DropProcessorConfig{Capacity: 1, Metrics: m, Warnings: limiter})
-	proc.SetWarningSink(func(message string) { warnings = append(warnings, message) })
-
-	for i := 0; i < 6; i++ {
-		proc.OnEnd(testSpan("test"))
-	}
-
-	if len(warnings) != 1 {
-		t.Fatalf("warnings = %v, want exactly one rate-limited warning", warnings)
-	}
-	if got := testutil.ToFloat64(m.SpansDropped.WithLabelValues(string(metrics.DropReasonQueueFull))); got != 5 {
-		t.Fatalf("dropped = %v, want 5 (drops stay visible even when warnings are suppressed)", got)
-	}
-}
-
-func TestDropProcessorShutdownIsBoundedAndIdempotent(t *testing.T) {
-	m := newTestMetrics(t)
-	next := &recordingProcessor{}
-	next.shutdown = func(ctx context.Context) error {
-		<-ctx.Done()
-		return ctx.Err()
-	}
-	proc := NewDropProcessor(next, DropProcessorConfig{Capacity: 2, Metrics: m})
-
-	// Occupy capacity so shutdown must also release it.
-	proc.OnEnd(testSpan("a"))
-
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
+// A slow warning sink must never block a request goroutine, and the handoff
+// queue must stay bounded.
+func TestWarningDispatcherIsNonBlockingWithSlowSink(t *testing.T) {
+	released := make(chan struct{})
+	dispatcher := NewWarningDispatcher(NewWarningLimiter(time.Minute), func(string) {
+		<-released
+	})
+	defer func() {
+		close(released)
+		dispatcher.Stop()
+	}()
 
 	start := time.Now()
-	firstErr := proc.Shutdown(ctx)
-	elapsed := time.Since(start)
-
-	if elapsed > 2*time.Second {
-		t.Fatalf("Shutdown took %v, want it bounded by the supplied deadline", elapsed)
+	for i := 0; i < warningQueueCapacity*4; i++ {
+		dispatcher.Warn(warningQueueFull)
 	}
-	if firstErr == nil {
-		t.Fatalf("Shutdown() error = nil, want the deadline error to propagate")
-	}
-
-	// Second call must return immediately with the same result.
-	start = time.Now()
-	secondErr := proc.Shutdown(context.Background())
-	if time.Since(start) > time.Second {
-		t.Fatalf("second Shutdown blocked")
-	}
-	if secondErr != firstErr {
-		t.Fatalf("second Shutdown() error = %v, want the recorded %v", secondErr, firstErr)
-	}
-	if got := proc.Gate().InFlight(); got != 0 {
-		t.Fatalf("in-flight = %d, want 0 after shutdown releases capacity", got)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("Warn blocked for %v behind a slow sink", elapsed)
 	}
 }
 
-func TestDropProcessorStopsIntakeAfterShutdown(t *testing.T) {
+func TestWarningDispatcherDeliversToFastSink(t *testing.T) {
+	delivered := make(chan string, 1)
+	dispatcher := NewWarningDispatcher(NewWarningLimiter(time.Minute), func(message string) {
+		select {
+		case delivered <- message:
+		default:
+		}
+	})
+
+	dispatcher.Warn("telemetry export failed: timeout")
+
+	select {
+	case got := <-delivered:
+		if got != "telemetry export failed: timeout" {
+			t.Fatalf("delivered warning = %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("warning was not delivered to the fast sink")
+	}
+	dispatcher.Stop()
+}
+
+// The drop bridge must count only queue_full additions on the batching-span
+// processor counter; successful additions and unrelated instruments are no-ops.
+func TestDropObservationCounterRecordsQueueFullOnly(t *testing.T) {
 	m := newTestMetrics(t)
-	next := &recordingProcessor{}
-	proc := NewDropProcessor(next, DropProcessorConfig{Capacity: 2, Metrics: m})
+	warnings := NewWarningDispatcher(NewWarningLimiter(time.Hour), nil)
+	defer warnings.Stop()
 
-	if err := proc.Shutdown(context.Background()); err != nil {
-		t.Fatalf("Shutdown() error = %v, want nil", err)
+	bridge := NewDropObservationMeterProvider(m, warnings)
+	meter := bridge.Meter("go.opentelemetry.io/otel/sdk/trace/internal/observ")
+
+	counter, err := meter.Int64Counter(sdkSpanProcessedInstrument)
+	if err != nil {
+		t.Fatalf("Int64Counter() error = %v", err)
 	}
 
-	proc.OnEnd(testSpan("after-shutdown"))
+	queueFull := metric.WithAttributes(
+		attribute.String("otel.component.type", "batching_span_processor"),
+		attribute.String("otel.component.name", "batching_span_processor/0"),
+		attribute.String("error.type", "queue_full"),
+	)
+	counter.Add(context.Background(), 1, queueFull)
+	counter.Add(context.Background(), 1, queueFull)
 
-	if got := next.count(); got != 0 {
-		t.Fatalf("forwarded spans = %d, want 0 after shutdown", got)
+	if got := testutil.ToFloat64(m.SpansDropped.WithLabelValues(string(metrics.DropReasonQueueFull))); got != 2 {
+		t.Fatalf("dropped = %v, want 2 queue-full drops", got)
 	}
+
+	// Successful processing carries no error.type and must be ignored.
+	counter.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("otel.component.type", "batching_span_processor"),
+		attribute.String("otel.component.name", "batching_span_processor/0"),
+	))
+	if got := testutil.ToFloat64(m.SpansDropped.WithLabelValues(string(metrics.DropReasonQueueFull))); got != 2 {
+		t.Fatalf("dropped = %v after successful additions, want still 2", got)
+	}
+
+	// A different component with queue_full must not count.
+	counter.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("otel.component.type", "simple_span_processor"),
+		attribute.String("error.type", "queue_full"),
+	))
+	if got := testutil.ToFloat64(m.SpansDropped.WithLabelValues(string(metrics.DropReasonQueueFull))); got != 2 {
+		t.Fatalf("dropped = %v after foreign-component addition, want still 2", got)
+	}
+}
+
+// Unknown instruments on the bridge must be no-ops that never panic or expose
+// new series.
+func TestDropObservationUnknownInstrumentsAreNoOp(t *testing.T) {
+	m := newTestMetrics(t)
+	warnings := NewWarningDispatcher(NewWarningLimiter(time.Hour), nil)
+	defer warnings.Stop()
+
+	bridge := NewDropObservationMeterProvider(m, warnings)
+	meter := bridge.Meter("anything")
+
+	other, err := meter.Int64Counter("some.other.counter")
+	if err != nil {
+		t.Fatalf("Int64Counter(other) error = %v", err)
+	}
+	other.Add(context.Background(), 5)
+
+	gauge, err := meter.Int64ObservableGauge("some.gauge")
+	if err != nil {
+		t.Fatalf("Int64ObservableGauge() error = %v", err)
+	}
+	_ = gauge
+
 	if got := testutil.ToFloat64(m.SpansDropped.WithLabelValues(string(metrics.DropReasonQueueFull))); got != 0 {
-		t.Fatalf("dropped = %v, want 0: post-shutdown intake is not queue pressure", got)
-	}
-}
-
-func TestDropProcessorForceFlushDelegatesAndShutdownIsIdempotent(t *testing.T) {
-	m := newTestMetrics(t)
-	next := &recordingProcessor{}
-	proc := NewDropProcessor(next, DropProcessorConfig{Capacity: 1, Metrics: m})
-
-	if err := proc.ForceFlush(context.Background()); err != nil {
-		t.Fatalf("ForceFlush() error = %v, want nil", err)
-	}
-	if next.flushed != 1 {
-		t.Fatalf("flush delegations = %d, want 1", next.flushed)
-	}
-
-	var shutdownCalls int
-	next.shutdown = func(context.Context) error {
-		shutdownCalls++
-		return nil
-	}
-	if err := proc.Shutdown(context.Background()); err != nil {
-		t.Fatalf("Shutdown() error = %v, want nil", err)
-	}
-	if err := proc.Shutdown(context.Background()); err != nil {
-		t.Fatalf("second Shutdown() error = %v, want nil", err)
-	}
-	if shutdownCalls != 1 {
-		t.Fatalf("underlying shutdown calls = %d, want 1 (idempotent)", shutdownCalls)
+		t.Fatalf("dropped = %v, want 0 for unrelated instruments", got)
 	}
 }
 
@@ -447,117 +428,63 @@ func TestExportErrorClassificationAndSanitization(t *testing.T) {
 	}
 }
 
-// Concurrency-safe, exact drop-new accounting under contention.
-func TestDropProcessorConcurrentSaturationAccountsExactly(t *testing.T) {
-	const (
-		capacity    = 4
-		total       = 200
-		dispatchers = 8
-	)
+// The D4 debug formatter derives diagnostics from only the bounded reason;
+// secret-bearing raw errors never surface even with debug logging enabled.
+func TestDebugDiagnosticNeverIncludesRawErrorText(t *testing.T) {
+	secret := "https://collector.example.test/?api_key=sup3r-s3cret"
+	raw := errors.New("failed to send to " + secret + ": 503 Service Unavailable")
 
-	m := newTestMetrics(t)
-	gate := NewTokenGate(capacity)
-	exporter := newBlockingExporter()
-	limiter := NewWarningLimiter(time.Hour)
-	wrapper := NewCapacityExporter(exporter, gate, m, limiter)
+	reason := classifyExportError(raw)
+	diag := debugDiagnostic(reason)
 
-	batch := sdktrace.NewBatchSpanProcessor(wrapper,
-		sdktrace.WithMaxQueueSize(capacity*2),
-		sdktrace.WithMaxExportBatchSize(capacity),
-		sdktrace.WithBatchTimeout(20*time.Millisecond),
-		sdktrace.WithExportTimeout(time.Hour),
-		sdktrace.WithBlocking(),
-	)
-	forwarder := &countingForwarder{next: batch}
-	proc := NewDropProcessor(forwarder, DropProcessorConfig{
-		Capacity: capacity,
-		Metrics:  m,
-		Warnings: limiter,
-		Gate:     gate,
-	})
-
-	var warnings []string
-	proc.SetWarningSink(func(message string) { warnings = append(warnings, message) })
-
-	var wg sync.WaitGroup
-	perDispatcher := total / dispatchers
-	for i := 0; i < dispatchers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for j := 0; j < perDispatcher; j++ {
-				proc.OnEnd(testSpan("test"))
-			}
-		}()
+	if strings.Contains(diag, secret) || strings.Contains(diag, "api_key") {
+		t.Fatalf("diagnostic %q leaks raw error text", diag)
 	}
-
-	done := make(chan struct{})
-	go func() { wg.Wait(); close(done) }()
-
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("OnEnd blocked under saturation")
-	}
-
-	select {
-	case <-exporter.started:
-	case <-time.After(2 * time.Second):
-		t.Fatalf("exporter was never invoked")
-	}
-
-	accepted := forwarder.accepted()
-	dropped := int(testutil.ToFloat64(m.SpansDropped.WithLabelValues(string(metrics.DropReasonQueueFull))))
-
-	if accepted != capacity {
-		t.Fatalf("accepted = %d, want exactly the capacity %d while the exporter is stalled", accepted, capacity)
-	}
-	if accepted+dropped != perDispatcher*dispatchers {
-		t.Fatalf("accepted(%d) + dropped(%d) != dispatched(%d): every span must be accounted for", accepted, dropped, perDispatcher*dispatchers)
-	}
-	if len(warnings) != 1 {
-		t.Fatalf("warnings = %d, want 1 rate-limited warning despite %d drops", len(warnings), dropped)
-	}
-
-	exporter.unblock()
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := proc.Shutdown(shutdownCtx); err != nil {
-		t.Fatalf("Shutdown() error = %v, want nil", err)
+	if !strings.Contains(diag, string(reason)) {
+		t.Fatalf("diagnostic %q should name the bounded reason", diag)
 	}
 }
 
-// A destination outage must never block request processing, and every completed
-// span stays accounted for exactly once.
-func TestDropProcessorExporterOutageNeverBlocksRequests(t *testing.T) {
+// The global error handler must never recount a marker error already classified,
+// counted, and warned at the exporter boundary.
+func TestExportErrorHandlerDoesNotRecountMarkerErrors(t *testing.T) {
+	m := newTestMetrics(t)
+	warnings := NewWarningDispatcher(NewWarningLimiter(time.Hour), nil)
+	defer warnings.Stop()
+	handler := NewExportErrorHandler(m, warnings)
+
+	handler.Handle(&ExportError{Reason: metrics.ExporterFailureTimeout})
+	if got := testutil.ToFloat64(m.ExporterFailures.WithLabelValues(string(metrics.ExporterFailureTimeout))); got != 0 {
+		t.Fatalf("marker error was recounted: %v", got)
+	}
+
+	handler.Handle(context.DeadlineExceeded)
+	if got := testutil.ToFloat64(m.ExporterFailures.WithLabelValues(string(metrics.ExporterFailureTimeout))); got != 1 {
+		t.Fatalf("raw deadline error count = %v, want 1", got)
+	}
+}
+
+// A destination outage must never block request processing, every failure is
+// classified once, and repeat warnings stay rate-limited.
+func TestNativeBatchProcessorExporterOutageNeverBlocksRequests(t *testing.T) {
 	const (
-		capacity = 8
-		total    = 300
+		queueSize = 8
+		total     = 300
 	)
 
 	m := newTestMetrics(t)
-	gate := NewTokenGate(capacity)
 	limiter := NewWarningLimiter(time.Hour)
+	collector := newWarningCollector()
+	dispatcher := NewWarningDispatcher(limiter, collector.add)
+	defer dispatcher.Stop()
 
-	var warnings []string
-	wrapper := NewCapacityExporter(&recordingExporter{err: context.DeadlineExceeded}, gate, m, limiter)
-	wrapper.SetWarningSink(func(message string) { warnings = append(warnings, message) })
-
-	batch := sdktrace.NewBatchSpanProcessor(wrapper,
-		sdktrace.WithMaxQueueSize(capacity*2),
-		sdktrace.WithMaxExportBatchSize(capacity),
+	outcome := NewOutcomeExporter(&recordingExporter{err: context.DeadlineExceeded}, m, dispatcher)
+	processor := sdktrace.NewBatchSpanProcessor(outcome,
+		sdktrace.WithMaxQueueSize(queueSize),
+		sdktrace.WithMaxExportBatchSize(queueSize),
 		sdktrace.WithBatchTimeout(10*time.Millisecond),
 		sdktrace.WithExportTimeout(2*time.Second),
-		sdktrace.WithBlocking(),
 	)
-	forwarder := &countingForwarder{next: batch}
-	proc := NewDropProcessor(forwarder, DropProcessorConfig{
-		Capacity: capacity,
-		Metrics:  m,
-		Warnings: limiter,
-		Gate:     gate,
-	})
-	proc.SetWarningSink(func(message string) { warnings = append(warnings, message) })
 
 	start := time.Now()
 	var wg sync.WaitGroup
@@ -565,7 +492,7 @@ func TestDropProcessorExporterOutageNeverBlocksRequests(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			proc.OnEnd(testSpan("test"))
+			processor.OnEnd(testSpan("test"))
 		}()
 	}
 	wg.Wait()
@@ -574,19 +501,9 @@ func TestDropProcessorExporterOutageNeverBlocksRequests(t *testing.T) {
 		t.Fatalf("dispatch took %v during a destination outage; requests must not wait", elapsed)
 	}
 
-	accepted := forwarder.accepted()
-	dropped := int(testutil.ToFloat64(m.SpansDropped.WithLabelValues(string(metrics.DropReasonQueueFull))))
-	if accepted+dropped != total {
-		t.Fatalf("accepted(%d) + dropped(%d) != dispatched(%d)", accepted, dropped, total)
-	}
+	waitForFailure(t, m, metrics.ExporterFailureTimeout)
 
-	if got := testutil.ToFloat64(m.ExporterFailures.WithLabelValues(string(metrics.ExporterFailureTimeout))); got < 1 {
-		t.Fatalf("exporter failure counter = %v, want the outage reported", got)
-	}
-	if len(warnings) != 1 {
-		t.Fatalf("warnings = %d, want repeat warnings rate-limited to one", len(warnings))
-	}
-	for _, warning := range warnings {
+	for _, warning := range collector.snapshot() {
 		if strings.Contains(warning, "collector") || strings.Contains(warning, "http") {
 			t.Fatalf("warning %q leaks destination detail", warning)
 		}
@@ -594,50 +511,42 @@ func TestDropProcessorExporterOutageNeverBlocksRequests(t *testing.T) {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := proc.Shutdown(shutdownCtx); err != nil {
+	if err := processor.Shutdown(shutdownCtx); err != nil {
 		t.Fatalf("Shutdown() error = %v, want nil", err)
 	}
 }
 
 // Saturation must keep background work and accepted in-memory spans bounded.
-func TestDropProcessorKeepsGoroutinesAndMemoryBounded(t *testing.T) {
+func TestNativeBatchProcessorKeepsGoroutinesBounded(t *testing.T) {
 	const (
-		capacity = 8
-		total    = 500
+		queueSize = 8
+		total     = 500
 	)
 
 	before := runtime.NumGoroutine()
 
 	m := newTestMetrics(t)
-	gate := NewTokenGate(capacity)
-	exporter := newBlockingExporter()
-	wrapper := NewCapacityExporter(exporter, gate, m, NewWarningLimiter(time.Hour))
+	warnings := NewWarningDispatcher(NewWarningLimiter(time.Hour), nil)
+	defer warnings.Stop()
+	installBridge(t, m, warnings)
 
-	batch := sdktrace.NewBatchSpanProcessor(wrapper,
-		sdktrace.WithMaxQueueSize(capacity*2),
-		sdktrace.WithMaxExportBatchSize(capacity),
-		sdktrace.WithBatchTimeout(20*time.Millisecond),
+	exporter := newBlockingExporter()
+	outcome := NewOutcomeExporter(exporter, m, warnings)
+	processor := sdktrace.NewBatchSpanProcessor(outcome,
+		sdktrace.WithMaxQueueSize(queueSize),
+		sdktrace.WithMaxExportBatchSize(queueSize),
+		sdktrace.WithBatchTimeout(time.Hour),
 		sdktrace.WithExportTimeout(time.Hour),
-		sdktrace.WithBlocking(),
 	)
-	forwarder := &countingForwarder{next: batch}
-	proc := NewDropProcessor(forwarder, DropProcessorConfig{Capacity: capacity, Metrics: m, Gate: gate})
 
 	for i := 0; i < total; i++ {
-		proc.OnEnd(testSpan("test"))
+		processor.OnEnd(testSpan("test"))
 	}
 
 	select {
 	case <-exporter.started:
 	case <-time.After(2 * time.Second):
 		t.Fatalf("exporter was never invoked")
-	}
-
-	if got := forwarder.accepted(); got != capacity {
-		t.Fatalf("accepted = %d, want the in-memory work bounded by capacity %d", got, capacity)
-	}
-	if got := gate.InFlight(); got != capacity {
-		t.Fatalf("in-flight = %d, want %d", got, capacity)
 	}
 
 	// The batch processor owns a small, fixed worker set: growth must stay far
@@ -649,39 +558,57 @@ func TestDropProcessorKeepsGoroutinesAndMemoryBounded(t *testing.T) {
 	exporter.unblock()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := proc.Shutdown(shutdownCtx); err != nil {
+	if err := processor.Shutdown(shutdownCtx); err != nil {
 		t.Fatalf("Shutdown() error = %v", err)
 	}
 }
 
-// countingForwarder counts admitted spans while forwarding to the real processor
-// so accepted + dropped accounting can be asserted exactly.
-type countingForwarder struct {
-	next sdktrace.SpanProcessor
-
-	mu    sync.Mutex
-	spans int
+// warningCollector is a race-safe warning sink for tests whose dispatcher
+// worker runs concurrently with assertions.
+type warningCollector struct {
+	mu   sync.Mutex
+	msgs []string
 }
 
-func (p *countingForwarder) OnStart(ctx context.Context, span sdktrace.ReadWriteSpan) {
-	p.next.OnStart(ctx, span)
+func newWarningCollector() *warningCollector { return &warningCollector{} }
+
+func (c *warningCollector) add(message string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.msgs = append(c.msgs, message)
 }
 
-func (p *countingForwarder) OnEnd(span sdktrace.ReadOnlySpan) {
-	p.mu.Lock()
-	p.spans++
-	p.mu.Unlock()
-	p.next.OnEnd(span)
+func (c *warningCollector) snapshot() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.msgs...)
 }
 
-func (p *countingForwarder) Shutdown(ctx context.Context) error { return p.next.Shutdown(ctx) }
+// collectWarnings drains every warning delivered within d.
+func collectWarnings(ch chan string, d time.Duration) []string {
+	var out []string
+	timeout := time.After(d)
+	for {
+		select {
+		case message := <-ch:
+			out = append(out, message)
+		case <-timeout:
+			return out
+		}
+	}
+}
 
-func (p *countingForwarder) ForceFlush(ctx context.Context) error { return p.next.ForceFlush(ctx) }
-
-func (p *countingForwarder) accepted() int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.spans
+// waitForFailure waits until the given exporter-failure reason has been counted.
+func waitForFailure(t *testing.T, m *metrics.TelemetryMetrics, reason metrics.ExporterFailureReason) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := testutil.ToFloat64(m.ExporterFailures.WithLabelValues(string(reason))); got >= 1 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("exporter failure counter for %q never incremented", reason)
 }
 
 // blockingExporter parks inside ExportSpans until unblocked.

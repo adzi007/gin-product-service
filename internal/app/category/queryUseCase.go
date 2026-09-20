@@ -4,6 +4,7 @@ import (
 	"context"
 	"gin-product-service/internal/domain"
 	"gin-product-service/internal/infrastructure/logger"
+	"gin-product-service/internal/infrastructure/telemetry"
 	"math"
 
 	"go.uber.org/zap"
@@ -19,7 +20,18 @@ func NewCategoryQueryUseCase(categoryRepo domain.CategoryRepository) domain.Quer
 	}
 }
 
-func (uc *queryCategoryUc) FindAll(ctx context.Context, params domain.ListCategoryParams) (domain.PaginatedCategories, error) {
+func (uc *queryCategoryUc) FindAll(ctx context.Context, params domain.ListCategoryParams) (result domain.PaginatedCategories, err error) {
+
+	ctx, span := telemetry.StartOperation(
+		ctx,
+		"gin-product-service/usecase",
+		"usecase.category.find_all",
+	)
+	ctx = logger.WithTraceContext(ctx)
+	defer func() {
+		telemetry.RecordError(span, err)
+		span.End()
+	}()
 
 	// Apply defaults if zero-valued.
 	if params.Page < 1 {
@@ -42,7 +54,7 @@ func (uc *queryCategoryUc) FindAll(ctx context.Context, params domain.ListCatego
 
 	totalPages := int(math.Ceil(float64(total) / float64(params.PerPage)))
 
-	result := domain.PaginatedCategories{
+	result = domain.PaginatedCategories{
 		Data:       data,
 		Total:      total,
 		Page:       params.Page,

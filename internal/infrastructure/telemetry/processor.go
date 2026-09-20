@@ -5,22 +5,43 @@ import (
 	"errors"
 	"net"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"gin-product-service/internal/infrastructure/metrics"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 // DefaultWarningWindow bounds how often a repeated telemetry warning is emitted.
 const DefaultWarningWindow = time.Minute
 
+// warningQueueCapacity bounds the non-blocking handoff queue so a stalled log
+// sink can never accumulate unbounded work.
+const warningQueueCapacity = 64
+
 // Constant, sanitized warning messages. They never include endpoints, headers,
 // credentials, payloads, or raw library error text.
 const (
 	warningQueueFull          = "telemetry spans dropped: export queue is full"
 	warningExportFailedPrefix = "telemetry export failed: "
+)
+
+// sdkSpanProcessedInstrument is the experimental SDK observability counter that
+// reports finished span processing, including native queue drops. This name is
+// pinned to SDK 1.46.0 and is the single interception point for the drop bridge.
+const sdkSpanProcessedInstrument = "otel.sdk.processor.span.processed"
+
+// Bounded, sanitized attribute keys and values for the SDK observability
+// counter. They are declared as literals so the bridge does not import SDK
+// internal packages or semconv.
+const (
+	attrErrorType         = attribute.Key("error.type")
+	attrComponentType     = attribute.Key("otel.component.type")
+	errorTypeQueueFull    = "queue_full"
+	componentTypeBatching = "batching_span_processor"
 )
 
 // WarningSink receives already-sanitized warning messages.
@@ -60,57 +81,90 @@ func (w *WarningLimiter) Allow() bool {
 	return false
 }
 
-// TokenGate is the bounded, non-blocking capacity gate that guarantees request
-// goroutines never wait for telemetry capacity.
-type TokenGate struct {
-	tokens   chan struct{}
-	capacity int
+// WarningDispatcher owns the shared rate limiter and delivers accepted warnings
+// through a single worker so a slow sink can never block a request goroutine.
+// The rate-limit decision is synchronous and cheap; only sink delivery is
+// handed off through a bounded queue.
+type WarningDispatcher struct {
+	limiter *WarningLimiter
+	sink    WarningSink
+	queue   chan string
+	done    chan struct{}
+	drained chan struct{}
+
+	stopOnce sync.Once
 }
 
-// NewTokenGate builds a gate that admits at most capacity concurrent spans.
-func NewTokenGate(capacity int) *TokenGate {
-	if capacity < 1 {
-		capacity = 1
+// NewWarningDispatcher builds a dispatcher sharing one limiter across the whole
+// runtime and starts its single delivery worker.
+func NewWarningDispatcher(limiter *WarningLimiter, sink WarningSink) *WarningDispatcher {
+	if limiter == nil {
+		limiter = NewWarningLimiter(DefaultWarningWindow)
 	}
-	return &TokenGate{tokens: make(chan struct{}, capacity), capacity: capacity}
-}
-
-// Capacity is the maximum number of in-flight accepted spans.
-func (g *TokenGate) Capacity() int { return g.capacity }
-
-// InFlight reports how many accepted spans are awaiting export.
-func (g *TokenGate) InFlight() int { return len(g.tokens) }
-
-// TryAcquire admits one span without ever blocking. It reports false when full.
-func (g *TokenGate) TryAcquire() bool {
-	select {
-	case g.tokens <- struct{}{}:
-		return true
-	default:
-		return false
+	d := &WarningDispatcher{
+		limiter: limiter,
+		sink:    sink,
+		queue:   make(chan string, warningQueueCapacity),
+		done:    make(chan struct{}),
+		drained: make(chan struct{}),
 	}
+	go d.run()
+	return d
 }
 
-// Release returns exactly n tokens, stopping early if the gate is already empty.
-func (g *TokenGate) Release(n int) {
-	for i := 0; i < n; i++ {
-		select {
-		case <-g.tokens:
-		default:
-			return
-		}
-	}
-}
-
-// Reset drops all held capacity, used once intake has permanently stopped.
-func (g *TokenGate) Reset() {
+func (d *WarningDispatcher) run() {
+	defer close(d.drained)
 	for {
 		select {
-		case <-g.tokens:
-		default:
-			return
+		case msg := <-d.queue:
+			d.deliver(msg)
+		case <-d.done:
+			// Drain already-accepted warnings before exiting so a fast sink
+			// still observes them; a slow sink bounds shutdown below.
+			for {
+				select {
+				case msg := <-d.queue:
+					d.deliver(msg)
+				default:
+					return
+				}
+			}
 		}
 	}
+}
+
+func (d *WarningDispatcher) deliver(message string) {
+	if d.sink != nil {
+		d.sink(message)
+	}
+}
+
+// Warn rate-limits and delivers a sanitized warning without ever blocking the
+// caller on a slow sink. When the bounded queue is full the warning is dropped;
+// metric accounting is unaffected.
+func (d *WarningDispatcher) Warn(message string) {
+	if d == nil || !d.limiter.Allow() {
+		return
+	}
+	select {
+	case d.queue <- message:
+	default:
+	}
+}
+
+// Stop shuts the worker down and waits, bounded, for already-queued warnings to
+// reach a fast sink. It never waits indefinitely for a slow sink.
+func (d *WarningDispatcher) Stop() {
+	if d == nil {
+		return
+	}
+	d.stopOnce.Do(func() {
+		close(d.done)
+		select {
+		case <-d.drained:
+		case <-time.After(time.Second):
+		}
+	})
 }
 
 // ExportError is a sanitized export failure carrying only a bounded reason, so
@@ -126,6 +180,14 @@ func (e *ExportError) Error() string {
 // sanitizeExportError converts a bounded reason into the error returned upward.
 func sanitizeExportError(reason metrics.ExporterFailureReason) error {
 	return &ExportError{Reason: reason}
+}
+
+// debugDiagnostic derives the debug-level export diagnostic from only the
+// bounded reason. Unknown or untrusted raw error text is never included, so
+// endpoints, headers, response bodies, and credentials cannot leak even with
+// debug logging enabled.
+func debugDiagnostic(reason metrics.ExporterFailureReason) string {
+	return warningExportFailedPrefix + string(reason)
 }
 
 // classifyExportError maps a raw exporter failure onto the bounded reason
@@ -145,185 +207,112 @@ func classifyExportError(err error) metrics.ExporterFailureReason {
 	return metrics.ExporterFailureServerError
 }
 
-// CapacityExporter wraps the real span exporter so capacity is released exactly
-// once per span handed to the exporter and failures are classified, counted, and
-// sanitized.
-type CapacityExporter struct {
+// OutcomeExporter wraps the real span exporter so each failed batch export is
+// classified once, counted, warned, and returned as a sanitized marker error.
+// The global error handler recognizes the marker and never recounts it.
+type OutcomeExporter struct {
 	inner    sdktrace.SpanExporter
-	gate     *TokenGate
 	metrics  *metrics.TelemetryMetrics
-	warnings *WarningLimiter
-
-	sinkMu sync.Mutex
-	sink   WarningSink
+	warnings *WarningDispatcher
 }
 
-var (
-	_ sdktrace.SpanExporter  = (*CapacityExporter)(nil)
-	_ sdktrace.SpanProcessor = (*DropProcessor)(nil)
-)
+var _ sdktrace.SpanExporter = (*OutcomeExporter)(nil)
 
-// NewCapacityExporter builds the exporter wrapper sharing gate with the gate.
-func NewCapacityExporter(
+// NewOutcomeExporter builds the exporter outcome wrapper.
+func NewOutcomeExporter(
 	inner sdktrace.SpanExporter,
-	gate *TokenGate,
 	telemetryMetrics *metrics.TelemetryMetrics,
-	warnings *WarningLimiter,
-) *CapacityExporter {
-	if warnings == nil {
-		warnings = NewWarningLimiter(DefaultWarningWindow)
-	}
-	return &CapacityExporter{
-		inner:    inner,
-		gate:     gate,
-		metrics:  telemetryMetrics,
-		warnings: warnings,
-	}
+	warnings *WarningDispatcher,
+) *OutcomeExporter {
+	return &OutcomeExporter{inner: inner, metrics: telemetryMetrics, warnings: warnings}
 }
 
-// SetWarningSink installs the sanitized warning destination.
-func (e *CapacityExporter) SetWarningSink(sink WarningSink) {
-	e.sinkMu.Lock()
-	defer e.sinkMu.Unlock()
-	e.sink = sink
-}
-
-// ExportSpans exports the batch, then releases one capacity token per span
-// regardless of success, so a failing destination can never strand capacity.
-func (e *CapacityExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
+// ExportSpans exports the batch and, on failure, counts and warns exactly once
+// before returning the sanitized marker error.
+func (e *OutcomeExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
 	err := e.inner.ExportSpans(ctx, spans)
-
-	if e.gate != nil {
-		e.gate.Release(len(spans))
-	}
 	if err == nil {
 		return nil
 	}
 
 	reason := classifyExportError(err)
 	e.metrics.RecordExporterFailure(reason)
-	if e.warnings.Allow() {
-		e.warn(warningExportFailedPrefix + string(reason))
-	}
+	e.warnings.Warn(debugDiagnostic(reason))
 	return sanitizeExportError(reason)
 }
 
 // Shutdown closes the wrapped exporter.
-func (e *CapacityExporter) Shutdown(ctx context.Context) error {
+func (e *OutcomeExporter) Shutdown(ctx context.Context) error {
 	return e.inner.Shutdown(ctx)
 }
 
-func (e *CapacityExporter) warn(message string) {
-	e.sinkMu.Lock()
-	sink := e.sink
-	e.sinkMu.Unlock()
-	if sink != nil {
-		sink(message)
-	}
-}
-
-// DropProcessorConfig configures the bounded gate in front of the SDK batch
-// processor.
-type DropProcessorConfig struct {
-	// Capacity is the maximum number of accepted, not-yet-exported spans.
-	Capacity int
-	// Metrics receives bounded drop and failure counters. Optional.
-	Metrics *metrics.TelemetryMetrics
-	// Warnings rate-limits sanitized warnings. Optional.
-	Warnings *WarningLimiter
-	// Gate optionally reuses an existing gate; otherwise one is created.
-	Gate *TokenGate
-}
-
-// DropProcessor implements drop-new back pressure: when the bounded gate is
-// full, the newly completed span is dropped and counted instead of blocking the
-// request goroutine. Accepted spans are handed to the SDK batch processor, which
-// is configured to never drop silently.
-type DropProcessor struct {
-	next     sdktrace.SpanProcessor
-	gate     *TokenGate
+// DropObservationMeterProvider bridges the SDK's experimental observability
+// metric stream to the existing Prometheus drop counter. It implements only the
+// public metric API by embedding no-op implementations: no SDK internal package,
+// metrics SDK, reader, or exporter is introduced, and no new series is exposed.
+type DropObservationMeterProvider struct {
+	noop.MeterProvider
 	metrics  *metrics.TelemetryMetrics
-	warnings *WarningLimiter
-
-	stopped atomic.Bool
-
-	shutdownOnce sync.Once
-	shutdownErr  error
-
-	sinkMu sync.Mutex
-	sink   WarningSink
+	warnings *WarningDispatcher
 }
 
-// NewDropProcessor wraps next with the bounded capacity gate.
-func NewDropProcessor(next sdktrace.SpanProcessor, cfg DropProcessorConfig) *DropProcessor {
-	gate := cfg.Gate
-	if gate == nil {
-		gate = NewTokenGate(cfg.Capacity)
+var _ metric.MeterProvider = (*DropObservationMeterProvider)(nil)
+
+// NewDropObservationMeterProvider builds the drop bridge. Unknown meters and
+// instruments are no-ops; only the SDK processed-span counter is intercepted.
+func NewDropObservationMeterProvider(
+	telemetryMetrics *metrics.TelemetryMetrics,
+	warnings *WarningDispatcher,
+) *DropObservationMeterProvider {
+	return &DropObservationMeterProvider{metrics: telemetryMetrics, warnings: warnings}
+}
+
+// Meter returns a bridging meter; every scope is served, but only the pinned
+// processed-span counter has observable behavior.
+func (p *DropObservationMeterProvider) Meter(name string, opts ...metric.MeterOption) metric.Meter {
+	return dropObservationMeter{provider: p}
+}
+
+type dropObservationMeter struct {
+	noop.Meter
+	provider *DropObservationMeterProvider
+}
+
+// Int64Counter intercepts the SDK processed-span counter and bridges its
+// queue_full additions to the existing Prometheus drop counter. All other
+// instruments fall through to the no-op implementation.
+func (m dropObservationMeter) Int64Counter(name string, opts ...metric.Int64CounterOption) (metric.Int64Counter, error) {
+	if name == sdkSpanProcessedInstrument {
+		return &dropObservationCounter{metrics: m.provider.metrics, warnings: m.provider.warnings}, nil
 	}
-	warnings := cfg.Warnings
-	if warnings == nil {
-		warnings = NewWarningLimiter(DefaultWarningWindow)
-	}
-	return &DropProcessor{
-		next:     next,
-		gate:     gate,
-		metrics:  cfg.Metrics,
-		warnings: warnings,
-	}
+	return m.Meter.Int64Counter(name, opts...)
 }
 
-// Gate exposes the shared capacity gate so the exporter wrapper can release it.
-func (p *DropProcessor) Gate() *TokenGate { return p.gate }
-
-// SetWarningSink installs the sanitized warning destination.
-func (p *DropProcessor) SetWarningSink(sink WarningSink) {
-	p.sinkMu.Lock()
-	defer p.sinkMu.Unlock()
-	p.sink = sink
+type dropObservationCounter struct {
+	noop.Int64Counter
+	metrics  *metrics.TelemetryMetrics
+	warnings *WarningDispatcher
 }
 
-// OnStart forwards span starts to the wrapped processor.
-func (p *DropProcessor) OnStart(ctx context.Context, span sdktrace.ReadWriteSpan) {
-	p.next.OnStart(ctx, span)
-}
-
-// OnEnd admits or drops the completed span without ever blocking.
-func (p *DropProcessor) OnEnd(span sdktrace.ReadOnlySpan) {
-	if p.stopped.Load() {
-		// Intake has stopped: accepted telemetry is draining, new work is ignored.
+// Add observes each native processed-span addition. Only additions tagged with
+// the queue_full error and the batching-span-processor component are counted as
+// drops, once per dropped span, on the existing Prometheus counter. Successful
+// processed-span additions and unrelated instruments are ignored.
+func (c *dropObservationCounter) Add(ctx context.Context, incr int64, opts ...metric.AddOption) {
+	if c == nil {
 		return
 	}
-	if !p.gate.TryAcquire() {
-		p.metrics.RecordSpanDrop(metrics.DropReasonQueueFull)
-		if p.warnings.Allow() {
-			p.warn(warningQueueFull)
-		}
+	attrs := metric.NewAddConfig(opts).Attributes()
+
+	if v, ok := attrs.Value(attrErrorType); !ok || v.AsString() != errorTypeQueueFull {
 		return
 	}
-	p.next.OnEnd(span)
-}
-
-// Shutdown stops intake, drains accepted telemetry within ctx, and releases all
-// capacity. It is idempotent and always bounded by ctx.
-func (p *DropProcessor) Shutdown(ctx context.Context) error {
-	p.shutdownOnce.Do(func() {
-		p.stopped.Store(true)
-		p.shutdownErr = p.next.Shutdown(ctx)
-		p.gate.Reset()
-	})
-	return p.shutdownErr
-}
-
-// ForceFlush delegates a bounded flush of accepted telemetry.
-func (p *DropProcessor) ForceFlush(ctx context.Context) error {
-	return p.next.ForceFlush(ctx)
-}
-
-func (p *DropProcessor) warn(message string) {
-	p.sinkMu.Lock()
-	sink := p.sink
-	p.sinkMu.Unlock()
-	if sink != nil {
-		sink(message)
+	if v, ok := attrs.Value(attrComponentType); !ok || v.AsString() != componentTypeBatching {
+		return
 	}
+
+	for i := int64(0); i < incr; i++ {
+		c.metrics.RecordSpanDrop(metrics.DropReasonQueueFull)
+	}
+	c.warnings.Warn(warningQueueFull)
 }

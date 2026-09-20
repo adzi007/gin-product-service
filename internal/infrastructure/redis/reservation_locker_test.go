@@ -223,7 +223,7 @@ func TestReservationLocker_AcquireClientSpanIsParented(t *testing.T) {
 
 	traced := newTracedLocker(t, srv.URL, nil)
 
-	parentCtx, parent := traced.provider.Tracer("test").Start(context.Background(), "app.inventory.reservation.create")
+	parentCtx, parent := traced.provider.Tracer("test").Start(context.Background(), "HTTP POST /api/v1/inventory/reservations")
 	defer parent.End()
 
 	if _, err := traced.locker.Acquire(parentCtx, []string{"reservation:order:1"}); err != nil {
@@ -261,7 +261,7 @@ func TestReservationLocker_ReleaseClientSpanIsParented(t *testing.T) {
 
 	traced := newTracedLocker(t, srv.URL, nil)
 
-	parentCtx, parent := traced.provider.Tracer("test").Start(context.Background(), "app.inventory.reservation.create")
+	parentCtx, parent := traced.provider.Tracer("test").Start(context.Background(), "HTTP POST /api/v1/inventory/reservations")
 	defer parent.End()
 
 	if err := traced.locker.Release(parentCtx, []string{"reservation:order:1"}, "owner-1"); err != nil {
@@ -292,7 +292,7 @@ func TestReservationLocker_InjectsTraceContextAndAllowlistedBaggageOnly(t *testi
 
 	traced := newTracedLocker(t, srv.URL, []string{"safe-test"})
 
-	parentCtx, parent := traced.provider.Tracer("test").Start(context.Background(), "app.inventory.reservation.create")
+	parentCtx, parent := traced.provider.Tracer("test").Start(context.Background(), "HTTP POST /api/v1/inventory/reservations")
 	defer parent.End()
 
 	allowed, err := baggage.NewMember("safe-test", "allowed")
