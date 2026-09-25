@@ -104,6 +104,9 @@ func (h *ReviewHandler) Create(c *gin.Context) {
 // @Success      200  {object} dto.ReviewListResponse
 // @Failure      400  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /products/{id}/reviews [get]
 func (h *ReviewHandler) Fetch(c *gin.Context) {
 
@@ -187,6 +190,9 @@ func (h *ReviewHandler) Fetch(c *gin.Context) {
 // @Param        id path string true "Product UUID"
 // @Success      200  {object} dto.RatingSummaryResponse
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /products/{id}/reviews/summary [get]
 func (h *ReviewHandler) Summary(c *gin.Context) {
 
@@ -217,6 +223,9 @@ func (h *ReviewHandler) Summary(c *gin.Context) {
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /reviews/{reviewId} [get]
 func (h *ReviewHandler) GetByID(c *gin.Context) {
 

@@ -8,6 +8,7 @@ import (
 	"gin-product-service/internal/app/review"
 	"gin-product-service/internal/delivery/http/handler"
 	"gin-product-service/internal/domain"
+	"gin-product-service/internal/infrastructure/auth0"
 	"gin-product-service/internal/infrastructure/database"
 	"gin-product-service/internal/infrastructure/repository"
 )
@@ -18,13 +19,26 @@ type Container struct {
 	ReviewHandler       *handler.ReviewHandler
 	InventoryHandler    *handler.InventoryHandler
 	InfraCheckerUseCase domain.InfraCheckUseCase
+	// AdminTokenVerifier is the single Auth0 admin credential verifier, shared
+	// by every protected route through the router's middleware chain. It is
+	// exposed as the domain port so delivery never depends on the adapter.
+	AdminTokenVerifier domain.AdminTokenVerifier
 }
 
 // NewContainer is the composition root. Use cases are wired directly to their
 // handlers; application spans are no longer introduced by mirrored decorators.
 // The HTTP middleware owns the single server span and request-log correlation,
 // so the wire graph imports neither telemetry nor logging solely for tracing.
-func NewContainer(db database.Database, reservationLocker domain.ReservationLocker) *Container {
+//
+// The Auth0 admin verifier is built once here from already-validated
+// configuration and owns the process-local JWKS cache. Construction performs no
+// network I/O.
+func NewContainer(db database.Database, reservationLocker domain.ReservationLocker, adminConfig auth0.Config) (*Container, error) {
+	adminVerifier, err := auth0.NewVerifier(adminConfig)
+	if err != nil {
+		return nil, err
+	}
+
 	// category module
 	categoryRepo := repository.NewCategoryRepo(db)
 	categoryQueryUC := category.NewCategoryQueryUseCase(categoryRepo)
@@ -67,5 +81,6 @@ func NewContainer(db database.Database, reservationLocker domain.ReservationLock
 		ReviewHandler:       reviewHandler,
 		InventoryHandler:    inventoryHandler,
 		InfraCheckerUseCase: infraCheckerUC,
-	}
+		AdminTokenVerifier:  adminVerifier,
+	}, nil
 }

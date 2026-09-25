@@ -1,4 +1,3 @@
-
 ---
 description: "Dependency-ordered implementation tasks for Admin Auth0 Authorization"
 ---
@@ -21,8 +20,8 @@ description: "Dependency-ordered implementation tasks for Admin Auth0 Authorizat
 
 **Purpose**: Expose the Auth0 configuration and deployment prerequisites before implementation.
 
-- [ ] T001 [P] Add documented `AUTH0_DOMAIN` and `AUTH0_AUDIENCE` entries to `.env.example`, keeping `API_JWT_SECRET` as the separate customer secret and using no real credentials.
-- [ ] T002 [P] Document RS256 API configuration, exact issuer/audience, the Auth0 **Add Permissions in the Access Token** setting, JWKS availability, and the separate customer auth path in `README.md`.
+- [X] T001 [P] Add documented `AUTH0_DOMAIN` and `AUTH0_AUDIENCE` entries to `.env.example`, keeping `API_JWT_SECRET` as the separate customer secret and using no real credentials.
+- [X] T002 [P] Document RS256 API configuration, exact issuer/audience, the Auth0 **Add Permissions in the Access Token** setting, JWKS availability, and the separate customer auth path in `README.md`.
 
 **Checkpoint**: Operators know which Auth0 API settings and environment variables the service requires.
 
@@ -32,13 +31,13 @@ description: "Dependency-ordered implementation tasks for Admin Auth0 Authorizat
 
 **Purpose**: Define the shared credential boundary and verifier before any route uses it. Finish this phase before user-story work.
 
-- [ ] T003 Define the narrow `AdminIdentity` value and `AdminTokenVerifier` interface in `internal/domain/admin_auth.go`, with opaque admin `sub` and exact permission grants but no Gin, JWT, or Auth0 dependency.
-- [ ] T004 [P] Write failing configuration tests in `internal/infrastructure/auth0/config_test.go` for required domain/audience, rejected scheme/path/userinfo, and exact `https://{AUTH0_DOMAIN}/` issuer plus fixed JWKS URL.
-- [ ] T005 Implement validated Auth0 configuration and trusted issuer/JWKS URL derivation in `internal/infrastructure/auth0/config.go`, satisfying T004 without reading token-supplied URLs or reusing `API_JWT_SECRET`.
-- [ ] T006 Write failing JWKS tests in `internal/infrastructure/auth0/jwks_test.go` using generated RSA keys and a local TLS server: exact `kid`, multiple keys, invalid/duplicate keys, five-minute cache hit/expiry, one bounded unknown-`kid` refresh per 60 seconds, coalesced concurrent fetches, timeout/oversized response, and fail-closed outage.
-- [ ] T007 Implement the concurrency-safe, process-local RSA JWKS fetch/cache in `internal/infrastructure/auth0/jwks.go`: fixed HTTPS endpoint, bounded client/body, compatible JWK metadata, atomic refresh, no expired-key fallback, and no fetch on a fresh matching cache hit; satisfy T006.
-- [ ] T008 Write failing verifier tests in `internal/infrastructure/auth0/verifier_test.go` for RS256 signature and matching `kid`, rejected HS256/`none`/forgery, exact `iss`, string and array `aud`, required `exp`, future `nbf`/`iat`, zero expiry leeway, opaque `sub`, and missing/empty/duplicate/malformed `permissions`.
-- [ ] T009 Implement `domain.AdminTokenVerifier` in `internal/infrastructure/auth0/verifier.go` with `github.com/golang-jwt/jwt/v5`, selecting only the matching cached RSA key and returning trusted admin identity only after signature and claim validation; satisfy T008.
+- [X] T003 Define the narrow `AdminIdentity` value and `AdminTokenVerifier` interface in `internal/domain/admin_auth.go`, with opaque admin `sub` and exact permission grants but no Gin, JWT, or Auth0 dependency.
+- [X] T004 [P] Write failing configuration tests in `internal/infrastructure/auth0/config_test.go` for required domain/audience, rejected scheme/path/userinfo, and exact `https://{AUTH0_DOMAIN}/` issuer plus fixed JWKS URL.
+- [X] T005 Implement validated Auth0 configuration and trusted issuer/JWKS URL derivation in `internal/infrastructure/auth0/config.go`, satisfying T004 without reading token-supplied URLs or reusing `API_JWT_SECRET`.
+- [X] T006 Write failing JWKS tests in `internal/infrastructure/auth0/jwks_test.go` using generated RSA keys and a local TLS server: exact `kid`, multiple keys, invalid/duplicate keys, five-minute cache hit/expiry, one bounded unknown-`kid` refresh per 60 seconds, coalesced concurrent fetches, timeout/oversized response, and fail-closed outage.
+- [X] T007 Implement the concurrency-safe, process-local RSA JWKS fetch/cache in `internal/infrastructure/auth0/jwks.go`: fixed HTTPS endpoint, bounded client/body, compatible JWK metadata, atomic refresh, no expired-key fallback, and no fetch on a fresh matching cache hit; satisfy T006.
+- [X] T008 Write failing verifier tests in `internal/infrastructure/auth0/verifier_test.go` for RS256 signature and matching `kid`, rejected HS256/`none`/forgery, exact `iss`, string and array `aud`, required `exp`, future `nbf`/`iat`, zero expiry leeway, opaque `sub`, and missing/empty/duplicate/malformed `permissions`.
+- [X] T009 Implement `domain.AdminTokenVerifier` in `internal/infrastructure/auth0/verifier.go` with `github.com/golang-jwt/jwt/v5`, selecting only the matching cached RSA key and returning trusted admin identity only after signature and claim validation; satisfy T008.
 
 **Checkpoint**: The verifier accepts only correctly signed and intended Auth0 API tokens, and key retrieval is bounded and cached. Its tests require no live Auth0 service.
 
@@ -52,18 +51,18 @@ description: "Dependency-ordered implementation tasks for Admin Auth0 Authorizat
 
 ### Tests for User Story 1
 
-- [ ] T010 [P] [US1] Write failing admin middleware success tests in `internal/delivery/http/middleware/admin/auth_test.go` for verified permissions and optional opaque subject in namespaced Gin context, exact permission membership, and ordered `RequireAuth` then `RequirePermission` execution.
-- [ ] T011 [P] [US1] Write a failing table-driven authorized-route test in `internal/delivery/http/admin_authorized_routes_test.go` covering all 34 admin method/path/permission pairs from `specs/006-admin-auth0-authorization/contracts/admin-authorization.md` with local JWKS-signed RS256 tokens and fake business dependencies; assert the existing handler is reached, including product update, review reads, and reservation creation.
-- [ ] T012 [P] [US1] Extend `internal/wire/container_test.go` with a failing assertion that the container owns one non-nil admin verifier/cache constructed from validated configuration and exposes it for router injection.
-- [ ] T013 [P] [US1] Extend `cmd/server/gin_server_test.go` with failing startup tests for missing/malformed Auth0 config and a valid config that wires one verifier without a network fetch during construction.
-- [ ] T014 [P] [US1] Adapt the existing registration test in `internal/delivery/http/router_routes_test.go` to the planned injected-verifier `SetupRouter` signature and preserve checks for the current route names.
+- [X] T010 [P] [US1] Write failing admin middleware success tests in `internal/delivery/http/middleware/admin/auth_test.go` for verified permissions and optional opaque subject in namespaced Gin context, exact permission membership, and ordered `RequireAuth` then `RequirePermission` execution.
+- [X] T011 [P] [US1] Write a failing table-driven authorized-route test in `internal/delivery/http/admin_authorized_routes_test.go` covering all 34 admin method/path/permission pairs from `specs/006-admin-auth0-authorization/contracts/admin-authorization.md` with local JWKS-signed RS256 tokens and fake business dependencies; assert the existing handler is reached, including product update, review reads, and reservation creation.
+- [X] T012 [P] [US1] Extend `internal/wire/container_test.go` with a failing assertion that the container owns one non-nil admin verifier/cache constructed from validated configuration and exposes it for router injection.
+- [X] T013 [P] [US1] Extend `cmd/server/gin_server_test.go` with failing startup tests for missing/malformed Auth0 config and a valid config that wires one verifier without a network fetch during construction.
+- [X] T014 [P] [US1] Adapt the existing registration test in `internal/delivery/http/router_routes_test.go` to the planned injected-verifier `SetupRouter` signature and preserve checks for the current route names.
 
 ### Implementation for User Story 1
 
-- [ ] T015 [US1] Implement the separate admin `RequireAuth(verifier)` and `RequirePermission(permission)` pair in `internal/delivery/http/middleware/admin/auth.go`; parse one bearer credential, set verified admin context, require exact grant, and abort before handlers on rejection without modifying `internal/delivery/http/middleware/auth.go`.
-- [ ] T016 [US1] Extend `internal/wire/container.go` to construct one Auth0 verifier from validated configuration and expose it through the container's domain port; update the `NewContainer` signature and satisfy T012.
-- [ ] T017 [US1] Inject the admin verifier into `internal/delivery/http/router.go` and chain `adminAuth, admin.RequirePermission("<mapped grant>")` before each of the 34 handlers in `contracts/admin-authorization.md`; retain the five public GET and four customer review registrations as separate existing paths.
-- [ ] T018 [US1] Update `cmd/server/gin_server.go` to validate `AUTH0_DOMAIN`/`AUTH0_AUDIENCE` before serving, pass configuration to `internal/wire`, inject its verifier into `SetupRouter`, and propagate safe startup errors; satisfy T013 and keep customer `API_JWT_SECRET` wiring.
+- [X] T015 [US1] Implement the separate admin `RequireAuth(verifier)` and `RequirePermission(permission)` pair in `internal/delivery/http/middleware/admin/auth.go`; parse one bearer credential, set verified admin context, require exact grant, and abort before handlers on rejection without modifying `internal/delivery/http/middleware/auth.go`.
+- [X] T016 [US1] Extend `internal/wire/container.go` to construct one Auth0 verifier from validated configuration and expose it through the container's domain port; update the `NewContainer` signature and satisfy T012.
+- [X] T017 [US1] Inject the admin verifier into `internal/delivery/http/router.go` and chain `adminAuth, admin.RequirePermission("<mapped grant>")` before each of the 34 handlers in `contracts/admin-authorization.md`; retain the five public GET and four customer review registrations as separate existing paths.
+- [X] T018 [US1] Update `cmd/server/gin_server.go` to validate `AUTH0_DOMAIN`/`AUTH0_AUDIENCE` before serving, pass configuration to `internal/wire`, inject its verifier into `SetupRouter`, and propagate safe startup errors; satisfy T013 and keep customer `API_JWT_SECRET` wiring.
 
 **Checkpoint**: US1's 34 mapped admin actions reach existing operations with their exact grant. The old business payload, transaction, and reservation behavior is unchanged after authorization.
 
@@ -77,14 +76,14 @@ description: "Dependency-ordered implementation tasks for Admin Auth0 Authorizat
 
 ### Tests for User Story 2
 
-- [ ] T019 [P] [US2] Write failing route-level denial matrix tests in `internal/delivery/http/admin_denials_test.go` for all 34 method/path pairs, exact versus similar grants, absent/empty permissions, 401/403 body shape, unknown methods, and no handler invocation or write.
-- [ ] T020 [P] [US2] Write failing metric tests in `internal/infrastructure/metrics/auth_metrics_test.go` for bounded auth outcome and route-template labels, with no token, subject, concrete ID, or permission-list label.
+- [X] T019 [P] [US2] Write failing route-level denial matrix tests in `internal/delivery/http/admin_denials_test.go` for all 34 method/path pairs, exact versus similar grants, absent/empty permissions, 401/403 body shape, unknown methods, and no handler invocation or write.
+- [X] T020 [P] [US2] Write failing metric tests in `internal/infrastructure/metrics/auth_metrics_test.go` for bounded auth outcome and route-template labels, with no token, subject, concrete ID, or permission-list label.
 
 ### Implementation for User Story 2
 
-- [ ] T021 [US2] Complete strict bearer-header and denial behavior in `internal/delivery/http/middleware/admin/auth.go`: reject absent/wrong-scheme/empty/duplicate/ambiguous credentials with 401, return 403 only after valid authentication without the exact grant, and always use `{"error":{"code":"...","message":"...","details":{}}}` with safe fixed messages.
-- [ ] T022 [US2] Add the bounded authorization outcome counter in `internal/infrastructure/metrics/metrics.go`, keyed only by method, registered route template, and fixed outcome; satisfy T020.
-- [ ] T023 [US2] Record safe structured denial logs and the bounded outcome metric from `internal/delivery/http/middleware/admin/auth.go`, preserving internal error causes for diagnosis without logging bearer text, raw claims, subject, or resource identifiers; satisfy T019 and FR-009.
+- [X] T021 [US2] Complete strict bearer-header and denial behavior in `internal/delivery/http/middleware/admin/auth.go`: reject absent/wrong-scheme/empty/duplicate/ambiguous credentials with 401, return 403 only after valid authentication without the exact grant, and always use `{"error":{"code":"...","message":"...","details":{}}}` with safe fixed messages.
+- [X] T022 [US2] Add the bounded authorization outcome counter in `internal/infrastructure/metrics/metrics.go`, keyed only by method, registered route template, and fixed outcome; satisfy T020.
+- [X] T023 [US2] Record safe structured denial logs and the bounded outcome metric from `internal/delivery/http/middleware/admin/auth.go`, preserving internal error causes for diagnosis without logging bearer text, raw claims, subject, or resource identifiers; satisfy T019 and FR-009.
 
 **Checkpoint**: US2's 401/403 matrix passes and protected handlers have zero calls on denied requests.
 
@@ -98,8 +97,8 @@ description: "Dependency-ordered implementation tasks for Admin Auth0 Authorizat
 
 ### Tests and preservation work for User Story 3
 
-- [ ] T024 [P] [US3] Add route-level customer regression tests in `internal/delivery/http/customer_review_auth_test.go` for the four review actions and existing ownership outcomes, confirming Auth0 tokens do not grant customer identity and customer tokens do not grant admin access.
-- [ ] T025 [P] [US3] Extend `internal/delivery/http/middleware/auth_test.go` to prove the existing HS256 `RequireAuth(secret)` still sets customer UUID context for valid customer tokens and rejects RS256 Auth0 tokens; keep `internal/delivery/http/middleware/auth.go` unmodified.
+- [X] T024 [P] [US3] Add route-level customer regression tests in `internal/delivery/http/customer_review_auth_test.go` for the four review actions and existing ownership outcomes, confirming Auth0 tokens do not grant customer identity and customer tokens do not grant admin access.
+- [X] T025 [P] [US3] Extend `internal/delivery/http/middleware/auth_test.go` to prove the existing HS256 `RequireAuth(secret)` still sets customer UUID context for valid customer tokens and rejects RS256 Auth0 tokens; keep `internal/delivery/http/middleware/auth.go` unmodified.
 
 **Checkpoint**: US3's four customer journeys and ownership checks match their pre-feature outcomes.
 
@@ -113,8 +112,8 @@ description: "Dependency-ordered implementation tasks for Admin Auth0 Authorizat
 
 ### Tests and preservation work for User Story 4
 
-- [ ] T026 [P] [US4] Add route-level public catalog tests in `internal/delivery/http/public_catalog_auth_test.go` for all five GET routes and all four header states, including category dropdown and product identifier/slug lookup.
-- [ ] T027 [P] [US4] Extend `internal/delivery/http/router_routes_test.go` with an exhaustive 43-route policy assertion: 34 named admin permissions, these five public GETs, and four customer-authenticated routes; make an unclassified new business method/path fail the test.
+- [X] T026 [P] [US4] Add route-level public catalog tests in `internal/delivery/http/public_catalog_auth_test.go` for all five GET routes and all four header states, including category dropdown and product identifier/slug lookup.
+- [X] T027 [P] [US4] Extend `internal/delivery/http/router_routes_test.go` with an exhaustive 43-route policy assertion: 34 named admin permissions, these five public GETs, and four customer-authenticated routes; make an unclassified new business method/path fail the test.
 
 **Checkpoint**: US4's five catalog reads preserve their existing anonymous behavior, and the policy test guards future route additions.
 
@@ -124,10 +123,10 @@ description: "Dependency-ordered implementation tasks for Admin Auth0 Authorizat
 
 **Purpose**: Publish the HTTP contract and complete constitution and release checks.
 
-- [ ] T028 Add Auth0 bearer security and 401/403 error-envelope annotations for affected admin operations in `internal/delivery/http/handler/category_handler.go`, `internal/delivery/http/handler/product_handler.go`, `internal/delivery/http/handler/reviewHandler.go`, and `internal/delivery/http/handler/inventory_handler.go`, while documenting public/customer exceptions.
-- [ ] T029 Regenerate and review `docs/docs.go`, `docs/swagger.json`, and `docs/swagger.yaml` with `swag init -g cmd/main.go -o docs --parseInternal` after T028.
-- [ ] T030 Run formatting, `go vet ./...`, `go test ./...`, focused race tests for `internal/infrastructure/auth0/` and `internal/delivery/http/`, and `specs/006-admin-auth0-authorization/quickstart.md` scenarios; record actual commands, outcomes, and unavailable checks in `specs/006-admin-auth0-authorization/validation.md`.
-- [ ] T031 Run the SC-005 staff acceptance exercise against an Auth0-configured environment for all protected actions and record authorized actions, extra sign-in prompts, denial envelopes, and the calculated >=95% result in `specs/006-admin-auth0-authorization/validation.md`; mark it unverified if the environment or staff credentials are unavailable.
+- [X] T028 Add Auth0 bearer security and 401/403 error-envelope annotations for affected admin operations in `internal/delivery/http/handler/category_handler.go`, `internal/delivery/http/handler/product_handler.go`, `internal/delivery/http/handler/reviewHandler.go`, and `internal/delivery/http/handler/inventory_handler.go`, while documenting public/customer exceptions.
+- [X] T029 Regenerate and review `docs/docs.go`, `docs/swagger.json`, and `docs/swagger.yaml` with `swag init -g cmd/main.go -o docs --parseInternal` after T028.
+- [X] T030 Run formatting, `go vet ./...`, `go test ./...`, focused race tests for `internal/infrastructure/auth0/` and `internal/delivery/http/`, and `specs/006-admin-auth0-authorization/quickstart.md` scenarios; record actual commands, outcomes, and unavailable checks in `specs/006-admin-auth0-authorization/validation.md`.
+- [X] T031 Run the SC-005 staff acceptance exercise against an Auth0-configured environment for all protected actions and record authorized actions, extra sign-in prompts, denial envelopes, and the calculated >=95% result in `specs/006-admin-auth0-authorization/validation.md`; mark it unverified if the environment or staff credentials are unavailable.
 
 ---
 

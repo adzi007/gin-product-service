@@ -65,15 +65,15 @@ type ReviewResponse struct {
 // ReviewListItemResponse is the section 2 / section 4 list shape, replacing
 // user_id with the hydrated user object.
 type ReviewListItemResponse struct {
-	ID        uuid.UUID         `json:"id"`
-	ProductID uuid.UUID         `json:"product_id"`
-	VariantID *uuid.UUID        `json:"variant_id"`
+	ID        uuid.UUID          `json:"id"`
+	ProductID uuid.UUID          `json:"product_id"`
+	VariantID *uuid.UUID         `json:"variant_id"`
 	User      ReviewUserResponse `json:"user"`
-	Rating    int               `json:"rating"`
-	Title     *string           `json:"title"`
-	Comment   *string           `json:"comment"`
-	CreatedAt time.Time         `json:"created_at"`
-	UpdatedAt *time.Time        `json:"updated_at"`
+	Rating    int                `json:"rating"`
+	Title     *string            `json:"title"`
+	Comment   *string            `json:"comment"`
+	CreatedAt time.Time          `json:"created_at"`
+	UpdatedAt *time.Time         `json:"updated_at"`
 }
 
 // RatingSummaryResponse is the section 3 aggregate shape.
@@ -94,14 +94,14 @@ type UserReviewProductResponse struct {
 
 // UserReviewListItemResponse is the section 7 list shape.
 type UserReviewListItemResponse struct {
-	ID        uuid.UUID                `json:"id"`
+	ID        uuid.UUID                 `json:"id"`
 	Product   UserReviewProductResponse `json:"product"`
-	VariantID *uuid.UUID               `json:"variant_id"`
-	Rating    int                      `json:"rating"`
-	Title     *string                  `json:"title"`
-	Comment   *string                  `json:"comment"`
-	CreatedAt time.Time                `json:"created_at"`
-	UpdatedAt *time.Time               `json:"updated_at"`
+	VariantID *uuid.UUID                `json:"variant_id"`
+	Rating    int                       `json:"rating"`
+	Title     *string                   `json:"title"`
+	Comment   *string                   `json:"comment"`
+	CreatedAt time.Time                 `json:"created_at"`
+	UpdatedAt *time.Time                `json:"updated_at"`
 }
 
 // PaginationResponse carries page metadata for list endpoints.

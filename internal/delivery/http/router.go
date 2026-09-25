@@ -4,6 +4,7 @@ import (
 	_ "gin-product-service/docs"
 	"gin-product-service/internal/delivery/http/handler"
 	"gin-product-service/internal/delivery/http/middleware"
+	adminmw "gin-product-service/internal/delivery/http/middleware/admin"
 	"gin-product-service/internal/domain"
 	"gin-product-service/internal/infrastructure/logger"
 	"gin-product-service/internal/infrastructure/telemetry"
@@ -24,7 +25,14 @@ func NewAppRouter(app *gin.Engine) router {
 	}
 }
 
-func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler, productHandler *handler.ProductHandler, infraCheckerUseCase domain.InfraCheckUseCase, reviewHandler *handler.ReviewHandler, inventoryHandler *handler.InventoryHandler, jwtSecret string, runtime *telemetry.TelemetryRuntime) *gin.Engine {
+// SetupRouter registers every route and its explicit access policy.
+//
+// Management routes are protected by the Auth0 admin chain
+// admin.RequireAuth(verifier) followed by admin.RequirePermission("<grant>"), in
+// that order, so authentication always precedes authorization and both abort
+// before the business handler. The chain is declared per route rather than on a
+// group so public catalog reads and customer review routes never inherit it.
+func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler, productHandler *handler.ProductHandler, infraCheckerUseCase domain.InfraCheckUseCase, reviewHandler *handler.ReviewHandler, inventoryHandler *handler.InventoryHandler, adminVerifier domain.AdminTokenVerifier, jwtSecret string, runtime *telemetry.TelemetryRuntime) *gin.Engine {
 
 	r := router.appServer
 
@@ -68,61 +76,69 @@ func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler, prod
 		c.Status(http.StatusOK)
 	})
 
+	// adminAuth authenticates one Auth0 RS256 admin credential. Each management
+	// route then requires its own exact permission.
+	adminAuth := adminmw.RequireAuth(adminVerifier)
+
 	v1 := r.Group("/api/v1")
 	{
 		categories := v1.Group("/categories")
 		{
-			categories.POST("", categoryHandler.Create)
+			categories.POST("", adminAuth, adminmw.RequirePermission("categories:create"), categoryHandler.Create)
+			// Public catalog read: no token is required or validated.
 			categories.GET("", categoryHandler.Fetch)
 			// Dropdown must be declared before /:id to avoid shadowing.
 			categories.GET("/dropdown", categoryHandler.Dropdown)
 			categories.GET("/:id", categoryHandler.GetByID)
-			categories.PUT("/:id", categoryHandler.Update)
-			categories.DELETE("/:id", categoryHandler.Delete)
+			categories.PUT("/:id", adminAuth, adminmw.RequirePermission("categories:update"), categoryHandler.Update)
+			categories.DELETE("/:id", adminAuth, adminmw.RequirePermission("categories:delete"), categoryHandler.Delete)
 		}
 
 		products := v1.Group("/products")
 		{
-			products.POST("", productHandler.Create)
+			products.POST("", adminAuth, adminmw.RequirePermission("products:create"), productHandler.Create)
+			// Public catalog read: no token is required or validated.
 			products.GET("", productHandler.Fetch)
 			// /:id also serves handle lookups — see ProductHandler.GetByID.
 			products.GET("/:id", productHandler.GetByID)
-			products.PATCH("/:id", productHandler.Update)
-			products.DELETE("/:id", productHandler.Archive)
-			products.POST("/:id/restore", productHandler.Restore)
-			products.DELETE("/:id/purge", productHandler.Purge)
+			products.PATCH("/:id", adminAuth, adminmw.RequirePermission("products:update"), productHandler.Update)
+			products.DELETE("/:id", adminAuth, adminmw.RequirePermission("products:delete"), productHandler.Archive)
+			products.POST("/:id/restore", adminAuth, adminmw.RequirePermission("products:restore"), productHandler.Restore)
+			products.DELETE("/:id/purge", adminAuth, adminmw.RequirePermission("products:purge"), productHandler.Purge)
 
-			products.POST("/:id/options", productHandler.CreateOption)
+			products.POST("/:id/options", adminAuth, adminmw.RequirePermission("products:options:create"), productHandler.CreateOption)
 			// Static /reorder must be registered before the /:option_id
 			// wildcard so Gin resolves it to ReorderOptions, not RenameOption.
-			products.PATCH("/:id/options/reorder", productHandler.ReorderOptions)
-			products.PATCH("/:id/options/:option_id", productHandler.RenameOption)
-			products.DELETE("/:id/options/:option_id", productHandler.DeleteOption)
-			products.POST("/:id/options/:option_id/values", productHandler.AddOptionValue)
-			products.PATCH("/:id/options/:option_id/values/:value_id", productHandler.UpdateOptionValue)
-			products.DELETE("/:id/options/:option_id/values/:value_id", productHandler.DeleteOptionValue)
+			products.PATCH("/:id/options/reorder", adminAuth, adminmw.RequirePermission("products:options:update"), productHandler.ReorderOptions)
+			products.PATCH("/:id/options/:option_id", adminAuth, adminmw.RequirePermission("products:options:update"), productHandler.RenameOption)
+			products.DELETE("/:id/options/:option_id", adminAuth, adminmw.RequirePermission("products:options:delete"), productHandler.DeleteOption)
+			products.POST("/:id/options/:option_id/values", adminAuth, adminmw.RequirePermission("products:options:create"), productHandler.AddOptionValue)
+			products.PATCH("/:id/options/:option_id/values/:value_id", adminAuth, adminmw.RequirePermission("products:options:update"), productHandler.UpdateOptionValue)
+			products.DELETE("/:id/options/:option_id/values/:value_id", adminAuth, adminmw.RequirePermission("products:options:delete"), productHandler.DeleteOptionValue)
 
-			products.POST("/:id/variants", productHandler.CreateVariant)
-			products.POST("/:id/variants/bulk", productHandler.BulkCreateVariants)
-			products.PATCH("/:id/variants/bulk", productHandler.BulkUpdateVariants)
-			products.POST("/:id/variants/bulk-delete", productHandler.BulkDeleteVariants)
-			products.PATCH("/:id/variants/reorder", productHandler.ReorderVariants)
+			products.POST("/:id/variants", adminAuth, adminmw.RequirePermission("products:variants:create"), productHandler.CreateVariant)
+			products.POST("/:id/variants/bulk", adminAuth, adminmw.RequirePermission("products:variants:create"), productHandler.BulkCreateVariants)
+			products.PATCH("/:id/variants/bulk", adminAuth, adminmw.RequirePermission("products:variants:update"), productHandler.BulkUpdateVariants)
+			products.POST("/:id/variants/bulk-delete", adminAuth, adminmw.RequirePermission("products:variants:delete"), productHandler.BulkDeleteVariants)
+			products.PATCH("/:id/variants/reorder", adminAuth, adminmw.RequirePermission("products:variants:update"), productHandler.ReorderVariants)
 
-			products.POST("/:id/media", productHandler.CreateMedia)
+			products.POST("/:id/media", adminAuth, adminmw.RequirePermission("products:media:create"), productHandler.CreateMedia)
 			// Static /reorder must be registered before the /:media_id wildcard
 			// so Gin resolves it to ReorderMedia, not UpdateMedia.
-			products.PATCH("/:id/media/reorder", productHandler.ReorderMedia)
-			products.PATCH("/:id/media/:media_id", productHandler.UpdateMedia)
-			products.DELETE("/:id/media/:media_id", productHandler.DeleteMedia)
+			products.PATCH("/:id/media/reorder", adminAuth, adminmw.RequirePermission("products:media:update"), productHandler.ReorderMedia)
+			products.PATCH("/:id/media/:media_id", adminAuth, adminmw.RequirePermission("products:media:update"), productHandler.UpdateMedia)
+			products.DELETE("/:id/media/:media_id", adminAuth, adminmw.RequirePermission("products:media:delete"), productHandler.DeleteMedia)
 
-			products.GET("/:id/reviews", reviewHandler.Fetch)
-			products.GET("/:id/reviews/summary", reviewHandler.Summary)
+			products.GET("/:id/reviews", adminAuth, adminmw.RequirePermission("products:reviews:read"), reviewHandler.Fetch)
+			products.GET("/:id/reviews/summary", adminAuth, adminmw.RequirePermission("products:reviews:read"), reviewHandler.Summary)
+			// Customer review creation keeps the existing HS256 identity path.
 			products.POST("/:id/reviews", middleware.RequireAuth(jwtSecret), reviewHandler.Create)
 		}
 
 		reviews := v1.Group("/reviews")
 		{
-			reviews.GET("/:reviewId", reviewHandler.GetByID)
+			reviews.GET("/:reviewId", adminAuth, adminmw.RequirePermission("reviews:read"), reviewHandler.GetByID)
+			// Customer-owned review edits keep the existing HS256 identity path.
 			reviews.PATCH("/:reviewId", middleware.RequireAuth(jwtSecret), reviewHandler.Update)
 			reviews.DELETE("/:reviewId", middleware.RequireAuth(jwtSecret), reviewHandler.Delete)
 		}
@@ -134,19 +150,19 @@ func (router *router) SetupRouter(categoryHandler *handler.CategoryHandler, prod
 
 		variants := v1.Group("/variants")
 		{
-			variants.PATCH("/:id", productHandler.UpdateVariant)
-			variants.DELETE("/:id", productHandler.DeleteVariant)
-			variants.POST("/:id/restore", productHandler.RestoreVariant)
+			variants.PATCH("/:id", adminAuth, adminmw.RequirePermission("variants:update"), productHandler.UpdateVariant)
+			variants.DELETE("/:id", adminAuth, adminmw.RequirePermission("variants:delete"), productHandler.DeleteVariant)
+			variants.POST("/:id/restore", adminAuth, adminmw.RequirePermission("variants:restore"), productHandler.RestoreVariant)
 
-			variants.POST("/:id/media", productHandler.AttachVariantMedia)
+			variants.POST("/:id/media", adminAuth, adminmw.RequirePermission("variants:media:create"), productHandler.AttachVariantMedia)
 			// Static /reorder must be registered before /:media_id.
-			variants.PATCH("/:id/media/reorder", productHandler.ReorderVariantMedia)
-			variants.DELETE("/:id/media/:media_id", productHandler.DetachVariantMedia)
+			variants.PATCH("/:id/media/reorder", adminAuth, adminmw.RequirePermission("variants:media:update"), productHandler.ReorderVariantMedia)
+			variants.DELETE("/:id/media/:media_id", adminAuth, adminmw.RequirePermission("variants:media:delete"), productHandler.DetachVariantMedia)
 		}
 
 		inventory := v1.Group("/inventory")
 		{
-			inventory.POST("/reservations", inventoryHandler.CreateReservation)
+			inventory.POST("/reservations", adminAuth, adminmw.RequirePermission("inventory:reservations:create"), inventoryHandler.CreateReservation)
 		}
 	}
 

@@ -186,6 +186,47 @@ durable idempotency record.
 
 > Note: category endpoints return `{"message": "success", "data": ...}`, while product/variant endpoints return `{"status": "success"|"error", "data"|"message": ..., "code": ...}`. The response envelope is not yet unified between modules.
 
+## Admin authorization (Auth0)
+
+Management routes are protected by Auth0 access tokens, independently of the
+customer review authentication path.
+
+- **Credential**: exactly one `Authorization: Bearer <Auth0 RS256 access token>`
+  header. The token must be signed with RS256, carry a `kid` that matches a key
+  currently published by the configured domain's JWKS endpoint, use the issuer
+  `https://{AUTH0_DOMAIN}/`, and include `AUTH0_AUDIENCE` in `aud`.
+- **Permission**: after authentication, the route requires its exact permission
+  from the token's `permissions` string array (for example `products:update`).
+  Similar permissions and Auth0 roles or `scope` values do not grant access.
+- **Auth0 API settings**: issue RS256 access tokens for `AUTH0_AUDIENCE` and
+  enable **Add Permissions in the Access Token** so the `permissions` claim is
+  populated. A custom Auth0 domain must match the token `iss`.
+- **Key retrieval**: public keys are fetched only from
+  `https://{AUTH0_DOMAIN}/.well-known/jwks.json`, cached in-process for five
+  minutes, and refreshed at most once per 60 seconds for an unknown `kid`. An
+  unknown `kid` never falls back to a different key. On a key-fetch outage a
+  request that needs an uncached or expired key fails closed (401).
+- **Denials**: authentication failures return `401` with
+  `error.code = UNAUTHENTICATED`; a valid token without the route's exact
+  permission returns `403` with `error.code = FORBIDDEN`. Both use the
+  `{"error":{"code":"...","message":"...","details":{}}}` envelope with safe
+  fixed messages and cause no protected business operation.
+
+### Route policy
+
+| Policy | Routes |
+|---|---|
+| Admin permission | 34 catalog, variant, media, review-read, and inventory management routes |
+| Public catalog read | 5 category/product GET routes (no token required or validated) |
+| Customer HS256 | 4 review routes (`POST /products/:id/reviews`, `PATCH`/`DELETE /reviews/:reviewId`, `GET /users/me/reviews`) |
+
+The five public GET routes (`/api/v1/categories`, `/api/v1/categories/:id`,
+`/api/v1/categories/dropdown`, `/api/v1/products`, `/api/v1/products/:id`)
+ignore any supplied bearer token, including an invalid one. The four customer
+review routes keep using `API_JWT_SECRET` and their ownership rules; an Auth0
+token does not substitute for customer identity. The full 43-route matrix is in
+[`specs/006-admin-auth0-authorization/contracts/admin-authorization.md`](specs/006-admin-auth0-authorization/contracts/admin-authorization.md).
+
 ## Setup
 
 1. Copy the env file and fill in your values:
@@ -195,6 +236,15 @@ durable idempotency record.
    Required variables:
    - `DATABASE_URL` — Postgres/Neon connection string, e.g. `postgresql://user:pass@host/db?sslmode=require`
    - `APP_ENV` — `development` or `production` (controls zap logger config)
+   - `AUTH0_DOMAIN` — Auth0 host name only, no scheme and no path (e.g.
+     `tenant.us.auth0.com`). Used to derive the trusted issuer
+     `https://{AUTH0_DOMAIN}/` and the fixed JWKS URL
+     `https://{AUTH0_DOMAIN}/.well-known/jwks.json`. Required: a missing or
+     malformed value prevents the service from serving.
+   - `AUTH0_AUDIENCE` — the exact Auth0 API identifier expected in the access
+     token's `aud` claim. Required.
+   - `API_JWT_SECRET` — the existing customer HS256 secret. It stays separate
+     from the Auth0 settings and keeps authenticating the customer review routes.
    - `REDIS_REST_URL`, `REDIS_REST_TOKEN` — Upstash Redis REST credentials required by
      `POST /api/v1/inventory/reservations` for cross-instance coordination. These are
      coordination-only: PostgreSQL remains the durable correctness authority. If they are

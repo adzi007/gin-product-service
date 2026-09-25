@@ -45,6 +45,16 @@ func L(ctx context.Context) *zap.Logger {
 	return base
 }
 
+// SetLogger replaces the base logger. Production wiring uses Init; this exists
+// so tests can install a deterministic sink, such as a no-op logger that keeps
+// expected denial-path warnings out of the test output.
+func SetLogger(l *zap.Logger) {
+	if l == nil {
+		return
+	}
+	base = l
+}
+
 // WithContext attaches fields (request id, trace id, etc.) to a child logger
 // and returns a new context carrying it.
 func WithContext(ctx context.Context, fields ...zap.Field) context.Context {

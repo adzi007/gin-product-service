@@ -14,9 +14,13 @@ import (
 
 // @title           Gin Product Service API
 // @version         1.0
-// @description     REST API for Product & Category Service
+// @description     REST API for Product & Category Service. Management routes require an Auth0 RS256 bearer access token whose exact permission matches the route; denials use the {"error":{"code":"...","message":"...","details":{}}} envelope with 401 UNAUTHENTICATED for a missing, malformed, invalid, expired, or wrong-audience credential and 403 FORBIDDEN for a valid token without the route's exact permission. Public exception: GET /categories, GET /categories/{id}, GET /categories/dropdown, GET /products, and GET /products/{id} require no token and ignore any supplied Authorization header. Customer exception: POST /products/{id}/reviews, PATCH /reviews/{reviewId}, DELETE /reviews/{reviewId}, and GET /users/me/reviews keep the existing customer HS256 token and ownership rules, and an Auth0 permission is not a substitute for customer identity.
 // @host            localhost:5000
 // @BasePath        /api/v1
+// @securityDefinitions.apikey BearerAuth
+// @in                         header
+// @name                       Authorization
+// @description                Auth0 RS256 access token as `Bearer <token>`. The token must carry the operation's exact permission and be signed by a key currently published by the configured Auth0 domain. Token issuer and audience must match the configured Auth0 API; an invalid, expired, or unintended token yields 401.
 
 func main() {
 

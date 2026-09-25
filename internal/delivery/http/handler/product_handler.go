@@ -58,6 +58,9 @@ func NewProductHandler(
 // @Failure      400  {object} map[string]any
 // @Failure      409  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /products [post]
 func (h *ProductHandler) Create(c *gin.Context) {
 
@@ -306,6 +309,9 @@ func (h *ProductHandler) GetByID(c *gin.Context) {
 // @Failure      404  {object} map[string]any
 // @Failure      409  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /products/{id} [patch]
 func (h *ProductHandler) Update(c *gin.Context) {
 
@@ -363,6 +369,9 @@ func (h *ProductHandler) Update(c *gin.Context) {
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /products/{id} [delete]
 func (h *ProductHandler) Archive(c *gin.Context) {
 
@@ -395,6 +404,9 @@ func (h *ProductHandler) Archive(c *gin.Context) {
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /products/{id}/restore [post]
 func (h *ProductHandler) Restore(c *gin.Context) {
 
@@ -428,6 +440,9 @@ func (h *ProductHandler) Restore(c *gin.Context) {
 // @Failure      404  {object} map[string]any
 // @Failure      409  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /products/{id}/purge [delete]
 func (h *ProductHandler) Purge(c *gin.Context) {
 
@@ -463,6 +478,9 @@ func (h *ProductHandler) Purge(c *gin.Context) {
 // @Failure      404  {object} map[string]any
 // @Failure      409  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /products/{id}/options [post]
 func (h *ProductHandler) CreateOption(c *gin.Context) {
 
@@ -523,6 +541,9 @@ func (h *ProductHandler) CreateOption(c *gin.Context) {
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /products/{id}/options/{option_id} [patch]
 func (h *ProductHandler) RenameOption(c *gin.Context) {
 
@@ -572,6 +593,9 @@ func (h *ProductHandler) RenameOption(c *gin.Context) {
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /products/{id}/options/{option_id} [delete]
 func (h *ProductHandler) DeleteOption(c *gin.Context) {
 
@@ -610,6 +634,9 @@ func (h *ProductHandler) DeleteOption(c *gin.Context) {
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /products/{id}/options/reorder [patch]
 func (h *ProductHandler) ReorderOptions(c *gin.Context) {
 
@@ -656,6 +683,9 @@ func (h *ProductHandler) ReorderOptions(c *gin.Context) {
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /products/{id}/options/{option_id}/values [post]
 func (h *ProductHandler) AddOptionValue(c *gin.Context) {
 
@@ -708,6 +738,9 @@ func (h *ProductHandler) AddOptionValue(c *gin.Context) {
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /products/{id}/options/{option_id}/values/{value_id} [patch]
 func (h *ProductHandler) UpdateOptionValue(c *gin.Context) {
 
@@ -762,6 +795,9 @@ func (h *ProductHandler) UpdateOptionValue(c *gin.Context) {
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /products/{id}/options/{option_id}/values/{value_id} [delete]
 func (h *ProductHandler) DeleteOptionValue(c *gin.Context) {
 
@@ -805,6 +841,9 @@ func (h *ProductHandler) DeleteOptionValue(c *gin.Context) {
 // @Failure      404  {object} map[string]any
 // @Failure      409  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /products/{id}/variants [post]
 func (h *ProductHandler) CreateVariant(c *gin.Context) {
 
@@ -852,6 +891,9 @@ func (h *ProductHandler) CreateVariant(c *gin.Context) {
 // @Failure      404  {object} map[string]any
 // @Failure      409  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /products/{id}/variants/bulk [post]
 func (h *ProductHandler) BulkCreateVariants(c *gin.Context) {
 
@@ -899,6 +941,9 @@ func (h *ProductHandler) BulkCreateVariants(c *gin.Context) {
 // @Failure      404  {object} map[string]any
 // @Failure      409  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /variants/{id} [patch]
 func (h *ProductHandler) UpdateVariant(c *gin.Context) {
 
@@ -946,6 +991,9 @@ func (h *ProductHandler) UpdateVariant(c *gin.Context) {
 // @Failure      404  {object} map[string]any
 // @Failure      409  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /products/{id}/variants/bulk [patch]
 func (h *ProductHandler) BulkUpdateVariants(c *gin.Context) {
 
@@ -990,6 +1038,9 @@ func (h *ProductHandler) BulkUpdateVariants(c *gin.Context) {
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /variants/{id} [delete]
 func (h *ProductHandler) DeleteVariant(c *gin.Context) {
 
@@ -1024,6 +1075,9 @@ func (h *ProductHandler) DeleteVariant(c *gin.Context) {
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /products/{id}/variants/bulk-delete [post]
 func (h *ProductHandler) BulkDeleteVariants(c *gin.Context) {
 
@@ -1067,6 +1121,9 @@ func (h *ProductHandler) BulkDeleteVariants(c *gin.Context) {
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /variants/{id}/restore [post]
 func (h *ProductHandler) RestoreVariant(c *gin.Context) {
 
@@ -1102,6 +1159,9 @@ func (h *ProductHandler) RestoreVariant(c *gin.Context) {
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /products/{id}/variants/reorder [patch]
 func (h *ProductHandler) ReorderVariants(c *gin.Context) {
 
@@ -1147,6 +1207,9 @@ func (h *ProductHandler) ReorderVariants(c *gin.Context) {
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /products/{id}/media [post]
 func (h *ProductHandler) CreateMedia(c *gin.Context) {
 
@@ -1194,6 +1257,9 @@ func (h *ProductHandler) CreateMedia(c *gin.Context) {
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /products/{id}/media/{media_id} [patch]
 func (h *ProductHandler) UpdateMedia(c *gin.Context) {
 
@@ -1243,6 +1309,9 @@ func (h *ProductHandler) UpdateMedia(c *gin.Context) {
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /products/{id}/media/{media_id} [delete]
 func (h *ProductHandler) DeleteMedia(c *gin.Context) {
 
@@ -1281,6 +1350,9 @@ func (h *ProductHandler) DeleteMedia(c *gin.Context) {
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /products/{id}/media/reorder [patch]
 func (h *ProductHandler) ReorderMedia(c *gin.Context) {
 
@@ -1326,6 +1398,9 @@ func (h *ProductHandler) ReorderMedia(c *gin.Context) {
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /variants/{id}/media [post]
 func (h *ProductHandler) AttachVariantMedia(c *gin.Context) {
 
@@ -1371,6 +1446,9 @@ func (h *ProductHandler) AttachVariantMedia(c *gin.Context) {
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /variants/{id}/media/{media_id} [delete]
 func (h *ProductHandler) DetachVariantMedia(c *gin.Context) {
 
@@ -1409,6 +1487,9 @@ func (h *ProductHandler) DetachVariantMedia(c *gin.Context) {
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]any
 // @Failure      500  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /variants/{id}/media/reorder [patch]
 func (h *ProductHandler) ReorderVariantMedia(c *gin.Context) {
 

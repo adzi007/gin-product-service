@@ -53,7 +53,52 @@ var (
 		},
 		[]string{"outcome"},
 	)
+
+	// AuthorizationOutcomes counts admin authorization outcomes by method, the
+	// registered route template, and a bounded outcome. The label set is
+	// deliberately closed: no token, raw subject, permission list, or concrete
+	// resource identifier may become a label value.
+	AuthorizationOutcomes = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "http_admin_authorization_outcomes_total",
+			Help: "Admin authorization outcomes by method, registered route template, and bounded outcome",
+		},
+		[]string{"method", "route", "outcome"},
+	)
 )
+
+// AuthOutcome is the bounded vocabulary for an admin authorization result.
+type AuthOutcome string
+
+const (
+	// AuthOutcomeAuthenticated counts a request that passed authentication and
+	// the route's exact permission check.
+	AuthOutcomeAuthenticated AuthOutcome = "authenticated"
+	// AuthOutcomeUnauthenticated counts a credential that could not be verified.
+	AuthOutcomeUnauthenticated AuthOutcome = "unauthenticated"
+	// AuthOutcomeForbidden counts a verified admin token without the route's
+	// exact permission.
+	AuthOutcomeForbidden AuthOutcome = "forbidden"
+	// AuthOutcomeOther absorbs any unrecognized value so label cardinality
+	// stays bounded.
+	AuthOutcomeOther AuthOutcome = "other"
+)
+
+// ObserveAuthorizationOutcome counts one admin authorization outcome. An
+// unrecognized outcome is recorded as AuthOutcomeOther.
+func ObserveAuthorizationOutcome(method, route string, outcome AuthOutcome) {
+	AuthorizationOutcomes.WithLabelValues(method, route, string(normalizeAuthOutcome(outcome))).Inc()
+}
+
+// normalizeAuthOutcome maps any value outside the vocabulary to "other".
+func normalizeAuthOutcome(outcome AuthOutcome) AuthOutcome {
+	switch outcome {
+	case AuthOutcomeAuthenticated, AuthOutcomeUnauthenticated, AuthOutcomeForbidden:
+		return outcome
+	default:
+		return AuthOutcomeOther
+	}
+}
 
 func ObserveHTTP(method, path, status string, start time.Time) {
 	HTTPRequestsTotal.WithLabelValues(method, path, status).Inc()

@@ -58,10 +58,19 @@ func disabledRuntime(t *testing.T) *telemetry.TelemetryRuntime {
 	return runtime
 }
 
+// stubAuth0Config supplies valid Auth0 settings for tests that are not about
+// startup configuration validation.
+func stubAuth0Config(t *testing.T) {
+	t.Helper()
+	t.Setenv("AUTH0_DOMAIN", "tenant.us.auth0.com")
+	t.Setenv("AUTH0_AUDIENCE", "https://api.example.com/")
+}
+
 // mustServer builds a server for tests, failing the test on a nil-runtime or
 // constructor error.
 func mustServer(t *testing.T, db database.Database, runtime *telemetry.TelemetryRuntime, opts Options) *ginServer {
 	t.Helper()
+	stubAuth0Config(t)
 	srv, err := NewServerWithOptions(db, runtime, opts)
 	if err != nil {
 		t.Fatalf("mustServer(t, ) error = %v", err)
@@ -71,6 +80,7 @@ func mustServer(t *testing.T, db database.Database, runtime *telemetry.Telemetry
 
 // A nil telemetry runtime is rejected before any route is set up.
 func TestServerRejectsNilTelemetryRuntime(t *testing.T) {
+	stubAuth0Config(t)
 	srv, err := NewServerWithOptions(&fakeDatabase{}, nil, Options{Address: "127.0.0.1:0"})
 	if err == nil {
 		t.Fatalf("NewServerWithOptions(nil runtime) error = nil, want a constructor error")
@@ -85,6 +95,68 @@ func TestServerRejectsNilTelemetryRuntime(t *testing.T) {
 	}
 	if appSrv != nil {
 		t.Fatalf("NewServer(nil runtime) returned a server")
+	}
+}
+
+// Missing or malformed Auth0 configuration must prevent serving rather than
+// exposing management routes with unverified trust material.
+func TestServerRejectsInvalidAuth0Config(t *testing.T) {
+	tests := []struct {
+		name     string
+		domain   string
+		audience string
+	}{
+		{name: "missing domain", domain: "", audience: "https://api.example.com/"},
+		{name: "missing audience", domain: "tenant.us.auth0.com", audience: ""},
+		{name: "blank domain", domain: "   ", audience: "https://api.example.com/"},
+		{name: "domain with scheme", domain: "https://tenant.us.auth0.com", audience: "https://api.example.com/"},
+		{name: "domain with path", domain: "tenant.us.auth0.com/oauth", audience: "https://api.example.com/"},
+		{name: "domain with userinfo", domain: "user@tenant.us.auth0.com", audience: "https://api.example.com/"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AUTH0_DOMAIN", tc.domain)
+			t.Setenv("AUTH0_AUDIENCE", tc.audience)
+
+			srv, err := NewServerWithOptions(&fakeDatabase{}, disabledRuntime(t), Options{Address: "127.0.0.1:0"})
+			if err == nil {
+				t.Fatalf("NewServerWithOptions(domain=%q, audience=%q) error = nil, want a startup error", tc.domain, tc.audience)
+			}
+			if srv != nil {
+				t.Fatalf("NewServerWithOptions(domain=%q, audience=%q) returned a server", tc.domain, tc.audience)
+			}
+		})
+	}
+}
+
+// A valid configuration wires exactly one admin verifier without any network
+// fetch during construction: protected routes deny an unauthenticated request
+// and public catalog routes stay reachable.
+func TestServerWiresAdminAuthorizationWithoutNetworkFetch(t *testing.T) {
+	started := time.Now()
+
+	srv := mustServer(t, &fakeDatabase{}, disabledRuntime(t), Options{Address: "127.0.0.1:0"})
+
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("server construction took %v, want no blocking network fetch", elapsed)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/categories", nil)
+	srv.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("POST /api/v1/categories without a credential = %d, want 401", recorder.Code)
+	}
+
+	// A public catalog read is not admin-protected, so it must not return 401/403.
+	publicRecorder := httptest.NewRecorder()
+	publicRequest := httptest.NewRequest(http.MethodGet, "/api/v1/categories", nil)
+	srv.Handler().ServeHTTP(publicRecorder, publicRequest)
+
+	if publicRecorder.Code == http.StatusUnauthorized || publicRecorder.Code == http.StatusForbidden {
+		t.Fatalf("GET /api/v1/categories = %d, want public access without an admin denial", publicRecorder.Code)
 	}
 }
 func enabledRuntime(t *testing.T, endpoint string, shutdownTimeout time.Duration) (*telemetry.TelemetryRuntime, *metrics.TelemetryMetrics) {

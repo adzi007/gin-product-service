@@ -215,6 +215,9 @@ func (h *CategoryHandler) GetByID(c *gin.Context) {
 // @Success      201  {object} domain.Category
 // @Failure      400  {object} map[string]any
 // @Failure      500  {object} map[string]string
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /categories [post]
 func (h *CategoryHandler) Create(c *gin.Context) {
 
@@ -260,6 +263,9 @@ func (h *CategoryHandler) Create(c *gin.Context) {
 // @Failure      400  {object} map[string]any
 // @Failure      404  {object} map[string]string
 // @Failure      500  {object} map[string]string
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /categories/{id} [put]
 func (h *CategoryHandler) Update(c *gin.Context) {
 
@@ -313,6 +319,9 @@ func (h *CategoryHandler) Update(c *gin.Context) {
 // @Failure      400  {object} map[string]string
 // @Failure      404  {object} map[string]string
 // @Failure      500  {object} map[string]string
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /categories/{id} [delete]
 func (h *CategoryHandler) Delete(c *gin.Context) {
 

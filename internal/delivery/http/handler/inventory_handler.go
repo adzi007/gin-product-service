@@ -37,6 +37,9 @@ func NewInventoryHandler(createReservationUC domain.CreateReservationUseCase) *I
 // @Failure      409  {object} map[string]any
 // @Failure      422  {object} map[string]any
 // @Failure      503  {object} map[string]any
+// @Security     BearerAuth
+// @Failure      401  {object} map[string]any
+// @Failure      403  {object} map[string]any
 // @Router       /inventory/reservations [post]
 func (h *InventoryHandler) CreateReservation(c *gin.Context) {
 	ctx := c.Request.Context()

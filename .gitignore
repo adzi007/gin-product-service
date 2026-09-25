@@ -1,3 +1,17 @@
 .env
 tmp/
 .air.toml
+
+# Go build and test artifacts
+*.exe
+*.test
+*.out
+vendor/
+
+# Local editor and OS cruft
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+.vscode/
+.idea/

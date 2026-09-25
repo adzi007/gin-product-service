@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	apphttp "gin-product-service/internal/delivery/http"
+	"gin-product-service/internal/infrastructure/auth0"
 	"gin-product-service/internal/infrastructure/database"
 	"gin-product-service/internal/infrastructure/redis"
 	"gin-product-service/internal/infrastructure/telemetry"
@@ -75,9 +76,18 @@ func NewServer(db database.Database, tracing *telemetry.TelemetryRuntime) (AppSe
 // NewServerWithOptions builds the server and wires every route up front, so the
 // engine is complete before shutdown behavior is exercised. A nil telemetry
 // runtime is rejected so instrumentation is never attached implicitly.
+//
+// The Auth0 admin configuration is validated here, before any route is exposed:
+// a missing or malformed AUTH0_DOMAIN/AUTH0_AUDIENCE prevents serving rather
+// than publishing management routes with unverified trust material.
 func NewServerWithOptions(db database.Database, tracing *telemetry.TelemetryRuntime, opts Options) (*ginServer, error) {
 	if tracing == nil {
 		return nil, errors.New("telemetry runtime is required")
+	}
+
+	adminConfig, err := auth0.NewConfig(os.Getenv("AUTH0_DOMAIN"), os.Getenv("AUTH0_AUDIENCE"))
+	if err != nil {
+		return nil, fmt.Errorf("admin authorization configuration: %w", err)
 	}
 
 	address := opts.Address
@@ -99,26 +109,34 @@ func NewServerWithOptions(db database.Database, tracing *telemetry.TelemetryRunt
 		report:         opts.Report,
 		ready:          make(chan struct{}),
 	}
-	s.setupRoutes()
+	if err := s.setupRoutes(adminConfig); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
 // setupRoutes is the composition step: infrastructure adapters and use cases are
 // built with the explicit telemetry runtime and registered on the engine.
-func (s *ginServer) setupRoutes() {
+func (s *ginServer) setupRoutes(adminConfig auth0.Config) error {
 	reservationLocker := redis.NewReservationLocker(
 		os.Getenv("REDIS_REST_URL"),
 		os.Getenv("REDIS_REST_TOKEN"),
 		redis.WithTracing(s.telemetry.TracerProvider, s.telemetry.Propagator),
 	)
 
-	c := wire.NewContainer(s.db, reservationLocker)
+	c, err := wire.NewContainer(s.db, reservationLocker, adminConfig)
+	if err != nil {
+		return fmt.Errorf("compose container: %w", err)
+	}
+
 	router := apphttp.NewAppRouter(s.app)
 	jwtSecret := os.Getenv("API_JWT_SECRET")
-	router.SetupRouter(c.CategoryHandler, c.ProductHandler, c.InfraCheckerUseCase, c.ReviewHandler, c.InventoryHandler, jwtSecret, s.telemetry)
+	router.SetupRouter(c.CategoryHandler, c.ProductHandler, c.InfraCheckerUseCase, c.ReviewHandler, c.InventoryHandler, c.AdminTokenVerifier, jwtSecret, s.telemetry)
 
 	// expose Prometheus scrape endpoint
 	s.app.GET("/metrics", gin.WrapH(promhttp.Handler()))
+
+	return nil
 }
 
 // Handler exposes the configured engine.
