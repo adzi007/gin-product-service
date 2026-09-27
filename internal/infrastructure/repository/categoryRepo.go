@@ -120,6 +120,11 @@ func (r *categoryRepo) FindAllForDropdown(ctx context.Context, name string) ([]d
 	query += " ORDER BY name ASC LIMIT 500"
 
 	rows, err := r.db.GetDb().Query(ctx, query, args...)
+
+	// VULNERABLE — this interpolates user input into SQL text
+	// query := fmt.Sprintf("SELECT id, name FROM category WHERE deleted_at IS NULL AND ILIKE '%s'", name)
+	// rows, err := r.db.GetDb().Query(ctx, query)
+
 	if err != nil {
 		return nil, err
 	}

@@ -1,0 +1,7 @@
+.agents/
+.specify/
+docs/
+migrations/
+specs/
+tmp/
+*_test.go

@@ -1,0 +1,88 @@
+rules:
+  - id: go-repository-sql-text-from-request
+    languages: [go]
+    mode: taint
+    severity: ERROR
+    message: >-
+      A potentially untrusted repository parameter reaches executable SQL text.
+      Keep values in separate Query/QueryRow/Exec arguments and allow-list SQL identifiers.
+    metadata:
+      category: security
+      technology: [gin, pgx, database/sql, sqlx]
+      limitation: >-
+        OpenGrep does not join taint flows across files. Repository parameters
+        are conservatively treated as sources; this is not a proven handler-to-repository trace.
+      observed_flows:
+        - CategoryHandler.Fetch -> queryCategoryUc.FindAll(params) -> categoryRepo.FindAll(params)
+        - CategoryHandler.Dropdown -> queryCategoryUc.FindAllForDropdown(name) -> categoryRepo.FindAllForDropdown(name)
+        - ProductHandler.Fetch -> queryProductUc.FindAll(params) -> productRepo.FindAll(params)
+        - ReviewHandler.Fetch -> queryReviewUc.ListByProduct(filter) -> reviewRepo.FindByProduct(filter)
+    pattern-sources:
+      # Direct Gin sources also cover handlers that execute SQL locally.
+      - pattern-either:
+          - pattern: $C.Query(...)
+          - pattern: $C.Param(...)
+          - pattern: $C.PostForm(...)
+          - pattern: $C.DefaultQuery(...)
+        exact: true
+      - patterns:
+          - pattern: $C.ShouldBindJSON(&$INPUT)
+          - focus-metavariable: $INPUT
+        by-side-effect: true
+      # Cross-file approximation: start at the exact repository entry points
+      # reached by the HTTP handlers. The SQL argument sink below ignores
+      # values sent only as separate, bound query arguments.
+      - patterns:
+          - pattern-inside: |
+              func (r *categoryRepo) FindAll(ctx context.Context, params domain.ListCategoryParams) ([]domain.Category, int, error) { ... }
+          - pattern: params.$FIELD
+        exact: true
+      - patterns:
+          - pattern-inside: |
+              func (r *categoryRepo) FindAllForDropdown(ctx context.Context, name string) ([]domain.CategoryOption, error) { ... }
+          - pattern: name
+        exact: true
+      - patterns:
+          - pattern-inside: |
+              func (r *productRepo) FindAll(ctx context.Context, params domain.ListProductParams) ([]domain.ProductListItem, int, error) { ... }
+          - pattern: params.$FIELD
+        exact: true
+      - patterns:
+          - pattern-inside: |
+              func (r *reviewRepo) FindByProduct(ctx context.Context, productID uuid.UUID, filter domain.ReviewFilter) ([]domain.Review, int, error) { ... }
+          - pattern: filter.$FIELD
+        exact: true
+    pattern-sanitizers:
+      # reviewSortClause returns only fixed, allow-listed ORDER BY clauses.
+      - pattern: reviewSortClause(...)
+    pattern-propagators:
+      # Same-function data structure mutation. These do not cross files.
+      - pattern: $PARTS = append($PARTS, $VALUE)
+        from: $VALUE
+        to: $PARTS
+      - pattern: $QUERY.WriteString($VALUE)
+        from: $VALUE
+        to: $QUERY
+    pattern-sinks:
+      # The first SQL-text argument is the sink. This covers fmt.Sprintf,
+      # string + / +=, and strings.Builder when their result reaches execution.
+      - patterns:
+          - pattern-either:
+              - pattern: $DB.Query($CTX, $SQL, ...)
+              - pattern: $DB.QueryRow($CTX, $SQL, ...)
+              - pattern: $DB.Exec($CTX, $SQL, ...)
+          - focus-metavariable: $SQL
+      # database/sql and sqlx context-aware variants.
+      - patterns:
+          - pattern-either:
+              - pattern: $DB.QueryContext($CTX, $SQL, ...)
+              - pattern: $DB.QueryRowContext($CTX, $SQL, ...)
+              - pattern: $DB.ExecContext($CTX, $SQL, ...)
+          - focus-metavariable: $SQL
+      # database/sql and sqlx calls without a context argument.
+      - patterns:
+          - pattern-either:
+              - pattern: $DB.Query($SQL, ...)
+              - pattern: $DB.QueryRow($SQL, ...)
+              - pattern: $DB.Exec($SQL, ...)
+          - focus-metavariable: $SQL
