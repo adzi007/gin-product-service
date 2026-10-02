@@ -1,0 +1,15 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gin-product-service:latest
+    container_name: gin-product-service
+    ports:
+      - "5000:5000"
+    # Secrets (DATABASE_URL, AUTH0_*, REDIS_REST_*, API_JWT_SECRET, OTEL_*) come from .env
+    env_file:
+      - .env
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+    restart: unless-stopped
